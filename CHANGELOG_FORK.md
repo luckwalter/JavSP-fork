@@ -174,6 +174,30 @@
 
 ---
 
+## v0.1.12 — 配置保存后即时生效（热重载，免重启）
+
+此前在界面改完配置，接口会返回「已写入 config.yml，重启服务后生效」。代理恰恰是最需要「换一个马上试」的参数，重启才能生效体验很差。
+
+### 改动内容
+- **新增 `javsp/config_reload.py`**：负责让运行时跟上磁盘上的 `config.yml`。
+  - `reload_runtime_config()`：置空 `Cfg.confz_instance` 触发 confz 重新读盘；失败立即恢复旧实例（避免后续所有 `Cfg()` 全崩）。
+  - `_refresh_crawler_requests()`：刷新各爬虫模块级 `request` 实例的代理与超时。
+  - `apply_config_changes()`：写入 + 重载一体化，失败自动回滚文件与运行时。
+  - `describe_runtime()`：输出运行时实际生效值（含各爬虫出口）。
+- **刷新爬虫出口（本功能的重点）**：`javsp/web/*.py` 在 import 时就执行 `request = Request(...)`，而 `Request.__init__` 会把 `proxies` / `timeout` **当场固化**。只重载 `Cfg` 的话，爬虫仍会拿着旧代理发请求 —— 界面改了却看不到效果。现遍历已加载的 `javsp.web.*` 模块逐个刷新。
+- **超时下限不被冲掉**：airav（20s）、javlib（5s）因站点特性设了下限，改为模块级常量 `_TIMEOUT_FLOOR`，刷新时读取该常量取 `max`，与初始化逻辑一致。
+- **原子写**：`config_io` 新增 `_atomic_write`（同目录临时文件 + `os.replace`）。热重载会在保存后立即读盘，直接原地写存在读到「半截文件」的风险。
+- **新增 `GET /api/config/runtime`**：查看运行时真正生效的配置，用于确认是否即时生效（区别于 `GET /api/config` 读的磁盘值）。
+- **前端**：保存提示改为「已写回并即时生效（刷新 N 个爬虫出口），无需重启」；热重载未成功则明确提示需重启，不谎报成功。
+- 验证：新增 `verify_config_reload.py`（**24/24 PASS**）。
+
+### 生效范围说明
+新配置对**后续**请求立即生效；已在进行中的抓取任务仍沿用旧配置（不会中断任务）。
+
+- 关联 commit：本提交（v0.1.12 同笔提交：`javsp/config_reload.py` + `javsp/config_io.py` + `javsp/server.py` + `javsp/web/airav.py` + `javsp/web/javlib.py` + `frontend/src/App.vue` + `verify_config_reload.py` + `verify_config_io.py` + `README.md` + `frontend/package.json` + `frontend/package-lock.json` + `pyproject.toml`）
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复
@@ -233,6 +257,12 @@
    - 现象：`config.yml` 的 `network` 段有四项（代理 / 免代理地址 / 重试 / 超时），Web 设置页只有「网络代理」一项，其余三项只能手改配置文件。
    - 修复：设置页补齐 `retry`（次数）、`timeout`（按秒编辑，内部转 ISO 8601）、`proxy_free`（四个站点的免代理地址）（v0.1.11）。
 
+12. **【体验】配置保存后需重启才生效，且「只重载配置对象」并不够**
+   - 现象：`PUT /api/config` 只写文件、不替换运行时单例（`confz` 的 `Cfg` 为 frozen），界面改完代理必须重启。
+   - 实现热重载时发现的**隐藏坑**：`javsp/web/*.py` 在 import 时就执行 `request = Request(...)`，而 `Request.__init__` 把 `proxies` / `timeout` **当场固化**（`self.proxies = read_proxy()`、`self.timeout = Cfg()...`）。仅重载 `Cfg` 的话，6 个爬虫仍会拿着旧代理发请求 —— 界面改了却看不到效果，属于「改了一半」的假生效。
+   - 修复：重载 `Cfg` 单例后，再遍历已加载的 `javsp.web.*` 模块刷新其 `request.proxies` / `request.timeout`；超时下限（airav 20s / javlib 5s）提取为模块级 `_TIMEOUT_FLOOR` 常量供刷新复用，避免被全局值冲掉（v0.1.12）。
+   - 安全设计：重载失败会立即恢复旧实例（否则 `confz_instance` 一直是 None，后续任何 `Cfg()` 都会重建并抛错，等于打瘫服务）；文件同步回滚；写入改为原子替换，避免重载读到半截文件。
+
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 
 | 检查项 | 结论 |
@@ -254,8 +284,8 @@
 - ~~**【数据透传】前端未消费 v0.1.6 已透传的 `sources`（每站点贡献）**~~ → **已于 v0.1.10 解决**
   批量页新增展开行展示各站点贡献 + 「数据源（有效/总数）」列，单部刮削页新增「各站点贡献」卡片；并借此发现并修复了 Issue #9（贡献判据把输入番号 `dvdid` 误当成果）。
 
-- **【体验】配置保存后需重启服务才生效**
-  `/api/config` PUT 只写入 `config.yml`、不替换运行时配置单例（`confz` 的 `Cfg` 为 frozen），故界面改完代理/超时等参数必须重启服务才生效，不利于「换一个代理马上试」。若要支持即时生效需实测配置重载路径（confz 有 `change` 上下文管理器，但持久替换单例需验证）。v0.1.11 未实施，作为套餐 C 备选。
+- ~~**【体验】配置保存后需重启服务才生效**~~ → **已于 v0.1.12 解决**
+  新增 `javsp/config_reload.py`：置空 `Cfg.confz_instance` 触发重新读盘，并刷新各爬虫模块级 `request` 的代理/超时（详见下方 Issue #12）；写入改原子写，非法配置自动回滚。界面保存后即时生效，无需重启。
 
 - **【联调】批量流程：合成片源已跑通，仅剩真实联网抓取待验**
   `/api/batch` 全链路（扫描 → 批量刮削 → 整理落盘）已由 `verify_batch_e2e.py` 用**合成片源 + mock 爬虫/下载**跑通（11/11 PASS），并借此发现并修复了 Issue #7。

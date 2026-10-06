@@ -440,7 +440,15 @@ async function saveConfig() {
     })
     const r = await api.putConfig(payload)
     configMsg.value = r.note || '已保存'
-    ElMessage.success('已写回 config.yml')
+    if (r.reloaded) {
+      const n = (r.refreshed || []).length
+      ElMessage.success(`已写回 config.yml 并即时生效（刷新 ${n} 个爬虫出口），无需重启`)
+    } else if (r.status === 'unchanged') {
+      ElMessage.info('没有检测到字段变化，未写入 config.yml')
+    } else {
+      // 文件已写入但热重载未成功，如实告知，避免用户以为已经生效
+      ElMessage.warning('已写入 config.yml，但热重载未成功，请重启服务后生效')
+    }
   } catch (e) {
     ElMessage.error('保存失败: ' + e.message)
   }

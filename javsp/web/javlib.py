@@ -12,6 +12,8 @@ from javsp.datatype import  MovieInfo
 
 # 初始化Request实例
 request = Request(use_scraper=True)
+# javlib 单次查询较快, 下限设 5s; 该下限同时供「配置热重载」读取(config_reload._refresh_crawler_requests)
+_TIMEOUT_FLOOR = 5
 
 logger = logging.getLogger(__name__)
 permanent_url = 'https://www.javlibrary.com'
@@ -20,7 +22,7 @@ base_url = ''
 
 def init_network_cfg():
     """设置合适的代理模式和base_url"""
-    request.timeout = max(5, Cfg().network.timeout.total_seconds())  # 下限5s; 尊重全局 network.timeout 配置取其较大者
+    request.timeout = max(_TIMEOUT_FLOOR, Cfg().network.timeout.total_seconds())  # 下限5s; 尊重全局 network.timeout 配置取其较大者
     proxy_free_url = get_proxy_free_url('javlib')
     urls = [str(Cfg().network.proxy_free[CrawlerID.javlib]), permanent_url]
     if proxy_free_url and proxy_free_url not in urls:

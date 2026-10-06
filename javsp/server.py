@@ -20,7 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from javsp.config import Cfg
-from javsp.config_io import diff_leaves, write_config_preserving_comments
+from javsp.config_io import diff_leaves
+from javsp.config_reload import apply_config_changes, describe_runtime
 from javsp.core import (
     import_crawlers, load_alias_map,
     parallel_crawler, info_summary,
@@ -306,11 +307,17 @@ def api_config_get():
 
 @app.put('/api/config')
 def api_config_put(updates: dict):
-    """更新并写回 config.yml(重启后生效)
+    """更新并写回 config.yml，并让运行时立即生效（无需重启）
 
     写回采用「只替换变更字段」的方式(config_io.write_config_preserving_comments),
     以保留 config.yml 里的中文注释与原有排版——早期版本用 yaml.safe_dump 整体重写,
     会把全部注释丢掉(实测 100 行注释 → 0 行)。
+
+    写回后调用 config_reload.apply_config_changes 做两件事：
+    1) 重载 Cfg 单例（置空 confz_instance 触发重新读盘）；
+    2) 刷新各爬虫模块级 Request 的代理/超时——它们在 import 时就被固化了,
+       只重载 Cfg 的话爬虫仍会用旧代理。
+    任一环节失败都会自动回滚文件与运行时配置。
     """
     try:
         current = Cfg().model_dump(mode='json')
@@ -322,13 +329,44 @@ def api_config_put(updates: dict):
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
     try:
         changes = diff_leaves(current, merged)
-        n, missing = write_config_preserving_comments(cfg_path, changes)
+        res = apply_config_changes(cfg_path, changes)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'写入 config.yml 失败: {e}')
-    note = f'已写入 config.yml（改动 {n} 个字段，注释与排版保留），重启服务后生效'
+
+    n, missing = res['written'], res['missing']
+    if res.get('rolled_back'):
+        raise HTTPException(
+            status_code=500,
+            detail=f'新配置未能加载，已自动回滚 config.yml 与运行时配置。原因：{res["error"]}')
+
+    if n == 0:
+        note = '没有检测到字段变化，未写入文件'
+        return {'status': 'unchanged', 'path': cfg_path, 'changed': 0,
+                'missing': missing, 'reloaded': False, 'note': note}
+
+    if res['reloaded']:
+        note = (f'已写入 config.yml（改动 {n} 个字段，注释与排版保留），'
+                f'并已立即生效（刷新 {len(res["refreshed"])} 个爬虫出口），无需重启')
+    else:
+        note = (f'已写入 config.yml（改动 {n} 个字段），但热重载未成功，'
+                f'需重启服务后生效。原因：{res["error"]}')
     if missing:
         note += f'；以下字段未能在文件中定位到，未写入：{", ".join(missing)}'
-    return {'status': 'written', 'path': cfg_path, 'changed': n, 'missing': missing, 'note': note}
+    return {'status': 'applied' if res['reloaded'] else 'written', 'path': cfg_path,
+            'changed': n, 'missing': missing, 'reloaded': res['reloaded'],
+            'refreshed': res['refreshed'], 'note': note}
+
+
+@app.get('/api/config/runtime')
+def api_config_runtime():
+    """返回当前**运行时**实际生效的关键配置（含各爬虫出口的代理/超时）
+
+    用于确认界面保存后是否真的即时生效——config.yml 是磁盘值，这里读到的是内存值。
+    """
+    try:
+        return {'status': 'ok', 'runtime': describe_runtime()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'读取运行时配置失败: {e}')
 
 
 # ----------------------------- 前端静态托管(生产构建后) -----------------------------

@@ -13,7 +13,9 @@ from javsp.datatype import MovieInfo
 request = Request(use_scraper=True)
 request.headers['Accept-Language'] = 'zh-TW,zh;q=0.9'
 # 近期airav服务器似乎不稳定，时好时坏，单次查询平均在17秒左右，timeout时间增加到20秒
-request.timeout = max(20, Cfg().network.timeout.total_seconds())  # 下限20s(服务器不稳); 尊重全局 network.timeout 配置取其较大者
+# 该下限同时供「配置热重载」读取(config_reload._refresh_crawler_requests), 避免刷新时把下限冲掉
+_TIMEOUT_FLOOR = 20
+request.timeout = max(_TIMEOUT_FLOOR, Cfg().network.timeout.total_seconds())  # 下限20s(服务器不稳); 尊重全局 network.timeout 配置取其较大者
 
 
 logger = logging.getLogger(__name__)

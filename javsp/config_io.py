@@ -184,6 +184,27 @@ def write_config_preserving_comments(cfg_path, changes):
             continue
         out_lines.append(to_replace.get(i, line))
 
-    with open(cfg_path, 'w', encoding='utf-8', newline='') as f:
-        f.write(''.join(out_lines))
+    _atomic_write(cfg_path, ''.join(out_lines))
     return len(to_replace), missing
+
+
+def _atomic_write(cfg_path, text):
+    """原子写文件：先写同目录临时文件，再 os.replace 整体替换
+
+    配置热重载会在保存后立即重新读盘，若直接原地写，存在读到「写了一半」文件的
+    风险（进而让服务拿到残缺配置）。同目录临时文件 + os.replace 在 POSIX/Windows
+    上都是原子替换，读端只会看到旧文件或新文件。
+    """
+    import tempfile
+    folder = os.path.dirname(os.path.abspath(cfg_path)) or '.'
+    fd, tmp = tempfile.mkstemp(prefix='.cfg_', suffix='.tmp', dir=folder)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+        os.replace(tmp, cfg_path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise

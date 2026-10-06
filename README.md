@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.11-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.12-blue.svg)
 
 ## 功能特点
 
@@ -59,7 +59,8 @@
   | `POST /api/scrape`        | 单部刮削，SSE 推送各爬虫进度                 |
   | `POST /api/organize`      | 单部整理（NFO + 封面 + 重命名），SSE 推送进度    |
   | `POST /api/batch`         | **批量**刮削（可选附带整理），SSE 推送逐部 + 整体进度 |
-  | `GET` / `PUT /api/config` | 读取 / 写回 `config.yml`             |
+  | `GET` / `PUT /api/config` | 读取 / 写回 `config.yml`（写回后即时生效，无需重启）     |
+  | `GET /api/config/runtime` | 查看**运行时**实际生效的配置（含各爬虫出口的代理 / 超时），用于确认是否已生效 |
 - **前端 `frontend/`**：Vue3 + Vite + Element Plus，含扫描、单部刮削、**批量任务**、设置等页面。
 
 ## 快速开始
@@ -110,7 +111,9 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 3. **整理**：预览确认后一键生成 NFO、下载封面并按规则重命名整理到媒体库目录。
 4. **配置**：「设置」页可调整刮削源、代理、各站点免代理地址、重试次数、超时、命名规则等（`config.yml`）。
    - 保存采用**只替换变更字段**的方式写入，`config.yml` 里的中文注释与排版不会丢失。
-   - 注意：改完需**重启服务**才生效。
+   - 保存后**即时生效，无需重启**：会重载运行时配置，并刷新各爬虫的网络出口（代理 / 超时）。
+     已在进行中的抓取任务不受影响，新请求即用新配置。
+   - 若新配置无法加载，会自动回滚文件与运行时配置，不会让服务带着坏配置运行。
 
 更详细的刮削源与命名规则见原项目 [JavSP Wiki](https://github.com/Yuukiy/JavSP/wiki)。
 
@@ -122,7 +125,7 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.11**
+当前版本：**0.1.12**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 
@@ -159,6 +162,7 @@ python sync_version.py --check  # 只校验，任何一处不一致则以退出�
 | `verify_batch_e2e.py`       | 批量端到端：合成片源 + mock 爬虫，覆盖扫描 → 批量刮削 → 整理落盘    |
 | `verify_sources_e2e.py`     | 每站点贡献：SSE 透传结构 + 前端转换函数（直接从 App.vue 源码提取求值，防测试与实现漂移） |
 | `verify_config_io.py`       | 配置写回：保注释（标量 / 整数 / 嵌套 / 单行列表 / 多行列表）+ 换行符 + API 端到端        |
+| `verify_config_reload.py`   | 配置热重载：运行时跟随 + 爬虫出口刷新 + 超时下限保留 + 非法配置自动回滚                 |
 | `verify_k4.py`              | 历史 bug 回归守卫（`all_info` 键名切片）               |
 | `verify_robust.py`          | 历史 bug 回归守卫（爬虫加载健壮性）                       |
 

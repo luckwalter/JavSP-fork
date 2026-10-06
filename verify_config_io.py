@@ -182,7 +182,8 @@ try:
         payload['network']['timeout'] = 'PT20S'          # 前端按秒编辑后转回的写法
         payload['network']['proxy_free']['javdb'] = 'https://db.example.com'
         resp = client.put('/api/config', json=payload).json()
-        check('T9 PUT 返回写入成功', resp.get('status') == 'written', str(resp)[:160])
+        # 热重载后状态为 'applied'（即时生效）；若热重载不可用则退回 'written'
+        check('T9 PUT 返回写入成功', resp.get('status') in ('written', 'applied'), str(resp)[:160])
         check('T9 无字段定位失败', not resp.get('missing'), str(resp.get('missing')))
         check('T9 变更字段数 >= 4', (resp.get('changed') or 0) >= 4, str(resp.get('changed')))
         t = open(SRC, encoding='utf-8', newline='').read()
