@@ -1,14 +1,19 @@
-"""把 pyproject.toml 的 version(单一版本源)同步到 frontend/package.json
+"""发版同步工具：把 pyproject.toml 的 version（单一版本源）同步到各处引用
 
-背景: 前端 package.json 的 version 曾长期停留在 0.1.1, 与后端版本漂移。
-本脚本把 pyproject.toml 的 version 写入 frontend/package.json, 保证发版时两边一致。
+覆盖三处（此前只同步了 package.json，导致 README 徽章与 package-lock 长期漂移）：
+  1. frontend/package.json        -> version
+  2. frontend/package-lock.json   -> version 与 packages[""].version
+  3. README.md                    -> 版本徽章 `badge/version-x.y.z-blue.svg` 与「当前版本：**x.y.z**」
 
-注意: 前端页面显示的版本号**不来自** package.json, 而是启动时从后端 /api/health 拉取,
-所以 package.json 的版本只是工程卫生(便于打包/排查), 不同步也不影响运行时正确性。
+背景：曾出现 pyproject 已是 0.1.8，而 README 徽章 / package-lock 仍停在 0.1.1。
+本脚本把这三处纳入机械同步，避免靠人记忆。
 
-用法:
-    python sync_version.py            # 执行同步(写入 frontend/package.json)
-    python sync_version.py --check    # 只校验是否已同步, 不同步则以退出码 1 报错(不写入)
+注意：前端页面显示的版本号**不来自** package.json，而是运行时从后端 /api/health 拉取，
+所以这里的同步属于工程卫生（便于打包/排查），不同步也不影响运行时正确性。
+
+用法：
+    python sync_version.py            # 执行同步（写入上述文件）
+    python sync_version.py --check    # 只校验，有任何一处不一致则以退出码 1 报错（不写入）
 """
 import json
 import os
@@ -18,8 +23,14 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PYPROJECT = os.path.join(ROOT, 'pyproject.toml')
 PKG_JSON = os.path.join(ROOT, 'frontend', 'package.json')
+PKG_LOCK = os.path.join(ROOT, 'frontend', 'package-lock.json')
+README = os.path.join(ROOT, 'README.md')
 
 _VERSION_RE = re.compile(r'^version\s*=\s*["\']([^"\']+)["\']', re.M)
+# README 中的版本徽章: ![Version](https://img.shields.io/badge/version-0.1.8-blue.svg)
+_BADGE_RE = re.compile(r'(badge/version-)([0-9][0-9.]*)(-blue\.svg)')
+# README 中的「当前版本：**0.1.8**」
+_CURRENT_RE = re.compile(r'(当前版本：\*\*)([0-9][0-9.]*)(\*\*)')
 
 
 def read_pyproject_version():
@@ -30,37 +41,105 @@ def read_pyproject_version():
     return m.group(1)
 
 
-def read_package_version():
-    if not os.path.isfile(PKG_JSON):
-        return None
-    with open(PKG_JSON, 'r', encoding='utf-8') as f:
-        return json.load(f).get('version')
-
-
-def write_package_version(ver):
-    with open(PKG_JSON, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    data['version'] = ver
-    with open(PKG_JSON, 'w', encoding='utf-8') as f:
+def _dump_json(path, data):
+    with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
         f.write('\n')
 
 
+def check_package_json(ver):
+    if not os.path.isfile(PKG_JSON):
+        return None, '文件不存在'
+    with open(PKG_JSON, 'r', encoding='utf-8') as f:
+        return json.load(f).get('version'), None
+
+
+def sync_package_json(ver):
+    with open(PKG_JSON, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    data['version'] = ver
+    _dump_json(PKG_JSON, data)
+
+
+def check_package_lock(ver):
+    if not os.path.isfile(PKG_LOCK):
+        return None, '文件不存在'
+    with open(PKG_LOCK, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    root_v = data.get('version')
+    pkg_v = (data.get('packages', {}).get('', {}) or {}).get('version')
+    # 两处必须一致且都等于目标版本
+    return (root_v if root_v == pkg_v == ver else f'{root_v}/{pkg_v}'), None
+
+
+def sync_package_lock(ver):
+    with open(PKG_LOCK, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    data['version'] = ver
+    if '' in data.get('packages', {}):
+        data['packages']['']['version'] = ver
+    _dump_json(PKG_LOCK, data)
+
+
+def check_readme(ver):
+    if not os.path.isfile(README):
+        return None, '文件不存在'
+    with open(README, 'r', encoding='utf-8') as f:
+        text = f.read()
+    badge = _BADGE_RE.search(text)
+    cur = _CURRENT_RE.search(text)
+    if not badge and not cur:
+        return None, '未找到版本徽章或「当前版本」标记'
+    found = {badge.group(2) if badge else None, cur.group(2) if cur else None}
+    got = found.pop() if len(found) == 1 else '/'.join(sorted(i for i in found if i))
+    return got, None
+
+
+def sync_readme(ver):
+    with open(README, 'r', encoding='utf-8') as f:
+        text = f.read()
+    text = _BADGE_RE.sub(lambda m: m.group(1) + ver + m.group(3), text)
+    text = _CURRENT_RE.sub(lambda m: m.group(1) + ver + m.group(3), text)
+    with open(README, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+
+TARGETS = [
+    ('frontend/package.json', check_package_json, sync_package_json),
+    ('frontend/package-lock.json', check_package_lock, sync_package_lock),
+    ('README.md', check_readme, sync_readme),
+]
+
+
 def main():
     check_only = '--check' in sys.argv
-    pyv = read_pyproject_version()
-    fev = read_package_version()
+    ver = read_pyproject_version()
+    print(f'单一版本源 pyproject.toml = {ver}')
 
-    if pyv == fev:
-        print(f'OK  版本已同步: pyproject.toml = frontend/package.json = {pyv}')
+    stale = []
+    for label, checker, _sync in TARGETS:
+        got, err = checker(ver)
+        if err:
+            print(f'SKIP {label}: {err}')
+            continue
+        if got == ver:
+            print(f'OK   {label} = {ver}')
+        else:
+            print(f'OUT  {label} = {got}')
+            stale.append(label)
+
+    if not stale:
+        print(f'全部同步：{ver}')
         return 0
 
     if check_only:
-        print(f'FAIL 版本未同步: pyproject.toml = {pyv}, frontend/package.json = {fev}')
+        print(f'FAIL 未同步: {", ".join(stale)}')
         return 1
 
-    write_package_version(pyv)
-    print(f'DONE 已同步: frontend/package.json {fev} -> {pyv}(源: pyproject.toml)')
+    for label, _checker, syncer in TARGETS:
+        if label in stale:
+            syncer(ver)
+            print(f'DONE {label} -> {ver}')
     return 0
 
 

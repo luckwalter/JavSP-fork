@@ -8,9 +8,9 @@
 
 > 原项目上游声明「WebUI 不是目标」，本 fork 正是为了把它变成带界面的功能软件而存在。
 
-![Python 3.10](https://img.shields.io/badge/python-3.10-green.svg)
+![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.9-blue.svg)
 
 ## 功能特点
 
@@ -24,7 +24,15 @@
 - [x] **Web 界面**：目录扫描、单部刮削、批量任务、元数据预览、一键整理
 - [x] **多形态交付**：Web 服务（Docker / NAS）+ 桌面程序（PyWebView 打包 exe）
 - [ ] 匹配本地字幕
-- [ ] 不同的运行模式（抓取数据 + 整理，仅抓取数据）
+- [x] 不同的运行模式（抓取数据 + 整理，仅抓取数据）：批量任务可选「仅刮削」或「刮削并整理」
+
+其它已具备的能力：
+
+- **并发限流**：刮削并发数可配（`crawler.max_concurrency`，默认 5），避免瞬时全开打爆出口 / 代理
+- **重试指数退避**：失败重试间隔 1/2/4/8s 封顶，降低连续重试触发站点风控的概率
+- **配置 Web 化**：「设置」页用分组表单直接编辑并写回 `config.yml`
+- **每站点数据透传**：结果可看到各站点分别贡献了哪些字段（`sources`）
+- **单一版本源**：版本号以 `pyproject.toml` 为准，界面显示的版本由后端 `/api/health` 提供
 
 ## 架构
 
@@ -42,8 +50,19 @@
 
 - **爬虫层 `javsp/web/*`**：原项目纯逻辑（番号 → `MovieInfo`），零改动直接复用，是后端最稳的底座。
 - **核心层 `javsp/core.py`**：从 CLI 抽出的编排逻辑，带进度回调，对外暴露 `scrape_movie()` / `organize_movie()` / `preview_metadata()` / `scan_library()`，CLI 与 Web 共用。
-- **后端 `javsp/server.py`**：实现 `pyproject.toml` 预留的 `javsp.server:entry` 入口，提供 `/api/scan`、`/api/scrape`（SSE 进度）、`/api/organize`、`/api/config` 等接口。
-- **前端 `frontend/`**：Vue3 + Vite + Element Plus，含扫描、单部刮削、设置等页面。
+- **后端 `javsp/server.py`**：实现 `pyproject.toml` 预留的 `javsp.server:entry` 入口，接口如下：
+
+  | 接口 | 说明 |
+  |------|------|
+  | `GET /api/health` | 健康检查，同时返回服务端版本号 |
+  | `POST /api/scan` | 扫描影片目录，返回影片列表并分配 `guid` |
+  | `GET /api/movies` | 列出当前内存中的影片任务 |
+  | `POST /api/scrape` | 单部刮削，SSE 推送各爬虫进度 |
+  | `POST /api/organize` | 单部整理（NFO + 封面 + 重命名），SSE 推送进度 |
+  | `POST /api/batch` | **批量**刮削（可选附带整理），SSE 推送逐部 + 整体进度 |
+  | `GET` / `PUT /api/config` | 读取 / 写回 `config.yml` |
+
+- **前端 `frontend/`**：Vue3 + Vite + Element Plus，含扫描、单部刮削、**批量任务**、设置等页面。
 
 ## 快速开始
 
@@ -103,13 +122,43 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.1**（WEBUI 骨架：核心层解耦 + FastAPI 后端 + Vue 前端 + 桌面壳 + Docker 多阶段）。
+当前版本：**0.1.9**
+
+> 完整的版本迭代记录与问题修复见 **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
+
+### 发版清单
+
+版本号以 `pyproject.toml` 为准，**发版时以下四处需一起更新**（漏改就会出现版本漂移）：
+
+| 文件 | 位置 | 同步方式 |
+|------|------|----------|
+| `pyproject.toml` | `version` 字段 | 手动改（唯一权威来源） |
+| `frontend/package.json` | `version` | `python sync_version.py` 自动同步 |
+| `frontend/package-lock.json` | `version`、`packages[""].version` | 同上 |
+| `README.md` | 版本徽章、`当前版本：**x.y.z**` | 同上 |
+| `CHANGELOG_FORK.md` | 新增版本条目 | 手动补 |
+
+```bash
+python sync_version.py          # 写入同步（package.json / package-lock.json / README.md）
+python sync_version.py --check  # 只校验，任何一处不一致则以退出码 1 报错
+```
 
 ## 与原项目的关系
 
 - 派生自 [Yuukiy/JavSP](https://github.com/Yuukiy/JavSP)，保留其全部爬虫与元数据能力。
 - 新增 `javsp/core.py`、`javsp/server.py`、`javsp/desktop.py`、`frontend/` 等 Web 层代码；`upstream` 仍指向原仓库，便于后续同步上游更新。
 - 配置格式沿用原 `config.yml`，CLI 入口 `javsp` 行为不变。
+
+## 开发
+
+仓库根目录附带若干**纯逻辑验证脚本**（不联网，可直接运行），改动后跑一遍可快速自查：
+
+| 脚本 | 覆盖内容 |
+|------|----------|
+| `verify_scrape_refactor.py` | 刮削打磨项：并发限流 / 重试退避 / genre 合并 / 封面容错 / 站点透传 |
+| `verify_batch_e2e.py` | 批量端到端：合成片源 + mock 爬虫，覆盖扫描 → 批量刮削 → 整理落盘 |
+| `verify_k4.py` | 历史 bug 回归守卫（`all_info` 键名切片） |
+| `verify_robust.py` | 历史 bug 回归守卫（爬虫加载健壮性） |
 
 ## 问题反馈
 

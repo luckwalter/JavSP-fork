@@ -15,6 +15,12 @@
   - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`、`0.3.1`…（跳过 `.0` 结尾）
   - 正式稳定版：`1.0.0`
 - 每次发版更新 `version` 字段，并 `commit` + `push` GitHub。
+- **发版清单（v0.1.9 起固化）**：版本号以 `pyproject.toml` 为唯一权威来源，其余引用处用 `sync_version.py` 机械同步，避免漂移：
+  1. 手动改 `pyproject.toml` 的 `version`
+  2. `python sync_version.py` —— 自动同步 `frontend/package.json`、`frontend/package-lock.json`、`README.md`（版本徽章 + 「当前版本」）
+  3. `python sync_version.py --check` —— 校验三处一致（不一致则退出码 1，可作发版门禁）
+  4. 补 `CHANGELOG_FORK.md` 版本条目
+  5. `commit` + `push` GitHub
 
 ---
 
@@ -108,6 +114,28 @@
   - 说明：合成文件需 ≥ `scanner.minimum_size`（232MiB）才会被扫描识别，故各 233MiB；跑完自动清理临时目录。
 - 关联 commit：本提交（v0.1.8 同笔提交：`javsp/core.py` + `javsp/server.py` + `verify_batch_e2e.py` + `frontend/package.json` + `pyproject.toml`）
 
+### v0.1.9（2026-10-07）— 补齐 README 随版本更新 + 版本同步覆盖 README / package-lock（小变更）
+- 起因：主人反馈「每次提交 changelog 时 README 并没有随版本更新」。全库排查后发现漂移**不止 README**：
+  - `README.md`：版本徽章与「当前版本」均停在 **0.1.1**（而 `pyproject.toml` 已是 0.1.8）
+  - `frontend/package-lock.json`：`version` 与 `packages[""].version` 也停在 **0.1.1**（此前的 `sync_version.py` 只同步了 `package.json`，漏了 lock 与 README）
+- **Fixed 版本同步扩到三处**：重写 `sync_version.py`，从「只同步 package.json」扩展为同步：
+  1. `frontend/package.json` → `version`
+  2. `frontend/package-lock.json` → `version` 与 `packages[""].version`（两处都必须一致）
+  3. `README.md` → 版本徽章 `badge/version-x.y.z-blue.svg` 与「当前版本：**x.y.z**」
+  - 新增 `--check`：只校验不写入，任何一处不一致即退出码 1（可作发版门禁）。
+  - 实测：同步前 `package.json=0.1.8 / package-lock=0.1.1 / README=0.1.1`，同步后三处均为 **0.1.9**，`--check` RC=0。
+- **README 内容补齐**（不只是改数字）：
+  - Python 徽章 `3.10` → `3.10 ~ 3.12`（对齐 `pyproject.toml` 的 `>=3.10,<3.13`）
+  - 接口清单补全：`/api/health`、`/api/movies`、`/api/batch`（原只列了 scan/scrape/organize/config）
+  - 功能列表补：并发限流、重试指数退避、配置 Web 化、每站点数据透传、单一版本源；并标记「不同的运行模式」为已完成（批量可选仅刮削 / 刮削并整理）
+  - 前端描述补「批量任务」页
+  - 新增**「发版清单」**表格：明确发版需同步的四处及同步方式（根因治理，避免再靠人记）
+  - 新增**「开发」**章节：列出 `verify_*.py` 验证脚本及其覆盖范围
+  - 指向 `CHANGELOG_FORK.md` 的完整迭代记录
+- CHANGELOG 顶部「版本规则」补充**发版清单**（5 步），与 README 保持一致。
+- 验证：`sync_version.py --check` 三处均 0.1.9 且 RC=0；`npm run build` 通过（确认 lock 重写未破坏构建）。
+- 关联 commit：本提交（v0.1.9 同笔提交：`README.md` + `sync_version.py` + `frontend/package.json` + `frontend/package-lock.json` + `pyproject.toml`）
+
 ---
 
 ## 问题排查与修复（Issue 记录）
@@ -146,6 +174,11 @@
    - 根因：输出目录模板是相对路径；CLI 依赖 `__main__.py` 的 `os.chdir(root)` 解析，而 `core.py` 抽取时去掉了 chdir 副作用、Web 服务又不 chdir，导致相对路径落到进程 CWD。
    - 实证：探针显示 `save_dir` 绝对化 = `<仓库根>/#整理完成/...`，「落在影片目录内」= False。
    - 修复：新增 `_root_save_dir()`，相对输出目录锚定到 `movie.scan_root`（`/api/scan` 记录）；CLI 无 `scan_root` 时保持原行为（v0.1.8）。
+
+8. **【流程/文档】README 与 package-lock 的版本号长期不随发版更新**
+   - 现象：`pyproject.toml` 已 0.1.8，而 README 版本徽章 / 「当前版本」与 `frontend/package-lock.json` 仍停在 0.1.1。
+   - 根因：`sync_version.py` 只同步了 `frontend/package.json`，漏掉 lock 与 README；且发版流程里没有明文规定要更新 README。
+   - 修复：`sync_version.py` 扩展为同步三处（package.json / package-lock.json / README）并提供 `--check` 门禁；README 与 CHANGELOG 均写入「发版清单」固化流程（v0.1.9）。
 
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 
