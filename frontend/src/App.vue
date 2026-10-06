@@ -97,12 +97,56 @@
           </el-card>
         </el-tab-pane>
 
-        <!-- 设置 -->
+        <!-- 设置（Web 化表单） -->
         <el-tab-pane label="设置" name="settings">
           <el-button @click="loadConfig">加载配置</el-button>
-          <el-input type="textarea" :rows="22" v-model="configText" style="margin-top: 10px; font-family: monospace" />
-          <el-button type="primary" style="margin-top: 10px" @click="saveConfig">保存并写回 config.yml</el-button>
           <el-alert v-if="configMsg" :title="configMsg" type="success" style="margin-top: 10px; max-width: 600px" />
+          <el-form v-if="configObj" label-width="170px" style="margin-top: 16px; max-width: 820px">
+            <el-divider>基础</el-divider>
+            <el-form-item label="扫描目录"><el-input v-model="configObj.scanner.input_directory" placeholder="留空=当前目录" /></el-form-item>
+            <el-form-item label="网络代理"><el-input v-model="configObj.network.proxy_server" placeholder="如 http://127.0.0.1:7890" /></el-form-item>
+            <el-form-item label="整理并移动文件"><el-switch v-model="configObj.summarizer.move_files" /></el-form-item>
+
+            <el-divider>爬虫选择</el-divider>
+            <el-form-item label="普通番号源">
+              <el-select v-model="configObj.crawler.selection.normal" multiple filterable style="width: 100%">
+                <el-option v-for="s in crawlerSites" :key="s" :label="s" :value="s" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="FC2 源">
+              <el-select v-model="configObj.crawler.selection.fc2" multiple filterable style="width: 100%">
+                <el-option v-for="s in crawlerSites" :key="s" :label="s" :value="s" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="CID 源">
+              <el-select v-model="configObj.crawler.selection.cid" multiple filterable style="width: 100%">
+                <el-option v-for="s in crawlerSites" :key="s" :label="s" :value="s" />
+              </el-select>
+            </el-form-item>
+
+            <el-divider>命名规则</el-divider>
+            <el-form-item label="输出目录模板"><el-input v-model="configObj.summarizer.path.output_folder_pattern" /></el-form-item>
+            <el-form-item label="文件名模板"><el-input v-model="configObj.summarizer.path.basename_pattern" /></el-form-item>
+            <el-form-item label="NFO 标题模板"><el-input v-model="configObj.summarizer.nfo.title_pattern" /></el-form-item>
+            <el-form-item label="NFO 文件名模板"><el-input v-model="configObj.summarizer.nfo.basename_pattern" /></el-form-item>
+
+            <el-divider>翻译</el-divider>
+            <el-form-item label="翻译引擎">
+              <el-select v-model="configObj.translator.engine.name" style="width: 240px">
+                <el-option label="无" value="none" />
+                <el-option label="Google" value="google" />
+                <el-option label="百度" value="baidu" />
+                <el-option label="Bing" value="bing" />
+                <el-option label="Claude" value="claude" />
+                <el-option label="OpenAI" value="openai" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="翻译标题"><el-switch v-model="configObj.translator.fields.title" /></el-form-item>
+            <el-form-item label="翻译剧情"><el-switch v-model="configObj.translator.fields.plot" /></el-form-item>
+
+            <el-button type="primary" @click="saveConfig">保存并写回 config.yml</el-button>
+          </el-form>
+          <el-alert v-else title="点击「加载配置」从服务端读取 config.yml" type="info" style="margin-top: 10px" />
         </el-tab-pane>
       </el-tabs>
     </el-main>
@@ -114,7 +158,7 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as api from './api.js'
 
-const version = ref('0.1.2')
+const version = ref('0.1.3')
 const active = ref('scan')
 const scanPath = ref('')
 const movies = ref([])
@@ -124,8 +168,15 @@ const taskLog = ref('')
 const avid = ref('')
 const scrapeProgress = ref([])
 const scrapeInfo = ref(null)
-const configText = ref('')
+const configObj = ref(null)
 const configMsg = ref('')
+
+// 可选爬虫源(对应 javsp.config.CrawlerID 枚举)
+const crawlerSites = [
+  'airav', 'avsox', 'avwiki', 'dl_getchu', 'fanza', 'fc2', 'fc2fan', 'fc2ppvdb',
+  'gyutto', 'jav321', 'javbus', 'javdb', 'javlib', 'javmenu', 'mgstage',
+  'njav', 'prestige', 'arzon', 'arzon_iv',
+]
 
 const batch = ref({ running: false, index: 0, total: 0, current: '', crawlers: [], log: [], done: null })
 
@@ -231,7 +282,11 @@ function tagType(s) {
 async function loadConfig() {
   try {
     const c = await api.getConfig()
-    configText.value = JSON.stringify(c, null, 2)
+    // 翻译引擎归一化为 {name}，避免 Web 表单改动时残留其他引擎的必填字段
+    if (c.translator && c.translator.engine) {
+      c.translator.engine = { name: c.translator.engine.name || 'none' }
+    }
+    configObj.value = c
   } catch (e) {
     ElMessage.error('加载失败: ' + e.message)
   }
@@ -239,8 +294,7 @@ async function loadConfig() {
 
 async function saveConfig() {
   try {
-    const cfg = JSON.parse(configText.value)
-    const r = await api.putConfig(cfg)
+    const r = await api.putConfig(configObj.value)
     configMsg.value = r.note || '已保存'
     ElMessage.success('已写回 config.yml')
   } catch (e) {
