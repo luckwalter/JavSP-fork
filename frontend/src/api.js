@@ -41,6 +41,10 @@ export function organizeStream(guid, onEvent) {
   return consumeSSE(BASE + '/api/organize', { guid }, onEvent)
 }
 
+export function batchStream(payload, onEvent) {
+  return consumeSSE(BASE + '/api/batch', payload, onEvent)
+}
+
 function consumeSSE(url, body, onEvent) {
   return new Promise(async (resolve, reject) => {
     try {
@@ -66,12 +70,16 @@ function consumeSSE(url, body, onEvent) {
           buf = buf.slice(idx + 2)
           const line = chunk.split('\n').find((l) => l.startsWith('data: '))
           if (line) {
-            const data = JSON.parse(line.slice(6))
-            onEvent(data)
-            if (data.type === 'result' || data.type === 'error') resolve(data)
+            try {
+              const data = JSON.parse(line.slice(6))
+              onEvent(data)
+            } catch (_) {
+              /* 忽略单行解析错误 */
+            }
           }
         }
       }
+      resolve()
     } catch (e) {
       reject(e)
     }

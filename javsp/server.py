@@ -12,7 +12,7 @@ import threading
 import hashlib
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -102,6 +102,11 @@ class ScrapeRequest(BaseModel):
 
 class OrganizeRequest(BaseModel):
     guid: str
+
+
+class BatchRequest(BaseModel):
+    guids: List[str]
+    organize: bool = False
 
 
 # ----------------------------- 路由 -----------------------------
@@ -213,6 +218,64 @@ def api_organize(req: OrganizeRequest):
                 q.put({'type': 'error', 'msg': str(e)})
             finally:
                 q.put(None)
+
+        threading.Thread(target=run, daemon=True).start()
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield sse_pack(item)
+
+    return StreamingResponse(event_gen(), media_type='text/event-stream')
+
+
+@app.post('/api/batch')
+def api_batch(req: BatchRequest):
+    """批量刮削(可附带整理), 通过 SSE 推送每部进度与整体进度"""
+    movies = [TASKS[g] for g in req.guids if g in TASKS]
+    total = len(movies)
+    if total == 0:
+        raise HTTPException(status_code=400, detail='没有可处理的任务')
+
+    def event_gen():
+        q: queue.Queue = queue.Queue()
+
+        def run():
+            success = fail = 0
+            for idx, m in enumerate(movies, 1):
+                avid = m.dvdid or m.cid
+                q.put({'type': 'movie_start', 'index': idx, 'total': total,
+                       'guid': m.guid, 'avid': avid})
+
+                def progress_cb(name, status, _m=m):
+                    q.put({'type': 'progress', 'index': idx, 'guid': _m.guid,
+                           'crawler': name, 'status': status})
+
+                try:
+                    ok = _scrape_into(m, progress_cb)
+                except Exception as e:
+                    logger.exception(e)
+                    ok = False
+                if ok and req.organize:
+                    try:
+                        organize_movie(m, progress_cb=progress_cb)
+                        organized = True
+                    except Exception as e:
+                        logger.exception(e)
+                        organized = False
+                else:
+                    organized = False
+                if ok:
+                    success += 1
+                    q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
+                           'ok': True, 'organized': organized,
+                           'title': (m.info.title if m.info else None)})
+                else:
+                    fail += 1
+                    q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
+                           'ok': False, 'organized': False})
+            q.put({'type': 'all_done', 'success': success, 'fail': fail, 'total': total})
+            q.put(None)
 
         threading.Thread(target=run, daemon=True).start()
         while True:

@@ -12,7 +12,40 @@
             <template #append><el-button type="primary" @click="doScan">扫描</el-button></template>
           </el-input>
           <el-alert v-if="scanMsg" :title="scanMsg" type="info" style="margin-top: 10px; max-width: 600px" />
-          <el-table v-if="movies.length" :data="movies" style="margin-top: 14px" max-height="62vh">
+
+          <div v-if="movies.length" style="margin-top: 14px">
+            <el-button :disabled="!selectedGuids.length || batch.running" type="primary" @click="doBatch(false)">
+              批量刮削（{{ selectedGuids.length }}）
+            </el-button>
+            <el-button :disabled="!selectedGuids.length || batch.running" type="success" @click="doBatch(true)">
+              批量刮削并整理（{{ selectedGuids.length }}）
+            </el-button>
+            <el-alert v-if="batch.running || batch.log.length" style="margin-top: 12px" :closable="false">
+              <template #title>
+                批量任务：第 {{ batch.index }}/{{ batch.total }} 部 · {{ batch.current }}
+                <span v-if="batch.done"> → 成功 {{ batch.done.success }} / 失败 {{ batch.done.fail }}</span>
+              </template>
+              <div>
+                <el-tag v-for="c in batch.crawlers" :key="c.crawler" :type="tagType(c.status)" style="margin: 2px">
+                  {{ c.crawler }}: {{ c.status }}
+                </el-tag>
+              </div>
+              <el-table v-if="batch.log.length" :data="batch.log" style="margin-top: 10px" max-height="40vh">
+                <el-table-column prop="index" label="#" width="60" />
+                <el-table-column prop="avid" label="番号" width="160" />
+                <el-table-column label="结果" width="100">
+                  <template #default="{ row }">
+                    <el-tag :type="row.ok ? 'success' : 'danger'">{{ row.ok ? '成功' : '失败' }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="title" label="标题" min-width="200" />
+              </el-table>
+            </el-alert>
+          </div>
+
+          <el-table v-if="movies.length" :data="movies" style="margin-top: 14px" max-height="55vh"
+                    @selection-change="onSelect" ref="movieTable">
+            <el-table-column type="selection" width="48" />
             <el-table-column prop="dvdid" label="番号" width="140" />
             <el-table-column prop="cid" label="CID" width="140" />
             <el-table-column prop="data_src" label="类型" width="100" />
@@ -81,10 +114,11 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as api from './api.js'
 
-const version = ref('0.1.1')
+const version = ref('0.1.2')
 const active = ref('scan')
 const scanPath = ref('')
 const movies = ref([])
+const selectedGuids = ref([])
 const scanMsg = ref('')
 const taskLog = ref('')
 const avid = ref('')
@@ -92,6 +126,12 @@ const scrapeProgress = ref([])
 const scrapeInfo = ref(null)
 const configText = ref('')
 const configMsg = ref('')
+
+const batch = ref({ running: false, index: 0, total: 0, current: '', crawlers: [], log: [], done: null })
+
+function onSelect(rows) {
+  selectedGuids.value = rows.map((r) => r.guid)
+}
 
 async function doScan() {
   scanMsg.value = '扫描中...'
@@ -142,6 +182,37 @@ async function doScrape() {
     if (d.type === 'result') scrapeInfo.value = d.info
     if (d.type === 'error') ElMessage.error(d.msg)
   })
+}
+
+async function doBatch(organize) {
+  if (!selectedGuids.value.length) {
+    ElMessage.warning('请先勾选影片')
+    return
+  }
+  batch.value = { running: true, index: 0, total: selectedGuids.value.length, current: '', crawlers: [], log: [], done: null }
+  try {
+    await api.batchStream({ guids: selectedGuids.value, organize }, (d) => {
+      if (d.type === 'movie_start') {
+        batch.value.index = d.index
+        batch.value.total = d.total
+        batch.value.current = d.avid
+        batch.value.crawlers = []
+      } else if (d.type === 'progress') {
+        const i = batch.value.crawlers.findIndex((c) => c.crawler === d.crawler)
+        if (i >= 0) batch.value.crawlers[i].status = d.status
+        else batch.value.crawlers.push({ crawler: d.crawler, status: d.status })
+      } else if (d.type === 'movie_done') {
+        batch.value.log.push({ index: d.index, avid: d.avid, ok: d.ok, title: d.title })
+      } else if (d.type === 'all_done') {
+        batch.value.running = false
+        batch.value.done = { success: d.success, fail: d.fail, total: d.total }
+        ElMessage.success(`批量完成：成功 ${d.success} / 失败 ${d.fail}`)
+      }
+    })
+  } catch (e) {
+    batch.value.running = false
+    ElMessage.error('批量任务中断: ' + e.message)
+  }
 }
 
 function tagType(s) {
