@@ -79,16 +79,25 @@ def import_crawlers():
 
 
 def _summarize_sources(all_info: Dict[str, MovieInfo]) -> dict:
-    """把各站点抓取结果转为可 JSON 序列化的摘要, 供 Web 端展示每站点贡献/失败原因"""
+    """把各站点抓取结果转为可 JSON 序列化的摘要, 供 Web 端展示每站点贡献/失败原因
+
+    注意 `dvdid` 是 MovieInfo 构造时填入的**输入番号**, 并非抓取成果——即便站点
+    未收录该番号它也非空, 因此不能拿它判断站点是否有贡献。判据统一放在
+    `contributed` 字段(仅依据实际抓取到的内容), 避免前端各自猜测导致口径不一致。
+    """
     out = {}
     for name, info in all_info.items():
+        has_cover = bool(info.cover)
+        has_genre = bool(info.genre)
+        has_actress = bool(info.actress)
         out[name] = {
             'dvdid': info.dvdid,
             'title': info.title,
-            'has_cover': bool(info.cover),
-            'has_genre': bool(info.genre),
-            'has_actress': bool(info.actress),
+            'has_cover': has_cover,
+            'has_genre': has_genre,
+            'has_actress': has_actress,
             'uncensored': info.uncensored,
+            'contributed': bool(has_cover or has_genre or has_actress),
         }
     return out
 

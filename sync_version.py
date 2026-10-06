@@ -41,10 +41,30 @@ def read_pyproject_version():
     return m.group(1)
 
 
+def _detect_newline(path, default='\n'):
+    """探测文件当前使用的换行符
+
+    Windows 上以默认文本模式写文件会把 LF 一律转成 CRLF；仓库里这些文件原本是 LF，
+    一次同步就会让 README / package-lock 产生「整文件重写」的 diff 噪声，真实改动被淹没。
+    故写入前探测原换行符并原样保留。
+    """
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(65536)
+    except OSError:
+        return default
+    crlf = head.count(b'\r\n')
+    lf = head.count(b'\n') - crlf
+    return '\r\n' if crlf > lf else '\n'
+
+
 def _dump_json(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write('\n')
+    nl = _detect_newline(path)
+    text = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
+    if nl != '\n':
+        text = text.replace('\n', nl)
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(text)
 
 
 def check_package_json(ver):
@@ -96,11 +116,12 @@ def check_readme(ver):
 
 
 def sync_readme(ver):
-    with open(README, 'r', encoding='utf-8') as f:
+    # newline='' 关闭换行转换，保持仓库原有的 LF（否则整份 README 都会变成 CRLF 改动）
+    with open(README, 'r', encoding='utf-8', newline='') as f:
         text = f.read()
     text = _BADGE_RE.sub(lambda m: m.group(1) + ver + m.group(3), text)
     text = _CURRENT_RE.sub(lambda m: m.group(1) + ver + m.group(3), text)
-    with open(README, 'w', encoding='utf-8') as f:
+    with open(README, 'w', encoding='utf-8', newline='') as f:
         f.write(text)
 
 

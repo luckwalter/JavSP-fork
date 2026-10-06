@@ -138,6 +138,26 @@
 
 ---
 
+## v0.1.10 — 前端消费每站点贡献（sources）+ 修复贡献判据失真
+
+- **背景**：v0.1.6 已把各站点抓取结果经 `_summarize_sources()` 透传到 SSE（`/api/scrape` 的 result、`/api/batch` 的 movie_done），但前端一直没消费，数据白传。本轮补齐展示层。
+- **Added 批量页展示每站点贡献**：批量任务结果表格新增**展开行**，展开后可见该部影片各站点的明细——站点名、站点番号、站点标题、贡献字段（封面 / 分类 / 女优），无贡献的站点标注「无贡献」，另有「无码」标记。
+- **Added 批量页新增「数据源」列**：以 `有效站点/总站点`（如 `3/8 站点`）直接反映本次刮削的数据来源质量，不用展开也能看出哪些片子是靠少数站点拼出来的。
+- **Added 单部刮削页展示各站点贡献**：`/api/scrape` 的 result 本就带 `sources`，此前前端丢弃了；现补「各站点贡献」卡片，与批量页口径一致。
+- **Fixed 贡献判据失真（本轮实测发现，见 Issue #9）**：`sources` 里的 `dvdid` 是 `MovieInfo` 构造时填入的**输入番号**，站点未收录时它**依然非空**。前端初版拿 `dvdid || has_cover || has_genre || has_actress` 判贡献，导致**所有站点永远显示「有贡献」（8/8）**，新增的「数据源」列完全失去意义。修法：后端 `_summarize_sources()` 新增权威字段 `contributed`（仅依据实际抓取到的封面 / 分类 / 女优），前端优先取该值，后端缺失时回退本地判据（同样不把 `dvdid` 算作贡献）。
+- **Fixed `sync_version.py` 把 LF 写成 CRLF，污染每次发版的提交记录**（发版时顺带发现）：
+  - 现象：发版跑完同步后，`README.md` / `frontend/package-lock.json` 出现**整文件重写**级别的 diff（README 174 行全变、package-lock 1426 行全变），真实改动被淹没，review 时无法看出改了什么。
+  - 根因：Python 在 Windows 上以默认文本模式写文件会把 LF 一律转成 CRLF；脚本读写时未加 `newline=''`，于是仓库原本的 LF 文件被整体转成 CRLF。
+  - 修复：写入前探测文件原换行符并原样保留（`_detect_newline()` + `newline=''`）；已把三个被污染的文件还原回 LF。修复后 `package-lock.json` 的 diff 从「1426 行全变」缩回**仅 2 行**（版本号两处）。
+  - 顺带修正：README 徽章之间被插入空行（会导致徽章在 GitHub 上换行显示而非并排），已恢复为连续三行。
+- 验证：新增 `verify_sources_e2e.py`（**22/22 PASS**），覆盖后端 SSE 透传结构、失败部判据、以及前端转换函数。
+  - 前端函数用例的做法值得一提：**从 `App.vue` 源码里正则提取 `sourceRows`/`sourceSummary` 求值后执行**，测的是真实源码而非副本，避免「测试与实现漂移」。
+- 回归：`verify_scrape_refactor.py` 7/7、`verify_batch_e2e.py` 11/11 全绿；`npm run build` 通过。
+- README 同步：功能列表补「每站点贡献」说明，开发章节补 `verify_sources_e2e.py`；三处版本引用均同步至 0.1.10。
+- 关联 commit：本提交（v0.1.10 同笔提交：`javsp/core.py` + `frontend/src/App.vue` + `verify_sources_e2e.py` + `README.md` + `frontend/package.json` + `frontend/package-lock.json` + `pyproject.toml`）
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复
@@ -180,6 +200,13 @@
    - 根因：`sync_version.py` 只同步了 `frontend/package.json`，漏掉 lock 与 README；且发版流程里没有明文规定要更新 README。
    - 修复：`sync_version.py` 扩展为同步三处（package.json / package-lock.json / README）并提供 `--check` 门禁；README 与 CHANGELOG 均写入「发版清单」固化流程（v0.1.9）。
 
+9. **【功能 bug】`sources` 的 `dvdid` 是输入番号而非抓取成果，导致「站点贡献」判据失真**
+   - 现象：为批量页新增「数据源（有效站点/总站点）」列后，实测失败部（站点未收录）依然显示 **8/8 站点**有贡献，该列完全失去意义。
+   - 根因：`_summarize_sources()` 输出的 `dvdid` 来自 `MovieInfo` 构造时填入的**输入番号**——即便站点根本没收录这部片子，它也**始终非空**。前端初版判据为 `dvdid || has_cover || has_genre || has_actress`，只要 `dvdid` 非空就判为「有贡献」，于是所有站点恒为有效。
+   - 实证（失败部 SSIS-456 的 sources 片段）：`{'airav': {'dvdid': 'SSIS-456', 'title': None, 'has_cover': False, 'has_genre': False, 'has_actress': False, ...}}` —— 番号非空但无任何成果字段。
+   - 修复：后端 `_summarize_sources()` 新增权威字段 `contributed`（仅依据实际抓到的封面 / 分类 / 女优）；前端优先取该值，缺失时回退本地判据且**同样不把 `dvdid` 算作贡献**（v0.1.10）。
+   - 教训：判断「抓取成果」时，要分清字段是**输入**还是**输出**；`dvdid` 这类输入回声字段看着像成果，实则恒定非空，极易污染判据。
+
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 
 | 检查项 | 结论 |
@@ -197,6 +224,9 @@
 
 - ~~**【版本一致性】前端版本号未同步**~~ → **已于 v0.1.7 解决**
   已建立单一版本源 `javsp/version.py`（实读 `pyproject.toml`，元数据兜底）；前端改为运行时从 `/api/health` 取版本号，不再硬编码；新增 `sync_version.py` 同步 `frontend/package.json`。
+
+- ~~**【数据透传】前端未消费 v0.1.6 已透传的 `sources`（每站点贡献）**~~ → **已于 v0.1.10 解决**
+  批量页新增展开行展示各站点贡献 + 「数据源（有效/总数）」列，单部刮削页新增「各站点贡献」卡片；并借此发现并修复了 Issue #9（贡献判据把输入番号 `dvdid` 误当成果）。
 
 - **【联调】批量流程：合成片源已跑通，仅剩真实联网抓取待验**
   `/api/batch` 全链路（扫描 → 批量刮削 → 整理落盘）已由 `verify_batch_e2e.py` 用**合成片源 + mock 爬虫/下载**跑通（11/11 PASS），并借此发现并修复了 Issue #7。

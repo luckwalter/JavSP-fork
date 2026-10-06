@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.9-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.10-blue.svg)
 
 ## 功能特点
 
@@ -51,17 +51,15 @@
 - **爬虫层 `javsp/web/*`**：原项目纯逻辑（番号 → `MovieInfo`），零改动直接复用，是后端最稳的底座。
 - **核心层 `javsp/core.py`**：从 CLI 抽出的编排逻辑，带进度回调，对外暴露 `scrape_movie()` / `organize_movie()` / `preview_metadata()` / `scan_library()`，CLI 与 Web 共用。
 - **后端 `javsp/server.py`**：实现 `pyproject.toml` 预留的 `javsp.server:entry` 入口，接口如下：
-
-  | 接口 | 说明 |
-  |------|------|
-  | `GET /api/health` | 健康检查，同时返回服务端版本号 |
-  | `POST /api/scan` | 扫描影片目录，返回影片列表并分配 `guid` |
-  | `GET /api/movies` | 列出当前内存中的影片任务 |
-  | `POST /api/scrape` | 单部刮削，SSE 推送各爬虫进度 |
-  | `POST /api/organize` | 单部整理（NFO + 封面 + 重命名），SSE 推送进度 |
-  | `POST /api/batch` | **批量**刮削（可选附带整理），SSE 推送逐部 + 整体进度 |
-  | `GET` / `PUT /api/config` | 读取 / 写回 `config.yml` |
-
+  | 接口                        | 说明                               |
+  | ------------------------- | -------------------------------- |
+  | `GET /api/health`         | 健康检查，同时返回服务端版本号                  |
+  | `POST /api/scan`          | 扫描影片目录，返回影片列表并分配 `guid`          |
+  | `GET /api/movies`         | 列出当前内存中的影片任务                     |
+  | `POST /api/scrape`        | 单部刮削，SSE 推送各爬虫进度                 |
+  | `POST /api/organize`      | 单部整理（NFO + 封面 + 重命名），SSE 推送进度    |
+  | `POST /api/batch`         | **批量**刮削（可选附带整理），SSE 推送逐部 + 整体进度 |
+  | `GET` / `PUT /api/config` | 读取 / 写回 `config.yml`             |
 - **前端 `frontend/`**：Vue3 + Vite + Element Plus，含扫描、单部刮削、**批量任务**、设置等页面。
 
 ## 快速开始
@@ -108,7 +106,7 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 ## 使用
 
 1. **扫描**：Web 界面「扫描」页填入影片目录，列出待处理影片。
-2. **刮削**：单部输入番号即可刮削并预览（封面 / 女优 / genre）；批量可发起任务并实时看进度（SSE）。
+2. **刮削**：单部输入番号即可刮削并预览（封面 / 女优 / genre）；批量可发起任务并实时看进度（SSE）。刮削结果会展示**每站点贡献**（哪个站点提供了封面 / 分类 / 女优），便于判断数据质量与排查单站点失效。
 3. **整理**：预览确认后一键生成 NFO、下载封面并按规则重命名整理到媒体库目录。
 4. **配置**：「设置」页可调整刮削源、代理、命名规则等（`config.yml`）。
 
@@ -122,21 +120,21 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.9**
+当前版本：**0.1.10**
 
-> 完整的版本迭代记录与问题修复见 **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
+> 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 
 ### 发版清单
 
 版本号以 `pyproject.toml` 为准，**发版时以下四处需一起更新**（漏改就会出现版本漂移）：
 
-| 文件 | 位置 | 同步方式 |
-|------|------|----------|
-| `pyproject.toml` | `version` 字段 | 手动改（唯一权威来源） |
-| `frontend/package.json` | `version` | `python sync_version.py` 自动同步 |
-| `frontend/package-lock.json` | `version`、`packages[""].version` | 同上 |
-| `README.md` | 版本徽章、`当前版本：**x.y.z**` | 同上 |
-| `CHANGELOG_FORK.md` | 新增版本条目 | 手动补 |
+| 文件                           | 位置                               | 同步方式                          |
+| ---------------------------- | -------------------------------- | ----------------------------- |
+| `pyproject.toml`             | `version` 字段                     | 手动改（唯一权威来源）                   |
+| `frontend/package.json`      | `version`                        | `python sync_version.py` 自动同步 |
+| `frontend/package-lock.json` | `version`、`packages[""].version` | 同上                            |
+| `README.md`                  | 版本徽章、`当前版本：**x.y.z**`            | 同上                            |
+| `CHANGELOG_FORK.md`          | 新增版本条目                           | 手动补                           |
 
 ```bash
 python sync_version.py          # 写入同步（package.json / package-lock.json / README.md）
@@ -153,12 +151,13 @@ python sync_version.py --check  # 只校验，任何一处不一致则以退出�
 
 仓库根目录附带若干**纯逻辑验证脚本**（不联网，可直接运行），改动后跑一遍可快速自查：
 
-| 脚本 | 覆盖内容 |
-|------|----------|
+| 脚本                          | 覆盖内容                                       |
+| --------------------------- | ------------------------------------------ |
 | `verify_scrape_refactor.py` | 刮削打磨项：并发限流 / 重试退避 / genre 合并 / 封面容错 / 站点透传 |
-| `verify_batch_e2e.py` | 批量端到端：合成片源 + mock 爬虫，覆盖扫描 → 批量刮削 → 整理落盘 |
-| `verify_k4.py` | 历史 bug 回归守卫（`all_info` 键名切片） |
-| `verify_robust.py` | 历史 bug 回归守卫（爬虫加载健壮性） |
+| `verify_batch_e2e.py`       | 批量端到端：合成片源 + mock 爬虫，覆盖扫描 → 批量刮削 → 整理落盘    |
+| `verify_sources_e2e.py`     | 每站点贡献：SSE 透传结构 + 前端转换函数（直接从 App.vue 源码提取求值，防测试与实现漂移） |
+| `verify_k4.py`              | 历史 bug 回归守卫（`all_info` 键名切片）               |
+| `verify_robust.py`          | 历史 bug 回归守卫（爬虫加载健壮性）                       |
 
 ## 问题反馈
 

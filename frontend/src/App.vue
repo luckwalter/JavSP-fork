@@ -31,11 +31,41 @@
                 </el-tag>
               </div>
               <el-table v-if="batch.log.length" :data="batch.log" style="margin-top: 10px" max-height="40vh">
+                <el-table-column type="expand">
+                  <template #default="{ row }">
+                    <div style="padding: 4px 10px">
+                      <div v-if="!sourceRows(row.sources).length" style="font-size: 12px; color: #999">
+                        无站点数据（该部未成功抓取或全部站点无贡献）
+                      </div>
+                      <el-table v-else :data="sourceRows(row.sources)" size="small" border>
+                        <el-table-column prop="site" label="站点" width="90" />
+                        <el-table-column prop="dvdid" label="番号" width="110" />
+                        <el-table-column prop="title" label="站点标题" min-width="160" />
+                        <el-table-column label="贡献字段" width="210">
+                          <template #default="{ row: s }">
+                            <el-tag v-if="s.has_cover" size="small" type="success" style="margin: 2px">封面</el-tag>
+                            <el-tag v-if="s.has_genre" size="small" type="warning" style="margin: 2px">分类</el-tag>
+                            <el-tag v-if="s.has_actress" size="small" style="margin: 2px">女优</el-tag>
+                            <el-tag v-if="!s.contributed" size="small" type="info" style="margin: 2px">无贡献</el-tag>
+                          </template>
+                        </el-table-column>
+                        <el-table-column label="无码" width="70">
+                          <template #default="{ row: s }">{{ s.uncensored ? '是' : '-' }}</template>
+                        </el-table-column>
+                      </el-table>
+                    </div>
+                  </template>
+                </el-table-column>
                 <el-table-column prop="index" label="#" width="60" />
                 <el-table-column prop="avid" label="番号" width="160" />
                 <el-table-column label="结果" width="100">
                   <template #default="{ row }">
                     <el-tag :type="row.ok ? 'success' : 'danger'">{{ row.ok ? '成功' : '失败' }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="数据源" width="110">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="row.ok ? 'success' : 'info'">{{ sourceSummary(row.sources) }}</el-tag>
                   </template>
                 </el-table-column>
                 <el-table-column prop="title" label="标题" min-width="200" />
@@ -94,6 +124,27 @@
                 <el-descriptions-item label="评分">{{ scrapeInfo.score }}</el-descriptions-item>
               </el-descriptions>
             </div>
+          </el-card>
+          <el-card v-if="sourceRows(scrapeSources).length" style="margin-top: 14px; max-width: 860px">
+            <template #header>
+              各站点贡献（{{ sourceSummary(scrapeSources) }}）
+            </template>
+            <el-table :data="sourceRows(scrapeSources)" size="small" border>
+              <el-table-column prop="site" label="站点" width="90" />
+              <el-table-column prop="dvdid" label="番号" width="110" />
+              <el-table-column prop="title" label="站点标题" min-width="180" />
+              <el-table-column label="贡献字段" width="210">
+                <template #default="{ row: s }">
+                  <el-tag v-if="s.has_cover" size="small" type="success" style="margin: 2px">封面</el-tag>
+                  <el-tag v-if="s.has_genre" size="small" type="warning" style="margin: 2px">分类</el-tag>
+                  <el-tag v-if="s.has_actress" size="small" style="margin: 2px">女优</el-tag>
+                  <el-tag v-if="!s.contributed" size="small" type="info" style="margin: 2px">无贡献</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="无码" width="70">
+                <template #default="{ row: s }">{{ s.uncensored ? '是' : '-' }}</template>
+              </el-table-column>
+            </el-table>
           </el-card>
         </el-tab-pane>
 
@@ -177,6 +228,7 @@ const taskLog = ref('')
 const avid = ref('')
 const scrapeProgress = ref([])
 const scrapeInfo = ref(null)
+const scrapeSources = ref(null)
 const configObj = ref(null)
 const configMsg = ref('')
 
@@ -208,10 +260,12 @@ async function doScan() {
 async function scrapeTask(row) {
   scrapeProgress.value = []
   scrapeInfo.value = null
+  scrapeSources.value = null
   await api.scrapeStream({ guid: row.guid }, (d) => {
     if (d.type === 'progress') scrapeProgress.value.push({ crawler: d.crawler, status: d.status })
     if (d.type === 'result') {
       scrapeInfo.value = d.info
+      scrapeSources.value = d.sources || null
       row.scraped = true
       ElMessage.success('刮削完成')
     }
@@ -237,9 +291,13 @@ async function organizeTask(row) {
 async function doScrape() {
   scrapeProgress.value = []
   scrapeInfo.value = null
+  scrapeSources.value = null
   await api.scrapeStream({ avid: avid.value }, (d) => {
     if (d.type === 'progress') scrapeProgress.value.push({ crawler: d.crawler, status: d.status })
-    if (d.type === 'result') scrapeInfo.value = d.info
+    if (d.type === 'result') {
+      scrapeInfo.value = d.info
+      scrapeSources.value = d.sources || null
+    }
     if (d.type === 'error') ElMessage.error(d.msg)
   })
 }
@@ -262,7 +320,7 @@ async function doBatch(organize) {
         if (i >= 0) batch.value.crawlers[i].status = d.status
         else batch.value.crawlers.push({ crawler: d.crawler, status: d.status })
       } else if (d.type === 'movie_done') {
-        batch.value.log.push({ index: d.index, avid: d.avid, ok: d.ok, title: d.title })
+        batch.value.log.push({ index: d.index, avid: d.avid, ok: d.ok, title: d.title, sources: d.sources })
       } else if (d.type === 'all_done') {
         batch.value.running = false
         batch.value.done = { success: d.success, fail: d.fail, total: d.total }
@@ -273,6 +331,39 @@ async function doBatch(organize) {
     batch.value.running = false
     ElMessage.error('批量任务中断: ' + e.message)
   }
+}
+
+// 后端 sources 结构: { 站点名: { dvdid, title, has_cover, has_genre, has_actress, uncensored, contributed } }
+// 转成表格行。contributed 优先取后端权威值；后端缺失时回退到本地判据。
+// 注意: dvdid 是「输入番号」而非抓取成果(站点未收录时它依然非空), 绝不能拿它判断贡献。
+function sourceRows(sources) {
+  if (!sources || typeof sources !== 'object') return []
+  return Object.keys(sources).map((site) => {
+    const s = sources[site] || {}
+    const hasCover = !!s.has_cover
+    const hasGenre = !!s.has_genre
+    const hasActress = !!s.has_actress
+    return {
+      site,
+      dvdid: s.dvdid || '-',
+      title: s.title || '-',
+      has_cover: hasCover,
+      has_genre: hasGenre,
+      has_actress: hasActress,
+      uncensored: !!s.uncensored,
+      contributed: typeof s.contributed === 'boolean'
+        ? s.contributed
+        : !!(hasCover || hasGenre || hasActress),
+    }
+  })
+}
+
+// 汇总成「有效站点/总站点」短文本, 用于列表列
+function sourceSummary(sources) {
+  const rows = sourceRows(sources)
+  if (!rows.length) return '无数据'
+  const ok = rows.filter((r) => r.contributed).length
+  return `${ok}/${rows.length} 站点`
 }
 
 function tagType(s) {
