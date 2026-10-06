@@ -52,6 +52,14 @@
 - 新增验证脚本 `verify_robust.py`（模拟某爬虫导入失败，确认两处均不崩、正常返回其余站点）。
 - 关联 commit：`bb69fe1`
 
+### v0.1.5（2026-10-07）— 修复 all_info 键名切片 bug（小变更）
+- **Fixed** `parallel_crawler` 末尾冗余的 `all_info = {k[4:]: v for ...}` 切片。
+  - 根因：该切片注释声称「删除键名中的 `web.`」，但 `all_info` 的键取自 `CrawlerID.value`（如 `'airav'` / `'javdb'`），本就不带 `web.` 前缀；`k[4:]` 会把 `'airav'→'v'`、`'javdb'→'db'`、`'javbus'→'bus'` 等错误切割。
+  - 后果：`info_summary` 中 `if 'javdb' in all_info`（genre 特判）与 `all_info.get('javdb')`（封面水印处理）全部匹配不到，javdb 的 genre 汇总与封面优先级逻辑**彻底失效**。该 bug 对 CLI 与 Web 模式均生效（`parallel_crawler` 为共用逻辑）。
+  - 修复：删除该切片行，保留 `CrawlerID.value` 原始键名；`info_summary` 按站点名特判恢复正常。
+- 新增验证脚本 `verify_k4.py`：mock 各爬虫 `parse_data` 后真跑 `parallel_crawler`，断言返回键为 `'javdb'` 等原始形式（`'javdb' in keys = True`）；修复前返回 `'v'/'db'/'bus'` 等被切片段。
+- 关联 commit：本提交（v0.1.5 同笔提交：`javsp/core.py` + `pyproject.toml` + `CHANGELOG_FORK.md`）
+
 ---
 
 ## 问题排查与修复（Issue 记录）
@@ -69,6 +77,11 @@
 3. **【误报澄清】FastAPI `TestClient` 下 `import_crawlers` 不生效导致 KeyError**
    - 结论：是 `TestClient` 的 `lifespan` 未执行 `import_crawlers` 的**测试框架假阳性**；真实 `uvicorn` 部署下爬虫正常导入并运行，非部署 bug。验证方式见下方「启动炸弹排查」。
 
+4. **【功能 bug】`parallel_crawler` 末尾 `k[4:]` 键名切片破坏 `info_summary` 站点特判**
+   - 根因：`all_info` 的键为 `CrawlerID.value`（不带 `web.` 前缀，如 `'airav'` / `'javdb'`），`k[4:]` 误切前缀导致 `'javdb'→'db'`。
+   - 影响：`info_summary` 中针对 `javdb` 的 genre 汇总、封面水印优先级处理（`use_javdb_cover`）全部失效（CLI / Web 共用逻辑，故两种模式都受影响）。
+   - 修复：删除该切片行，恢复 `CrawlerID.value` 原始键名（v0.1.5）。
+
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 
 | 检查项 | 结论 |
@@ -83,9 +96,6 @@
 ---
 
 ## 已知待解决（Backlog）
-
-- **【功能 bug】`core.py` 第 171 行 `all_info = {k[4:]: v for ...}`**
-  假设 key 带 `javsp.` 前缀做切片，但当前 `CrawlerID.value`（如 `'airav'`）不带前缀，`k[4:]` 会把 key 切成 `'v'`。这导致 `info_summary` 里 `if 'javdb' in all_info` 等针对 `javdb` 封面 / genre 的特殊处理全部失效。计划「具体功能改造」阶段一并修正。
 
 - **【版本一致性】前端版本号未同步**
   `frontend/package.json` 的 `version` 仍停留在 `0.1.1`，未随发版递增。建议后续统一为单一版本源（以 `pyproject.toml` 为准），避免前后端版本漂移。

@@ -173,8 +173,7 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
     all_info = {k: v for k, v in all_info.items() if hasattr(v, 'success')}
     for info in all_info.values():
         del info.success
-    # 删除all_info中键名中的'web.'
-    all_info = {k[4:]: v for k, v in all_info.items()}
+    # all_info 的键为 CrawlerID.value(如 'airav'/'javdb'), 供 info_summary 按站点名做特判(genre/封面水印), 无需裁剪前缀
     return all_info
 
 
