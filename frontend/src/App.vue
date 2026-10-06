@@ -2,7 +2,7 @@
   <el-container style="height: 100vh">
     <el-header style="display: flex; align-items: center; font-size: 20px; font-weight: bold; border-bottom: 1px solid #eee">
       JavSP WebUI
-      <span style="margin-left: 8px; font-size: 12px; color: #888">v{{ version }}</span>
+      <span v-if="version" style="margin-left: 8px; font-size: 12px; color: #888">v{{ version }}</span>
     </el-header>
     <el-main>
       <el-tabs v-model="active">
@@ -154,11 +154,20 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as api from './api.js'
 
-const version = ref('0.1.3')
+// 版本号不再前端硬编码: 单一版本源是后端 pyproject.toml, 启动时从 /api/health 拉取
+const version = ref('')
+onMounted(async () => {
+  try {
+    const h = await api.getHealth()
+    version.value = h.version || ''
+  } catch (_) {
+    /* 后端不可达时留空不显示, 不影响页面功能 */
+  }
+})
 const active = ref('scan')
 const scanPath = ref('')
 const movies = ref([])

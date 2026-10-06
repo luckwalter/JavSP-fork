@@ -16,6 +16,13 @@ export async function getMovies() {
   return r.json()
 }
 
+// 健康检查(同时用于获取服务端版本号, 单一版本源在后端 pyproject.toml)
+export async function getHealth() {
+  const r = await fetch(BASE + '/api/health')
+  if (!r.ok) throw new Error('health check failed')
+  return r.json()
+}
+
 export async function getConfig() {
   const r = await fetch(BASE + '/api/config')
   if (!r.ok) throw new Error((await r.json()).detail || 'config get failed')

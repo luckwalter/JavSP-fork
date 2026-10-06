@@ -32,12 +32,9 @@ logger = logging.getLogger('javsp.server')
 # 运行内存中的任务缓存: guid -> Movie
 TASKS: Dict[str, Movie] = {}
 
-# 版本号(与 pyproject.toml 保持一致, 后续随发版更新)
-try:
-    import importlib.metadata as meta
-    __version__ = meta.version('javsp')
-except Exception:
-    __version__ = '0.1.1'
+# 版本号: 单一版本源 = pyproject.toml(实读; 不再用已安装元数据优先, 避免 editable install 快照滞后导致版本漂移)
+from javsp.version import get_version
+__version__ = get_version()
 
 
 def assign_guid(movie: Movie) -> str:
