@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "javsp"
-version = "0.0.1"
+version = "0.1.1"
 description = "汇总多站点数据的AV元数据刮削器"
 authors = ["Yuukiy <76897913+Yuukiy@users.noreply.github.com>"]
 license = "GPL-3.0-only"
@@ -24,6 +24,12 @@ confz = "^2.0.1"
 pydantic-extra-types = "^2.9.0"
 pendulum = "^3.0.0"
 slimeface = "^2024.9.27"
+# WebUI 后端依赖
+fastapi = "^0.111.0"
+uvicorn = {extras = ["standard"], version = "^0.30.0"}
+python-multipart = "^0.0.9"
+# 桌面端(PyWebView)依赖
+pywebview = "^5.0.0"
 
 [tool.poetry.scripts]
 javsp = "javsp.__main__:entry"
