@@ -10,6 +10,7 @@ import json
 import time
 import logging
 import threading
+import concurrent.futures as cf
 from typing import Dict, List, Callable, Optional
 
 import requests
@@ -27,7 +28,7 @@ from javsp.datatype import Movie, MovieInfo
 from javsp.web.base import download
 from javsp.web.exceptions import *
 from javsp.web.translate import translate_movie_info
-from javsp.config import Cfg, CrawlerID
+from javsp.config import Cfg, CrawlerID, UseJavDBCover
 from javsp.cropper import get_cropper
 from javsp.avid import guess_av_type, get_id
 
@@ -77,6 +78,21 @@ def import_crawlers():
         logger.warning('配置的抓取器无效: ' + ', '.join(unknown_mods))
 
 
+def _summarize_sources(all_info: Dict[str, MovieInfo]) -> dict:
+    """把各站点抓取结果转为可 JSON 序列化的摘要, 供 Web 端展示每站点贡献/失败原因"""
+    out = {}
+    for name, info in all_info.items():
+        out[name] = {
+            'dvdid': info.dvdid,
+            'title': info.title,
+            'has_cover': bool(info.cover),
+            'has_genre': bool(info.genre),
+            'has_actress': bool(info.actress),
+            'uncensored': info.uncensored,
+        }
+    return out
+
+
 # progress_cb: 可选回调, 签名为 (crawler_name: str, status: str) -> None
 #   status 取值: start / success / not_found / duplicate / blocked / error
 ProgressCb = Optional[Callable[[str, str], None]]
@@ -85,9 +101,9 @@ ProgressCb = Optional[Callable[[str, str], None]]
 # 爬虫是IO密集型任务，可以通过多线程提升效率
 def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None):
     """使用多线程抓取不同网站的数据"""
-    def wrapper(parser, info: MovieInfo, retry):
+    def wrapper(parser, info: MovieInfo, retry, crawler_name=None):
         """对抓取器函数进行包装，便于更新提示信息和自动重试"""
-        crawler_name = threading.current_thread().name
+        crawler_name = crawler_name or threading.current_thread().name
         task_info = f'Crawler: {crawler_name}: {info.dvdid}'
         if callable(progress_cb):
             progress_cb(crawler_name, 'start')
@@ -121,6 +137,9 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
                 logger.debug(f'{crawler_name}: 网络错误，正在重试 ({cnt+1}/{retry}): \n{repr(e)}')
                 if isinstance(tqdm_bar, tqdm):
                     tqdm_bar.set_description(f'{crawler_name}: 网络错误，正在重试')
+                # 指数退避, 避免连续重试同一站点触发风控(封顶 8s)
+                if cnt < retry - 1:
+                    time.sleep(min(2 ** cnt, 8))
             except Exception as e:
                 logger.exception(e)
                 if callable(progress_cb):
@@ -137,27 +156,43 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
             i.dvdid = None
         for i in Cfg().crawler.selection.normal:
             all_info[i.value] = MovieInfo(movie.dvdid)
-    thread_pool = []
-    for mod_partial, info in all_info.items():
-        mod = f"javsp.web.{mod_partial}"
-        # 健壮性: 抓取器未被成功导入(依赖缺失等被 import_crawlers 跳过)时直接跳过, 避免 KeyError 拖垮整次刮削
-        if mod not in sys.modules:
-            logger.warning(f'抓取器 {mod} 未加载, 跳过该站点')
-            continue
-        parser = getattr(sys.modules[mod], 'parse_data')
-        # 将all_info中的info实例传递给parser，parser抓取完成后，info实例的值已经完成更新
-        # TODO: 抓取器如果带有parse_data_raw，说明它已经自行进行了重试处理，此时将重试次数设置为1
-        if hasattr(sys.modules[mod], 'parse_data_raw'):
-            th = threading.Thread(target=wrapper, name=mod, args=(parser, info, 1))
-        else:
-            th = threading.Thread(target=wrapper, name=mod, args=(parser, info, Cfg().network.retry))
-        th.start()
-        thread_pool.append(th)
-    # 等待所有线程结束
-    timeout = Cfg().network.retry * Cfg().network.timeout.total_seconds()
-    for th in thread_pool:
-        th: threading.Thread
-        th.join(timeout=timeout)
+    # 并发上限: 通过线程池控制, 避免瞬时全开爬虫打爆出口/代理/触发反爬
+    max_workers = Cfg().crawler.max_concurrency
+    # 单爬虫最坏耗时 = retry * 单次请求超时; 并发下整体最坏约等同单爬虫, 留余量
+    per_crawler_worst = Cfg().network.retry * Cfg().network.timeout.total_seconds()
+    overall_timeout = per_crawler_worst + 15
+
+    executor = cf.ThreadPoolExecutor(max_workers=max_workers)
+    futures = []
+    try:
+        for mod_partial, info in all_info.items():
+            mod = f"javsp.web.{mod_partial}"
+            # 健壮性: 抓取器未被成功导入(依赖缺失等被 import_crawlers 跳过)时直接跳过, 避免 KeyError 拖垮整次刮削
+            if mod not in sys.modules:
+                logger.warning(f'抓取器 {mod} 未加载, 跳过该站点')
+                continue
+            parser = getattr(sys.modules[mod], 'parse_data')
+            # 将all_info中的info实例传递给parser，parser抓取完成后，info实例的值已经完成更新
+            # TODO: 抓取器如果带有parse_data_raw，说明它已经自行进行了重试处理，此时将重试次数设置为1
+            if hasattr(sys.modules[mod], 'parse_data_raw'):
+                retry = 1
+            else:
+                retry = Cfg().network.retry
+            # 显式传入 crawler_name(线程池线程名非模块名), 供进度回调使用
+            futures.append(executor.submit(wrapper, parser, info, retry, mod))
+        # 等待所有任务完成, 带整体超时强制造就近(超时未完成的尝试取消, 请求级 timeout 兜底)
+        done, not_done = cf.wait(futures, timeout=overall_timeout)
+        for f in not_done:
+            f.cancel()
+            logger.warning('抓取任务超时未完成, 已取消')
+    finally:
+        # 不阻塞等待: 已完成的线程自然结束, 未开始的 future 取消; 超时仍运行中的任务由请求级 timeout 兜底
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    # 刮削一部电影后的等待(尊重配置, 避免连续打站点触发反爬)
+    slp = Cfg().crawler.sleep_after_scraping.total_seconds()
+    if slp and slp > 0:
+        time.sleep(slp)
     # 根据抓取结果更新影片类型判定
     if movie.data_src == 'cid' and movie.dvdid:
         titles = [all_info[i].title for i in Cfg().crawler.selection[movie.data_src]]
@@ -174,6 +209,8 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
     for info in all_info.values():
         del info.success
     # all_info 的键为 CrawlerID.value(如 'airav'/'javdb'), 供 info_summary 按站点名做特判(genre/封面水印), 无需裁剪前缀
+    # 透传: 各站点原始数据摘要挂到 movie, 供 Web 端展示每站点贡献/失败原因
+    movie.sources = _summarize_sources(all_info)
     return all_info
 
 
@@ -181,9 +218,16 @@ def info_summary(movie: Movie, all_info: Dict[str, MovieInfo]):
     """汇总多个来源的在线数据生成最终数据"""
     final_info = MovieInfo(movie)
     ########## 部分字段配置了专门的选取逻辑，先处理这些字段 ##########
-    # genre
+    # genre: javdb 优先(标签较全), 其余站点补充去重
+    genre_set = []
     if 'javdb' in all_info and all_info['javdb'].genre:
-        final_info.genre = all_info['javdb'].genre
+        genre_set = list(all_info['javdb'].genre)
+    for name, data in all_info.items():
+        if data.genre:
+            for g in data.genre:
+                if g not in genre_set:
+                    genre_set.append(g)
+    final_info.genre = genre_set or None
 
     ########## 移除所有抓取器数据中，标题尾部的女优名 ##########
     if Cfg().summarizer.title.remove_trailing_actor_name:
@@ -436,9 +480,10 @@ def download_cover(covers, fanart_path, big_covers=[]):
                     return (url, pic_path)
                 else:
                     logger.debug(f"图片无效或已损坏: '{url}'，尝试更换下载地址")
-                    break
+                    continue  # 改 break 为 continue: 当前 URL 无效时尝试下一个封面 URL
             except Exception as e:
                 logger.debug(e, exc_info=True)
+                continue
     logger.error(f"下载封面图片失败")
     logger.debug('big_covers:' + str(big_covers) + ', covers' + str(covers))
     return None

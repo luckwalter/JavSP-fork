@@ -62,6 +62,8 @@ crawler:
   use_javdb_cover: fallback
   # 是否统一女优艺名。启用时会尝试将女优的多个艺名统一成一个
   normalize_actress_name: true
+  # 刮削时的最大并发爬虫数(线程池大小)，默认 5。调大可提速但更易触发站点风控/打满出口带宽
+  max_concurrency: 5
 
 ################################
 # 配置整理时的命名规则

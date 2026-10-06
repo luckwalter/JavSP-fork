@@ -176,7 +176,7 @@ def api_scrape(req: ScrapeRequest):
                     if movie is None:
                         assign_guid(m)
                         TASKS[m.guid] = m
-                    q.put({'type': 'result', 'guid': m.guid, 'info': movie_info_dict(m.info)})
+                    q.put({'type': 'result', 'guid': m.guid, 'info': movie_info_dict(m.info), 'sources': getattr(m, 'sources', None)})
             except Exception as e:
                 logger.exception(e)
                 q.put({'type': 'error', 'msg': str(e)})
@@ -269,11 +269,13 @@ def api_batch(req: BatchRequest):
                     success += 1
                     q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
                            'ok': True, 'organized': organized,
-                           'title': (m.info.title if m.info else None)})
+                           'title': (m.info.title if m.info else None),
+                           'sources': getattr(m, 'sources', None)})
                 else:
                     fail += 1
                     q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
-                           'ok': False, 'organized': False})
+                           'ok': False, 'organized': False,
+                           'sources': getattr(m, 'sources', None)})
             q.put({'type': 'all_done', 'success': success, 'fail': fail, 'total': total})
             q.put(None)
 

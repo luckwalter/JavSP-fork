@@ -20,7 +20,7 @@ base_url = ''
 
 def init_network_cfg():
     """设置合适的代理模式和base_url"""
-    request.timeout = 5
+    request.timeout = max(5, Cfg().network.timeout.total_seconds())  # 下限5s; 尊重全局 network.timeout 配置取其较大者
     proxy_free_url = get_proxy_free_url('javlib')
     urls = [str(Cfg().network.proxy_free[CrawlerID.javlib]), permanent_url]
     if proxy_free_url and proxy_free_url not in urls:

@@ -115,6 +115,7 @@ class Crawler(BaseConfig):
     sleep_after_scraping: Duration
     use_javdb_cover: UseJavDBCover
     normalize_actress_name: bool
+    max_concurrency: PositiveInt = 5  # 刮削并发上限(各爬虫线程池大小), 防止瞬时全开打爆出口/代理
 
 class MovieDefault(BaseConfig):
     title: str
