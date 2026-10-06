@@ -155,8 +155,21 @@
           <el-form v-if="configObj" label-width="170px" style="margin-top: 16px; max-width: 820px">
             <el-divider>基础</el-divider>
             <el-form-item label="扫描目录"><el-input v-model="configObj.scanner.input_directory" placeholder="留空=当前目录" /></el-form-item>
-            <el-form-item label="网络代理"><el-input v-model="configObj.network.proxy_server" placeholder="如 http://127.0.0.1:7890" /></el-form-item>
+            <el-form-item label="网络代理"><el-input v-model="configObj.network.proxy_server" placeholder="如 http://127.0.0.1:7890，留空禁用" /></el-form-item>
+            <el-form-item label="失败重试次数">
+              <el-input-number v-model="configObj.network.retry" :min="0" :max="10" />
+            </el-form-item>
+            <el-form-item label="单次请求超时(秒)">
+              <el-input-number v-model="timeoutSec" :min="1" :max="120" />
+            </el-form-item>
             <el-form-item label="整理并移动文件"><el-switch v-model="configObj.summarizer.move_files" /></el-form-item>
+
+            <el-divider>站点免代理地址</el-divider>
+            <el-alert type="info" :closable="false" style="margin-bottom: 12px"
+                      title="部分站点直连不通时需要填写镜像地址。留空表示「不改动」，保存时不会覆盖已填地址。" />
+            <el-form-item v-for="s in proxyFreeSites" :key="s" :label="s">
+              <el-input v-model="configObj.network.proxy_free[s]" placeholder="如 https://avsox.click" />
+            </el-form-item>
 
             <el-divider>爬虫选择</el-divider>
             <el-form-item label="普通番号源">
@@ -231,6 +244,19 @@ const scrapeInfo = ref(null)
 const scrapeSources = ref(null)
 const configObj = ref(null)
 const configMsg = ref('')
+// 超时在配置里是 ISO 8601 时长（如 PT10S），界面按「秒」编辑，保存时再转回
+const timeoutSec = ref(10)
+// 需要填写免代理地址的站点（对应 config.yml 的 network.proxy_free）
+const proxyFreeSites = ['avsox', 'javbus', 'javdb', 'javlib']
+
+// "PT10S" / "PT1M30S" / 纯数字 → 秒；无法识别时返回 null（保留界面原值不动）
+function parseDurationToSec(v) {
+  if (v === null || v === undefined || v === '') return null
+  if (typeof v === 'number') return v
+  const m = /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/.exec(String(v))
+  if (!m) return null
+  return parseFloat(m[1] || 0) * 3600 + parseFloat(m[2] || 0) * 60 + parseFloat(m[3] || 0)
+}
 
 // 可选爬虫源(对应 javsp.config.CrawlerID 枚举)
 const crawlerSites = [
@@ -386,6 +412,16 @@ async function loadConfig() {
     if (c.translator && c.translator.engine) {
       c.translator.engine = { name: c.translator.engine.name || 'none' }
     }
+    // 网络段可能缺字段（旧配置/精简配置），补齐后再绑定，避免 v-model 到 undefined
+    c.network = c.network || {}
+    if (c.network.retry === undefined) c.network.retry = 3
+    if (c.network.proxy_server === undefined) c.network.proxy_server = null
+    c.network.proxy_free = c.network.proxy_free || {}
+    proxyFreeSites.forEach((s) => {
+      if (c.network.proxy_free[s] === undefined) c.network.proxy_free[s] = ''
+    })
+    const sec = parseDurationToSec(c.network.timeout)
+    if (sec !== null) timeoutSec.value = sec
     configObj.value = c
   } catch (e) {
     ElMessage.error('加载失败: ' + e.message)
@@ -394,7 +430,15 @@ async function loadConfig() {
 
 async function saveConfig() {
   try {
-    const r = await api.putConfig(configObj.value)
+    const payload = JSON.parse(JSON.stringify(configObj.value))
+    // 秒 → ISO 8601 时长
+    payload.network.timeout = `PT${Math.round(timeoutSec.value)}S`
+    // 免代理地址留空视为「不改动」，丢掉该键避免把空串提交给 URL 校验
+    proxyFreeSites.forEach((s) => {
+      const v = (payload.network.proxy_free || {})[s]
+      if (v === undefined || String(v).trim() === '') delete payload.network.proxy_free[s]
+    })
+    const r = await api.putConfig(payload)
     configMsg.value = r.note || '已保存'
     ElMessage.success('已写回 config.yml')
   } catch (e) {

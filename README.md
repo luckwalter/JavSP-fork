@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.10-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.11-blue.svg)
 
 ## 功能特点
 
@@ -108,7 +108,9 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 1. **扫描**：Web 界面「扫描」页填入影片目录，列出待处理影片。
 2. **刮削**：单部输入番号即可刮削并预览（封面 / 女优 / genre）；批量可发起任务并实时看进度（SSE）。刮削结果会展示**每站点贡献**（哪个站点提供了封面 / 分类 / 女优），便于判断数据质量与排查单站点失效。
 3. **整理**：预览确认后一键生成 NFO、下载封面并按规则重命名整理到媒体库目录。
-4. **配置**：「设置」页可调整刮削源、代理、命名规则等（`config.yml`）。
+4. **配置**：「设置」页可调整刮削源、代理、各站点免代理地址、重试次数、超时、命名规则等（`config.yml`）。
+   - 保存采用**只替换变更字段**的方式写入，`config.yml` 里的中文注释与排版不会丢失。
+   - 注意：改完需**重启服务**才生效。
 
 更详细的刮削源与命名规则见原项目 [JavSP Wiki](https://github.com/Yuukiy/JavSP/wiki)。
 
@@ -120,7 +122,7 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.10**
+当前版本：**0.1.11**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 
@@ -156,6 +158,7 @@ python sync_version.py --check  # 只校验，任何一处不一致则以退出�
 | `verify_scrape_refactor.py` | 刮削打磨项：并发限流 / 重试退避 / genre 合并 / 封面容错 / 站点透传 |
 | `verify_batch_e2e.py`       | 批量端到端：合成片源 + mock 爬虫，覆盖扫描 → 批量刮削 → 整理落盘    |
 | `verify_sources_e2e.py`     | 每站点贡献：SSE 透传结构 + 前端转换函数（直接从 App.vue 源码提取求值，防测试与实现漂移） |
+| `verify_config_io.py`       | 配置写回：保注释（标量 / 整数 / 嵌套 / 单行列表 / 多行列表）+ 换行符 + API 端到端        |
 | `verify_k4.py`              | 历史 bug 回归守卫（`all_info` 键名切片）               |
 | `verify_robust.py`          | 历史 bug 回归守卫（爬虫加载健壮性）                       |
 

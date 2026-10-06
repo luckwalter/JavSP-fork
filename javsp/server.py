@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from javsp.config import Cfg
+from javsp.config_io import diff_leaves, write_config_preserving_comments
 from javsp.core import (
     import_crawlers, load_alias_map,
     parallel_crawler, info_summary,
@@ -64,13 +65,19 @@ def _scrape_into(movie: Movie, progress_cb=None) -> bool:
 
 
 def _deep_update(base: dict, updates: dict) -> dict:
-    """递归合并 updates 到 base"""
+    """递归合并 updates 到 base，返回**新的** dict（不修改传入的 base）
+
+    早期实现是原地修改 base，导致调用方 `merged = _deep_update(current, updates)`
+    后 current 自身也被改成了 merged，后续 `diff_leaves(current, merged)` 恒为空、
+    配置保存静默失效。故这里改成纯函数式。
+    """
+    out = dict(base or {})
     for k, v in (updates or {}).items():
-        if isinstance(v, dict) and isinstance(base.get(k), dict):
-            base[k] = _deep_update(base[k], v)
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_update(out[k], v)
         else:
-            base[k] = v
-    return base
+            out[k] = v
+    return out
 
 
 @asynccontextmanager
@@ -299,7 +306,12 @@ def api_config_get():
 
 @app.put('/api/config')
 def api_config_put(updates: dict):
-    """更新并写回 config.yml(重启后生效)"""
+    """更新并写回 config.yml(重启后生效)
+
+    写回采用「只替换变更字段」的方式(config_io.write_config_preserving_comments),
+    以保留 config.yml 里的中文注释与原有排版——早期版本用 yaml.safe_dump 整体重写,
+    会把全部注释丢掉(实测 100 行注释 → 0 行)。
+    """
     try:
         current = Cfg().model_dump(mode='json')
         merged = _deep_update(current, updates)
@@ -309,12 +321,14 @@ def api_config_put(updates: dict):
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
     try:
-        import yaml
-        with open(cfg_path, 'w', encoding='utf-8') as f:
-            yaml.safe_dump(merged, f, allow_unicode=True, sort_keys=False)
+        changes = diff_leaves(current, merged)
+        n, missing = write_config_preserving_comments(cfg_path, changes)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'写入 config.yml 失败: {e}')
-    return {'status': 'written', 'path': cfg_path, 'note': '已写入 config.yml, 重启服务后生效'}
+    note = f'已写入 config.yml（改动 {n} 个字段，注释与排版保留），重启服务后生效'
+    if missing:
+        note += f'；以下字段未能在文件中定位到，未写入：{", ".join(missing)}'
+    return {'status': 'written', 'path': cfg_path, 'changed': n, 'missing': missing, 'note': note}
 
 
 # ----------------------------- 前端静态托管(生产构建后) -----------------------------
