@@ -69,8 +69,10 @@ def import_crawlers():
                 import_name = 'javsp.web.' + name
                 __import__(import_name)
                 valid_mods.append(import_name)  # 抓取器有效: 使用完整模块路径，便于程序实际使用
-            except ModuleNotFoundError:
+            except Exception as e:
+                # 抓取器导入失败(模块缺失/依赖不兼容等): 跳过而非中断启动, 仅使用模块名便于显示
                 unknown_mods.append(name)       # 抓取器无效: 仅使用模块名，便于显示
+                logger.warning(f'抓取器导入失败, 已跳过: {name} ({type(e).__name__}: {e})')
     if unknown_mods:
         logger.warning('配置的抓取器无效: ' + ', '.join(unknown_mods))
 
@@ -138,6 +140,10 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
     thread_pool = []
     for mod_partial, info in all_info.items():
         mod = f"javsp.web.{mod_partial}"
+        # 健壮性: 抓取器未被成功导入(依赖缺失等被 import_crawlers 跳过)时直接跳过, 避免 KeyError 拖垮整次刮削
+        if mod not in sys.modules:
+            logger.warning(f'抓取器 {mod} 未加载, 跳过该站点')
+            continue
         parser = getattr(sys.modules[mod], 'parse_data')
         # 将all_info中的info实例传递给parser，parser抓取完成后，info实例的值已经完成更新
         # TODO: 抓取器如果带有parse_data_raw，说明它已经自行进行了重试处理，此时将重试次数设置为1
