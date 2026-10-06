@@ -323,6 +323,24 @@ def info_summary(movie: Movie, all_info: Dict[str, MovieInfo]):
     return True
 
 
+def _root_save_dir(pattern_dir: str, movie: Movie) -> str:
+    """把相对的输出目录锚定到扫描根目录(scan_root), 避免依赖进程 CWD
+
+    背景: 输出目录模板 output_folder_pattern 默认是相对路径(形如 '#整理完成/{actress}/...')。
+    CLI 通过 __main__.py 的 os.chdir(root) 让它相对「扫描根目录」解析;
+    而 Web 服务不 chdir(core.py 从 CLI 抽取时刻意去掉了该副作用), 若不锚定, save_dir 就会
+    相对「服务进程工作目录」解析 —— 实测会把影片搬进服务启动目录(如仓库根), 而非影片目录。
+
+    锚定后 Web 与 CLI 语义一致: 输出落在 <扫描根目录>/#整理完成/...
+    """
+    if os.path.isabs(pattern_dir):
+        return pattern_dir
+    base = getattr(movie, 'scan_root', None)
+    if base:
+        return os.path.join(base, pattern_dir)
+    return pattern_dir
+
+
 def generate_names(movie: Movie):
     """按照模板生成相关文件的文件名"""
 
@@ -388,7 +406,7 @@ def generate_names(movie: Movie):
         for sub_end in range(len(title_break), 0, -1):
             copyd['title'] = replace_illegal_chars(''.join(title_break[:sub_end]).strip())
             if Cfg().summarizer.move_files:
-                save_dir = os.path.normpath(Cfg().summarizer.path.output_folder_pattern.format(**copyd)).strip()
+                save_dir = _root_save_dir(os.path.normpath(Cfg().summarizer.path.output_folder_pattern.format(**copyd)).strip(), movie)
                 basename = os.path.normpath(Cfg().summarizer.path.basename_pattern.format(**copyd)).strip()
             else:
                 # 如果不整理文件，则保存抓取的数据到当前目录
@@ -416,7 +434,7 @@ def generate_names(movie: Movie):
             ext = os.path.splitext(filebasename)[1]
             basename = filebasename.replace(ext, '')
         else:
-            save_dir = os.path.normpath(Cfg().summarizer.path.output_folder_pattern.format(**copyd)).strip()
+            save_dir = _root_save_dir(os.path.normpath(Cfg().summarizer.path.output_folder_pattern.format(**copyd)).strip(), movie)
             basename = os.path.normpath(Cfg().summarizer.path.basename_pattern.format(**copyd)).strip()
         movie.save_dir = save_dir
         movie.basename = basename

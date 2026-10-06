@@ -121,6 +121,8 @@ def api_scan(req: ScanRequest):
     out = []
     for m in movies:
         assign_guid(m)
+        # 记录扫描根目录: 整理时用它锚定相对的输出目录模板(否则会相对服务进程 CWD 解析)
+        m.scan_root = os.path.abspath(root)
         TASKS[m.guid] = m
         out.append({
             'guid': m.guid,
