@@ -30,6 +30,10 @@ ENV JAVSP_PORT=8000
 # 故默认放开所有 Host(容器网络本身已隔离)。裸机部署(server 脚本)默认只监听 127.0.0.1,
 # 且默认只放行回环地址, 需跨机访问时请显式设 JAVSP_ALLOWED_HOSTS。
 ENV JAVSP_ALLOWED_HOSTS=*
+# 目录选择器的默认根。与 docker-compose.yml 里的挂载点 `/share/xxx:/data` 对齐,
+# 使「浏览目录…」开箱即用(不必先手动填路径); 用户挂载到别的位置时覆盖此变量即可。
+# 不设则退化为 '/' (不限制), 与原先手输路径的能力一致。
+ENV JAVSP_BROWSE_ROOT=/data
 EXPOSE 8000
 # Web 服务入口: poetry 生成的 `server` 控制台脚本(= javsp.server:entry)
 # 注意不能用 `javsp server` —— `javsp` 脚本是 CLI 入口, 不解析子命令, 会跑成扫描模式而不起 HTTP 服务

@@ -776,6 +776,70 @@ return out
   以及前端接线扫描（按钮/对话框/两个函数/提示文案）。
 - 全量 12 个验证脚本通过；前端 `npm run build` 通过。
 
+## v0.1.23 修复手工测试反馈的 4 个问题（空目录残留 / 浏览默认根 / 任务窗体残留 / 设置页无浏览）
+
+### 1. 刮削完成后残留空目录
+
+- 原实现只在 `datatype.rename_files` 末尾做一次 `os.rmdir(dir)`，**仅删最内层**。实际目录
+  结构是 `<根>/<分类>/<影片>/xxx.mp4`，影片目录删掉后 **`<分类>` 空壳仍留在原地**。
+- 改为 `_cleanup_empty_dirs` 向上递归清理。这是**不可逆操作**，故边界保护优先于功能：
+  - `scan_root`（Web 端运行时挂载）为硬边界，越出即停；
+  - 递归层数上限 2（`_CLEANUP_MAX_DEPTH`）——CLI 无 `scan_root`，靠它兜底防止一路删到
+    用户目录树顶端；
+  - 黑名单（统一用 `realpath` 口径，避免 `abspath` 与 `realpath` 混用使黑名单失效）：
+    文件系统根、用户主目录、当前工作目录；
+  - 隐藏目录（`.` 开头，如 `.Trash`/`@eaDir`）及其祖先一律不动；
+  - 只删「确实为空」者，任一步 `OSError` 即停止而非硬删。
+- 踩坑记录：首版实现里我在黑名单中加了 `os.path.dirname(start_dir)`，恰好把**待删的
+  父目录**拉黑，导致递归完全失效（验证脚本立刻抓到 3 项失败）。层数上限也踩了一次：
+  检查写在循环**开头**（`depth > MAX`）会多删一层，须写在删除**之前**才符合「最多删 N 个」语义。
+
+### 2. 目录选择器需手工填默认根（且旧路径直接失败）
+
+- 根因：`JAVSP_BROWSE_ROOT` 只在**运行时**通过 `-e` 传入，`Dockerfile` 里没有 → **新部署镜像
+  默认就是 `/`**，与 `docker-compose.yml` 的挂载点 `/data` 不一致；且前端以输入框里的
+  **残留旧值**作为起点（如上一轮填的容器真机路径 `/share/xxx`），这类值在新环境必然越界，
+  点开浏览就是 `403 该路径不在允许浏览的范围内`。
+- 三处改动：
+  - `docker/Dockerfile` 新增 `ENV JAVSP_BROWSE_ROOT=/data`，与默认挂载点一致 → **开箱即用，
+    不必手工填默认目录**；挂载到别处时覆盖该变量即可。
+  - `api_browse` 越界时**回退到允许根**而非报错：回退后对话框可正常打开，用户再逐级点选。
+    明确不做「静默列根外内容」——回退只是改变起点，白名单边界本身未放松。
+  - 前端启动时调 `/api/browse('')` 取回根，**自动预填**扫描目录输入框，并在对话框里展示
+    「根目录」；`doScan` 不受影响。
+- 平台差异实测并记录：`os.path.realpath` 在 **Linux 上解析符号链接、在 Windows 上对目录
+  联接（junction）不跟踪**。两种平台都拿不到根外目录列表，只是失败形态不同（回退 vs 400）。
+  README 已注明，不再把「realpath 可防软链绕过」说成跨平台保证。
+
+### 3. 批量/刮削结果窗体重新选目录后不消失
+
+- `el-alert` 的 `v-if="batch.running || batch.log.length"`：只要 log 非空就**永久显示**，
+  而 `doScan` 从不清空 batch 状态 → 换目录重扫后旧任务窗体仍挂在页面上。
+- `doScan` 成功后重置 `batch` 与 `selectedGuids`：重新扫描即换了一批影片，旧 log 中的 guid
+  已不在当前列表里，留着不仅占屏还会误导（旧任务的成败与新列表无关）。
+- 单部刮削无独立 loading 状态（按钮靠 `scrapeResult` 判断），不受此问题影响。
+
+### 4. 设置页「扫描目录」没有浏览按钮
+
+- 把目录选择器抽成**可指定目标字段的复用组件**：`openBrowser(target)` +
+  `browseTarget`，`chooseDir` 按 target 分流到 `scanPath` 或 `configObj.scanner.input_directory`，
+  对话框标题随之变化。
+- 前端接线扫描新增 9 项断言（含 Dockerfile 默认根、启动预填、设置页复用、doScan 重置），
+  防止将来重构时静默丢掉其中一项。
+
+### 验证
+
+- 新增 `verify_empty_dir_cleanup.py` **30/30**：递归向上清理 / 非空目录绝不能删 / `scan_root`
+  边界 / 无 `scan_root`（CLI）路径 / 隐藏目录不参与 / 多文件 CD1-CD2 / 家目录与 CWD 保护 /
+  层数上限。边界断言多于功能断言——误删用户目录树不可逆。
+- `verify_browse.py` **40/40**（原 25 项）：T4 语义由「403」改为「回退到根」并断言未泄漏根外
+  内容；T7 符号链接断言改为跨平台不变式（原先写成 `if got == [...] else True` 的**恒真式**，
+  等于没断言）；T9 接线扫描补 9 项。
+- 全量 **14 个验证脚本通过**（output_toggles 78 / path_traversal 66 / config_io 42 /
+  task_store 47 / browse 40 / cropper 65 / nfo_jellyfin 31 / empty_dir_cleanup 30 /
+  config_reload 24 / sources 22 / batch 11 / scrape 7 / k4 / 依赖完整性 EXIT=0）；
+  `npm run build` 通过。
+
 ---
 
 ## 问题排查与修复（Issue 记录）

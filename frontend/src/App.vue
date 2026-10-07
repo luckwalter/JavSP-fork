@@ -16,8 +16,9 @@
           </div>
           <el-alert v-if="scanMsg" :title="scanMsg" type="info" style="margin-top: 10px; max-width: 600px" />
 
-          <!-- 目录选择器 -->
-          <el-dialog v-model="browserVisible" title="选择扫描目录" width="640px">
+          <!-- 目录选择器: 扫描页与设置页共用。browseTarget 指明选完后写入哪个字段,
+               browseTarget 为空串时表示浏览但不写回(纯查看)。 -->
+          <el-dialog v-model="browserVisible" :title="browseTarget === 'scanPath' ? '选择扫描目录' : '选择扫描目录（配置项）'" width="640px">
             <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px">
               <el-button size="small" :disabled="!browseParent" @click="loadBrowse(browseParent)">上一层</el-button>
               <el-input size="small" v-model="browseInput" placeholder="也可直接输入路径回车" style="flex: 1"
@@ -27,6 +28,7 @@
             <div style="font-size: 12px; color: #888; margin-bottom: 8px">
               当前：<span style="color: #409EFF">{{ browseCurrent || '-' }}</span>
               <span style="margin-left: 10px">（仅列目录，不列文件）</span>
+              <span v-if="browseRoot" style="margin-left: 10px">根目录：{{ browseRoot }}</span>
             </div>
             <el-scrollbar max-height="46vh">
               <div v-if="!browseDirs.length && !browseLoading" style="color: #999; padding: 12px 0">
@@ -192,7 +194,12 @@
           <el-alert v-if="configMsg" :title="configMsg" type="success" style="margin-top: 10px; max-width: 600px" />
           <el-form v-if="configObj" label-width="170px" style="margin-top: 16px; max-width: 820px">
             <el-divider>基础</el-divider>
-            <el-form-item label="扫描目录"><el-input v-model="configObj.scanner.input_directory" placeholder="留空=当前目录" /></el-form-item>
+            <el-form-item label="扫描目录">
+              <div style="display: flex; gap: 8px; width: 100%">
+                <el-button @click="openBrowser('config.input_directory')">浏览目录…</el-button>
+                <el-input v-model="configObj.scanner.input_directory" placeholder="留空=当前目录（CLI 有效；Web 端请用左侧按钮选择）" style="flex: 1" />
+              </div>
+            </el-form-item>
             <el-form-item label="网络代理"><el-input v-model="configObj.network.proxy_server" placeholder="如 http://127.0.0.1:7890，留空禁用" /></el-form-item>
             <el-form-item label="失败重试次数">
               <el-input-number v-model="configObj.network.retry" :min="0" :max="10" />
@@ -406,6 +413,24 @@ const browseParent = ref(null)
 const browseDirs = ref([])
 const browseInput = ref('')
 const browseHover = ref('')
+const browseRoot = ref('')
+// 选完后写入哪个绑定值。默认 'scanPath'; 设置页传 'config.input_directory'。
+const browseTarget = ref('scanPath')
+
+// 扫描目录预填「允许浏览的根」: Docker 部署时即挂载点(默认 /data), 与镜像部署配置
+// 自动保持一致, 免得每次先手工填一遍才能点「浏览目录…」。失败不阻塞页面。
+// 放在状态声明之后注册, 避免 onMounted 回调引用尚未初始化的绑定。
+onMounted(async () => {
+  try {
+    const b = await api.browse('')
+    if (b && b.current) {
+      browseRoot.value = b.root || ''
+      if (!scanPath.value) scanPath.value = b.current
+    }
+  } catch (_) {
+    /* 列举失败就留空, 用户仍可手输路径或用浏览按钮 */
+  }
+})
 
 async function loadBrowse(path) {
   // 路径为空时让后端从「允许浏览的根」开始(后端已处理, 不要在前端硬编码 '/')
@@ -417,6 +442,7 @@ async function loadBrowse(path) {
     browseParent.value = r.parent
     browseDirs.value = r.dirs || []
     browseInput.value = r.current
+    browseRoot.value = r.root || ''
   } catch (e) {
     ElMessage.error('读取目录失败: ' + e.message)
   } finally {
@@ -424,15 +450,23 @@ async function loadBrowse(path) {
   }
 }
 
-function openBrowser() {
+// 打开选择器。target 指定选完后写入哪个绑定值('scanPath' / 'config.input_directory')
+function openBrowser(target = 'scanPath') {
+  browseTarget.value = target
   browserVisible.value = true
-  // 已有输入值就以它为起点，否则留空让后端从允许浏览的根开始
-  loadBrowse(scanPath.value || '')
+  // 已有输入值就以它为起点，否则留空让后端从允许浏览的根开始。
+  // 注意: 残留旧值在新部署环境里可能越界, 后端会自动回退到根, 不会失败。
+  const cur = target === 'scanPath' ? scanPath.value : (configObj.value?.scanner?.input_directory || '')
+  loadBrowse(cur || '')
 }
 
-// 选定目录：写回输入框并关闭对话框（不立即扫描，避免误触直接扫根目录）
+// 选定目录：写回对应输入框并关闭对话框（不立即扫描，避免误触直接扫根目录）
 function chooseDir(p) {
-  scanPath.value = p
+  if (browseTarget.value === 'config.input_directory') {
+    configObj.value.scanner.input_directory = p
+  } else {
+    scanPath.value = p
+  }
   browserVisible.value = false
 }
 
@@ -442,6 +476,11 @@ async function doScan() {
     const r = await api.scan(scanPath.value)
     movies.value = r.movies || []
     scanMsg.value = `共扫描到 ${r.count} 部影片`
+    // 重新扫描 = 换了一批影片, 之前那批的批量结果已无意义(其中的 guid 也不再存在于
+    // 当前列表)。原先不清空 -> el-alert 的 v-if 是 `batch.running || batch.log.length`,
+    // 只要 log 非空就永久显示, 用户换目录后旧任务窗体还挂在页面上。
+    batch.value = { running: false, index: 0, total: 0, current: '', crawlers: [], log: [], done: null }
+    selectedGuids.value = []
   } catch (e) {
     ElMessage.error('扫描失败: ' + e.message)
     scanMsg.value = ''

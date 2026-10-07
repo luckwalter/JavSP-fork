@@ -13,6 +13,11 @@ from javsp.lib import resource_path, detect_special_attr
 logger = logging.getLogger(__name__)
 filemove_logger = logging.getLogger('filemove')
 
+
+def _is_within(target: str, root: str) -> bool:
+    """判断 target 是否在 root 之内(含 root 自身)"""
+    return target == root or target.startswith(root + os.sep)
+
 class MovieInfo:
     def __init__(self, dvdid: str = None, /, *, cid: str = None, from_file=None):
         """
@@ -200,9 +205,62 @@ class Movie:
                 move_file(fullpath, newpath)
                 new_paths.append(newpath)
         self.new_paths = new_paths
-        if len(os.listdir(dir)) == 0:
-            #如果移动文件后目录为空则删除该目录
-            os.rmdir(dir)
+        # 移动后源目录可能变空。单层 os.rmdir 只删最内层, 嵌套目录(如
+        # <根>/<分类>/<影片>/xxx.mp4)清理后 <分类> 会残留空壳, 故向上递归清理。
+        # scan_root 是 Web 端运行时挂上的边界锚点; CLI 没有, 由层数上限+黑名单兜底。
+        self._cleanup_empty_dirs(dir, stop_at=getattr(self, 'scan_root', None))
+
+    # 向上递归的最大层数。本场景只需要清理「影片目录 + 其上残留的空分类目录」,
+    # 通常 1~2 层足够; 设上限可避免无 scan_root 时(CLI)一路删到用户目录树的顶端。
+    _CLEANUP_MAX_DEPTH = 2
+
+    def _cleanup_empty_dirs(self, start_dir: str, stop_at: str = None) -> None:
+        """从 start_dir 起向上递归删除空目录
+
+        边界保护(缺一不可, 否则会误删用户目录树):
+        - stop_at:扫描根。Web 端有 scan_root; CLI 没有, 故为空时另用启发式兜底。
+        - 绝不删除文件系统根、用户主目录、当前工作目录等关键位置。
+        - 绝不删除隐藏目录(以. 开头, 如 .Trash/@eaDir 等)及其祖先。
+        - 只删「确实为空」的目录, 且逐级确认, 任何异常都停止而非硬删。
+        """
+        # 关键位置黑名单: 这些目录即便为空也绝不能删。
+        # 一律存 realpath, 与下面比较用的 real_cur 保持同一口径(abspath 与 realpath
+        # 在大小写/软链/网络盘下可能不同, 混用会让黑名单形同虚设)。
+        protected = set()
+        for p in (os.sep, os.path.expanduser('~'), os.getcwd()):
+            try:
+                protected.add(os.path.realpath(p))
+            except OSError:
+                pass
+        stop = os.path.realpath(stop_at) if stop_at else None
+
+        cur = os.path.realpath(start_dir)
+        depth = 0
+        while cur and os.path.isdir(cur):
+            real_cur = os.path.realpath(cur)
+            if real_cur in protected:
+                return
+            # 越出扫描根即停: Web 端 scan_root 是硬边界
+            if stop and not _is_within(real_cur, stop):
+                return
+            # 隐藏目录(如 .Trash/@eaDir)及其祖先一律不动
+            if os.path.basename(real_cur).startswith('.'):
+                return
+            # 已达最大层数即停。检查放在删除**之前**, 保证「最多删 _CLEANUP_MAX_DEPTH
+            # 个目录」语义 —— 放在循环开头会多删一个。
+            if depth >= self._CLEANUP_MAX_DEPTH:
+                return
+            try:
+                if os.listdir(real_cur):
+                    return                    # 非空, 停
+                os.rmdir(real_cur)             # 空 -> 删
+                logger.info(f"清理空目录: {real_cur}")
+            except OSError as e:
+                # 权限不足 / 被占用 / 并发创建了文件等: 停止向上, 不强行处理
+                logger.debug(f'清理空目录 {real_cur} 失败: {e}')
+                return
+            cur = os.path.realpath(os.path.dirname(real_cur))
+            depth += 1
 
 
 class GenreMap(dict):

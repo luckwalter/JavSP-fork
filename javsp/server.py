@@ -163,8 +163,13 @@ def api_browse(path: Optional[str] = None):
     if not path:
         path = _browse_root()
     path = os.path.abspath(path)
+    # 越界时不直接报错, 而是回退到允许浏览的根。原因: 前端会以输入框里的**残留旧值**
+    # 作为起点(例如上一轮填的容器真机路径 /share/xxx), 这类值在新部署环境里必然越界,
+    # 直接 403 会让「点开就是失败」——用户还得先手工清空输入框才能用。
+    # 回退到根后对话框至少能正常打开, 用户再逐级点选即可。
     if not _within_browse_root(path):
-        raise HTTPException(status_code=403, detail='该路径不在允许浏览的范围内')
+        logger.info(f'browse 请求 {path} 超出允许根, 回退到 {_browse_root()}')
+        path = os.path.abspath(_browse_root())
     if not os.path.isdir(path):
         raise HTTPException(status_code=400, detail='目录不存在或无法访问')
 
