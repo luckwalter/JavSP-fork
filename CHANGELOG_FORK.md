@@ -492,6 +492,57 @@ poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此
 
 ---
 
+## v0.1.19 — 依赖完整性扫描：找出并补齐两个「靠传递依赖活着」的隐藏地雷
+
+`packaging` 事件（v0.1.16）暴露了一类问题的**通用形态**：某包代码里直接 `import`、
+但 `pyproject.toml` 未声明，靠上游包的传递依赖侥幸存在。本地 `pip install -e .` 会自动
+解析传递依赖所以永远没事，**只有干净部署环境（`poetry install --only main` / Docker 镜像）
+才会炸**。修掉 `packaging` 只能算处理了「一个实例」，所以本次做的是**把这类问题一次找全**。
+
+### 工具：`verify_dependency_completeness.py`
+
+用 `ast` 解析 `javsp/` 下**全部** `.py`（含 `web/` 下 30+ 爬虫模块）提取顶层 import 名，
+剔除标准库（`sys.stdlib_module_names`）与项目内模块，再与 `pyproject.toml` 的 main 组比对，
+报出「import 了但未声明」的包。
+
+比 grep 精确：能识别 `from X import`、别名、条件导入，也不会把注释/字符串里的名字误判为import。
+难点是**包名 ≠ import 名**（`pillow`→`PIL`、`pycryptodome`→`Crypto`、`python-multipart`→`multipart`、
+`pywebview`→`webview`、`pretty-errors`→`pretty_errors`），故维护映射表，未命中的按原名/下划线化兜底。
+
+### 扫描结果：找出 2 个真漏，1 个误报
+
+**真漏（已补声明）**：
+- **`pydantic`** —— `config.py`（`ByteSize` / `Field` / `NonNegativeInt` / `PositiveInt`）、
+  `server.py`（`BaseModel`）、`__main__.py`（`ValidationError`）都直接 import，
+  原先仅靠 `confz` 的传递依赖（lock 里 `confz → pydantic >=1.9,<3`）。
+- **`pydantic-core`** —— `config.py` 与 `web/translate.py` 直接 `from pydantic_core import Url`，
+  原先靠 `pydantic` v2 自带的编译核心。
+
+两者与 `packaging` 完全同类：一旦上游 `confz` / `pydantic` 不再传递即崩，且崩溃点
+（`import` 语句）离真正的原因（依赖未声明）很远，排查成本高。已显式声明；
+`pydantic-core` 版本约束交给 `pydantic` 自身对齐，避免独立锁版本造成冲突。
+
+**误报（修正工具，不改代码）**：`webview` 被报为未声明，实则 `pywebview` 已声明——
+是映射表漏了 `pywebview → webview`。这说明**扫描器输出必须人工核实**：直接照单全收会
+把工具自身的缺陷当成代码缺陷去「修」。
+
+### 改动的文件
+- `pyproject.toml`：主依赖新增 `pydantic = "^2.9.0"`、`pydantic-core = "^2.23.0"`
+- `poetry.lock`：随之重生（`lock-version` 保持 2.0，换行符已还原为 LF）
+- 新增 `verify_dependency_completeness.py`（**扫描退出码 0 = 无漏网**）
+
+### 验证
+- `verify_dependency_completeness.py` 现在退出码 0：19 个外部顶层 import 全部已被 main 组覆盖
+  （或属允许的平台限定项 `win32crypt`）。
+- 全量 11 个验证脚本通过。
+
+### 工具的已知边界
+本脚本只做**静态声明完整性**检查，不能证明「干净环境真能装上并跑起来」——后者由
+`poetry install --only main` 在干净 venv 的实跑、以及 Docker 镜像构建时的真实 import 链来验证。
+两者互补：静态扫描防患未然，实跑兜底。
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复
@@ -685,6 +736,22 @@ poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此
      15 种恶意载荷的纯函数断言 + 端到端落盘边界断言（统一用 `realpath` 比对，
      避免只看字符串的弱判据）+ `_root_save_dir` 语义回归。目的是防止将来为支持
      含 `/` 的正常标题而放宽替换逻辑时，无声削弱防线（v0.1.18）。
+
+22. **【隐藏地雷】`pydantic` / `pydantic-core` 直接 import 但未声明，靠传递依赖存活**
+   - 与 Issue 16（`packaging`）**完全同类**：代码直接 import，但 `pyproject.toml` 未声明，
+     靠上游包传递依赖侥幸存在。本地 pip 会自动解析传递依赖故永远无感，
+     只有干净环境（`poetry install --only main` / Docker 镜像）才会崩。
+   - 扫描发现：`pydantic` —— `config.py`（`ByteSize`/`Field`/`NonNegativeInt`/`PositiveInt`）、
+     `server.py`（`BaseModel`）、`__main__.py`（`ValidationError`）均直接 import，原仅靠
+     `confz → pydantic>=1.9,<3` 传递；`pydantic-core` —— `config.py` 与 `web/translate.py`
+     直接 `from pydantic_core import Url`，原仅靠 `pydantic` v2 自带核心。
+   - 危害：一旦上游 `confz`/`pydantic` 停止传递即崩，且崩溃点（import 语句）离真正原因很远，
+     排查成本高。
+   - 修复：显式声明 `pydantic = "^2.9.0"`、`pydantic-core = "^2.23.0"`（版本交由 pydantic 对齐），
+     重生 lock（v0.1.19）。
+   - 工具：新增 `verify_dependency_completeness.py`，用 `ast` 扫描全部 `.py`（含 web/ 下 30+
+     爬虫模块）比对声明，退出码 0 = 无漏网。**扫描结果必须人工核实**：本次误把 `webview`
+     报为未声明（实为 `pywebview` 提供，映射表漏项），照单全收会把工具缺陷当成代码缺陷去改。
 
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 

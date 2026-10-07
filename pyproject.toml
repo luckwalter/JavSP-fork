@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "javsp"
-version = "0.1.18"
+version = "0.1.19"
 description = "汇总多站点数据的AV元数据刮削器"
 authors = ["Yuukiy <76897913+Yuukiy@users.noreply.github.com>"]
 license = "GPL-3.0-only"
@@ -22,6 +22,11 @@ pycryptodome = "^3.20.0"
 lxml = {extras = ["html-clean"], version = "^5.2.1"}
 confz = "^2.0.1"
 pydantic-extra-types = "^2.9.0"
+# 代码直接 import pydantic / pydantic_core(config.py 的 ByteSize/Field/Url 等),
+# 原先仅靠 confz 的传递依赖存在 —— 与 packaging 同类问题: 一旦上游不再传递即崩,
+# 故显式声明。pydantic-core 需与 pydantic 版本对齐, 交给 pydantic 自身约束。
+pydantic = "^2.9.0"
+pydantic-core = "^2.23.0"
 pendulum = "^3.0.0"
 slimeface = "^2024.9.27"
 # WebUI 后端依赖
