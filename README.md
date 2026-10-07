@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.25-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.26-blue.svg)
 
 ## 功能特点
 
@@ -174,8 +174,37 @@ services:
 
 > 多阶段构建会自动 `npm run build` 前端并托管 `frontend/dist`。
 
-### 方式二：本地开发运行（Web 服务）
+#### ⚠️ 必须：配置持久化
 
+`config.yml` 决定**代理、刮削站点、镜像地址、命名规则、扫描目录**。**不持久化会出两个
+很迷惑的现象**：
+
+1. 容器每次重建（换镜像 / `docker compose up -d` 重建 / 更新版本）都回到镜像内的默认值 ——
+   你在 Web 界面改的设置全部丢失，却什么提示都没有；
+2. 若挂载了配置到别的路径但**没告诉程序**，会出现「保存提示成功、配置却没变」——
+   服务读的是 A 文件、界面写回的是 B 文件（读写不同源）。
+
+所以 compose 里必须同时做两件事：
+
+```yaml
+    volumes:
+      - /share/javsp_config:/etc/javsp     # ① 挂载配置目录
+    command: ["-c", "/etc/javsp/config.yml"]  # ② 告诉程序读这个文件
+```
+
+首次部署先建目录并放一份默认配置（否则容器内该路径不存在会启动失败）：
+
+```bash
+mkdir -p /share/javsp_config
+docker run --rm -v /share/javsp_config:/etc/javsp \
+  -v "$(pwd)":/src -w /src javsp-fork \
+  cp /app/config.yml /etc/javsp/config.yml
+```
+
+> 初始化后建议**先在 Web 界面把「网络代理」设好并保存**，确认保存提示为
+> `已写入 config.yml ... 即时生效`，再开始刮削。很多「站点抓不到」就是代理没配上。
+
+### 方式二：本地开发运行（Web 服务）
 ```bash
 # 1. 安装 Python 依赖
 pip install -e .
@@ -292,7 +321,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.25**
+当前版本：**0.1.26**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

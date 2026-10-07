@@ -26,6 +26,14 @@ services:
       # 通常形如 /share/CACHEDEV1_DATA/Downloads，把下面这行替换成真实路径即可。
       # （若 HOMENAS 实为群晖 Synology，则本机路径为 /volume1/Downloads）
       - /share/Downloads:/data
+      # **配置持久化（务必保留）**：config.yml 决定代理、刮削站点、命名规则等。
+      # 不挂载的话容器每次重建（改镜像/重启/更新）都会回到镜像内的默认值 —— 你在
+      # Web 界面改的代理、扫描目录全部丢失，且会误以为「设置没生效」。
+      # 挂载到 /etc/javsp 后用下面的 command 指定 `-c`，让读写都指向该文件。
+      - /share/javsp_config:/etc/javsp
+    # 指定配置文件路径（配合上面的挂载）。少了这一行，服务读的是镜像内默认的
+    # /app/config.yml，而 Web 界面保存写回的也是那个 —— 与挂载文件不同源，改动不生效。
+    command: ["-c", "/etc/javsp/config.yml"]
     # 可选：对齐 NAS 媒体文件的属主 uid:gid，避免 Jellyfin 回写 NFO/封面时因属主为 root 而受限
     # user: "1000:1000"
     restart: unless-stopped

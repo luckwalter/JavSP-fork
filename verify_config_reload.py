@@ -176,5 +176,44 @@ finally:
           f"{describe_runtime()['proxy_server']} vs {ORIG_PROXY}")
 
 print()
+# ---------------------------------------------------------------- 读写同源
+print('--- T 写回路径与读取路径同源 ---')
+
+
+def test_config_path_follows_read_source():
+    """PUT 写回的路径必须与 Cfg 实际读取的路径一致
+
+    原实现硬编码 `<包目录>/config.yml`, 但 confz 支持 `-c/--config` 指定其它文件。
+    二者不一致时表现为「PUT 返回 applied + reloaded=true, 但 GET 读到的还是旧值」
+    —— 写 A 读 B, 且容器重建后改动全丢。容器化部署通常把配置挂到 `/etc/javsp/config.yml`
+    再用 `-c` 指定, 正好命中这个坑(NAS 实测)。
+    """
+    import re as _re
+    src = open(os.path.join(PROJ, 'javsp', 'server.py'), encoding='utf-8').read()
+    check('server.py 定义了 _config_file_path()', 'def _config_file_path()' in src)
+    check('_config_file_path 从 confz 的 config source 取路径',
+          _re.search(r'def _config_file_path\(\).*?get_config_source\(\)', src, _re.S) is not None)
+    check('写回调用已改用 _config_file_path()', 'cfg_path = _config_file_path()' in src)
+    check('不再硬编码 <包目录>/config.yml 作为写回路径',
+          _re.search(r'cfg_path = os\.path\.join\(\s*os\.path\.dirname\(os\.path\.dirname\(',
+                     src) is None,
+          '旧的硬编码路径又回来了')
+
+    # 行为级: 解析结果应指向真实的 config.yml, 且与 confz 实际使用的 FileSource 一致
+    try:
+        from javsp.config import get_config_source
+        srcs = [str(getattr(s, 'file', '')) for s in get_config_source()]
+        check('confz 至少有一个 FileSource', any(srcs), str(srcs))
+        from javsp.server import _config_file_path
+        p = _config_file_path()
+        check('_config_file_path() 返回存在的文件', os.path.isfile(p), p)
+        check('与 confz 的 FileSource 路径一致', p in srcs, f'{p} vs {srcs}')
+    except Exception as e:      # noqa: BLE001
+        check('_config_file_path() 可调用', False, f'{type(e).__name__}: {e}')
+
+
+test_config_path_follows_read_source()
+
+print()
 print(f'{"ALL GREEN" if _FAILED == 0 else "HAS FAILURE"}  PASS={_PASSED}  FAIL={_FAILED}')
 sys.exit(1 if _FAILED else 0)

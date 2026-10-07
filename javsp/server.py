@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from javsp.config import Cfg
+from javsp.config import Cfg, get_config_source
 from javsp.config_io import diff_leaves, mask_secrets, unmask_secrets
 from javsp.config_reload import apply_config_changes, describe_runtime, config_transaction
 from javsp.core import (
@@ -146,6 +146,26 @@ def _within_browse_root(target: str) -> bool:
 
 
 # ----------------------------- 路由 -----------------------------
+def _config_file_path() -> str:
+    """解析**实际生效**的配置文件路径, 供 PUT /api/config 写回使用
+
+    原实现硬编码 `<包目录>/config.yml`, 但 confz 支持 `-c/--config` 指定其它路径。
+    二者不一致时会出现「界面提示保存成功、配置却没生效」——服务读的是 `-c` 指定的文件,
+    写的却是包目录那个: 实测挂载 `/etc/javsp/config.yml` 后, PUT 返回 applied 且
+    reloaded=true, 但 GET 读到的仍是旧值(写 A 读 B), 且容器重建后全部丢失。
+
+    改为从 confz 的 CONFIG_SOURCES 里取第一个 FileSource 的路径 —— 那就是
+    `Cfg()` 真实读取的文件。
+    """
+    for src in get_config_source():
+        path = getattr(src, 'file', None)
+        if path:
+            return str(path)
+    # 兜底: get_config_source 始终会 append 一个 FileSource, 走到这里说明结构变了
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
+
+
 @app.get('/api/health')
 def api_health():
     return {'status': 'ok', 'version': __version__}
@@ -424,13 +444,12 @@ def api_config_put(updates: dict):
                 Cfg.model_validate(merged)  # 仅做校验, 不替换运行时单例
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f'配置校验失败: {e}')
-            cfg_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
+            cfg_path = _config_file_path()
             try:
                 changes = diff_leaves(current, merged)
                 res = apply_config_changes(cfg_path, changes)
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f'写入 config.yml 失败: {e}')
+                raise HTTPException(status_code=500, detail=f'写入配置失败: {e}')
     except HTTPException:
         raise
     except Exception as e:
