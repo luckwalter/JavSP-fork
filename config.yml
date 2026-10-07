@@ -26,12 +26,17 @@ network:
   # 设置代理服务器地址，支持 http, socks5/socks5h 代理，比如'http://127.0.0.1:1080'
   # null表示禁用代理
   proxy_server: null
-  # 各个站点的免代理地址。地址失效时软件会自动尝试获取新地址，你也可以手动设置
+  # 各个站点的免代理地址(站点镜像)。地址失效时软件会自动尝试获取新地址。
+  # 注意: ①这是**镜像地址**而非"让该站绕过代理"; ②值必须是非空 URL —— proxy_free
+  # 的类型是 Url, 留空会导致整个配置校验失败(前端留空则表示"不改动该键")。
+  # ③此类镜像变动频繁, 失效后请手动换当前可用地址, 详见 README「排查只有个别站点抓得到」。
   proxy_free:
     avsox: 'https://avsox.click'
-    javbus: 'https://www.seedmm.help'
-    javdb: 'https://javdb368.com'
-    javlib: 'https://www.y78k.com'
+    javbus: 'https://www.javbus.com'
+    # 实测: javdb 主站对中国出口返回"版权限制"提示页(地域限制, 非地址失效),
+    # 换镜像才有效; 保持一个可用镜像, 无镜像时请从 README 小节实测后填入
+    javdb: 'https://javdb.com'
+    javlib: 'https://www.javlibrary.org'
   # 网络问题导致抓取数据失败时的重试次数，通常3次就差不多了
   retry: 3
   # https://en.wikipedia.org/wiki/ISO_8601#Durations

@@ -119,7 +119,16 @@ try:
     p, ch = apply_change({'network': {'proxy_free': {'avsox': 'https://new.example.com'}}})
     txt = open(p, encoding='utf-8', newline='').read()
     check('T3 嵌套字段写入成功', "avsox: 'https://new.example.com'" in txt, str(ch))
-    check('T3 同级其他站点未被误改', 'javbus: ' in txt and 'seedmm' in txt)
+    # 守卫「只改 avsox 不波及同级其他键」, 但**不硬编码具体地址** ——
+    # 镜像地址会随时间失效而更新(config.yml 里换过 seedmm -> javbus.com 等),
+    # 写死域名会让本用例在换地址后假失败(本轮就被抓到过一次)。
+    p_before = read_lines(fresh())
+    others_before = [l.strip() for l in p_before
+                     if l.strip().startswith(('javbus:', 'javdb:', 'javlib:'))]
+    others_after = [l.strip() for l in read_lines(p)
+                    if l.strip().startswith(('javbus:', 'javdb:', 'javlib:'))]
+    check('T3 同级其他站点未被误改', others_before == others_after and len(others_after) == 3,
+          f'before={others_before} after={others_after}')
 
     # ---------------- T4: 单行 flow 列表 ----------------
     p, ch = apply_change({'crawler': {'selection': {'normal': ['javdb', 'airav']}}})

@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.24-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.25-blue.svg)
 
 ## 功能特点
 
@@ -139,8 +139,34 @@ for cid in Cfg().crawler.selection.normal:
 |---|---|---|
 | `MovieNotFoundError` | 该站未收录此番号 | 正常，不是故障 |
 | `HTTPError 403` | 站点需登录 / 反爬 | 该站本就不可用 |
-| `SSLCertVerificationError` | **代理在解密 HTTPS**（MITM），容器内没有代理的 CA 证书 | 把代理服务器的根证书挂进容器（`/usr/local/share/ca-certificates/` + `update-ca-certificates`），或对该站改用直连 |
+| `SSLCertVerificationError` | **代理在解密 HTTPS**（MITM），容器内没有代理的 CA 证书 | 见下方「HTTPS 代理（MITM）下如何让证书校验通过」 |
 | `Fail to connect` / `ConnectionReset` | 镜像站不可用 | `network.proxy_free` 里换一个镜像地址 |
+| 主页正常但搜索页返回**版权限制提示页** | 站点对当前出口做**地域限制** | 换该站的镜像地址（`proxy_free`），或换一个出口 IP/代理节点 |
+
+#### HTTPS 代理（MITM）下如何让证书校验通过
+
+代理若做 TLS 解密，会用自己的根证书重签目标站证书 —— 默认校验必然报
+`SSLCertVerificationError`，**所有**走代理的站点会一起失效。本项目**不默认关闭校验**
+（那是 v0.1.20 审查明确肯定的安全基线），而是支持挂载代理的根证书：
+
+```yaml
+services:
+  javsp:
+    environment:
+      # ①推荐：挂载代理的根证书, 告知 requests 使用它做校验(校验仍开启)
+      - JAVSP_CA_BUNDLE=/certs/myproxy-ca.crt
+    volumes:
+      - /path/to/proxy-ca.crt:/certs/myproxy-ca.crt:ro
+      # ②仅限受控内网: 显式关闭校验(不安全, 不建议)
+      # - JAVSP_TLS_VERIFY=0
+```
+
+如何取到代理的 CA：在代理机上找 `ssl_bump` 目录
+（如 `/etc/squid/ssl_bump/intermediate.crt`、Surge/Clash 的 `*.cer`）。
+
+> 若代理是**透传不解密**（如默认只做 CONNECT 转发），则无需任何配置 —— 此时签发者仍是
+> 站点原厂 CA（如 `Google Trust Services`），校验天然通过。可用
+> `openssl s_client -proxy <代理> -connect <站点>:443` 查看 `issuer` 是否为代理自己的 CA 来判断。
 
 > ⚠️ `network.proxy_free` 的语义是**「该站的镜像 / 免代理地址」**（如 `javdb368.com`），
 > 不是「让这个站绕过代理」——填错会导致请求被送到失效镜像上。软件在地址失效时会
@@ -266,7 +292,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.24**
+当前版本：**0.1.25**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

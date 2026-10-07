@@ -7,6 +7,7 @@ import logging
 import requests
 import contextlib
 import cloudscraper
+from functools import partial
 import lxml.html
 from tqdm import tqdm
 from lxml import etree
@@ -18,7 +19,7 @@ from javsp.config import Cfg
 from javsp.web.exceptions import *
 
 
-__all__ = ['Request', 'get_html', 'post_html', 'request_get', 'resp2html', 'is_connectable', 'download', 'get_resp_text', 'read_proxy']
+__all__ = ['Request', 'tls_verify', 'get_html', 'post_html', 'request_get', 'resp2html', 'is_connectable', 'download', 'get_resp_text', 'read_proxy']
 
 
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
@@ -34,6 +35,33 @@ def read_proxy():
         proxy = str(Cfg().network.proxy_server)
         return {'http': proxy, 'https': proxy}
 
+
+def tls_verify():
+    """TLS 证书校验的目标, 传给 requests 的 verify= 参数
+
+    绝大多数情况返回 True(= CA 证书包路径, requests 默认行为, 校验开启)。
+    这里只处理一种正当需求: **HTTP(S) 代理做 TLS 解密(MITM)** 时, 代理会用自己的
+    根证书重签目标站证书。此时目标站证书对该代理的 CA 而言是「未知签发者」,
+    默认校验必然报 SSLCertVerificationError, 导致**所有**走代理的站点全挂。
+
+    解决方式是把代理的根证书挂进容器并通过环境变量告知路径(而非关闭校验):
+        - `JAVSP_CA_BUNDLE=/etc/ssl/certs/myproxy.crt`  —— 指定自定义 CA 包;
+        - `JAVSP_TLS_VERIFY=0`                          —— 显式关闭(不推荐, 仅内网自控)。
+
+    未设置时行为与原来完全一致(校验开启), 不改变默认安全性。
+    """
+    bundle = os.getenv('JAVSP_CA_BUNDLE', '').strip()
+    if bundle:
+        if os.path.isfile(bundle):
+            return bundle
+        logger.warning(
+            f'JAVSP_CA_BUNDLE 指向的 CA 文件不存在: {bundle}; 退回默认证书校验')
+        return True
+    if os.getenv('JAVSP_TLS_VERIFY', '').strip() in ('0', 'false', 'False'):
+        logger.warning('JAVSP_TLS_VERIFY=0: 已按环境变量关闭 TLS 证书校验(不安全, 仅限受控内网)')
+        return False
+    return True
+
 # 与网络请求相关的功能汇总到一个模块中以方便处理，但是不同站点的抓取器又有自己的需求（针对不同网站
 # 需要使用不同的UA、语言等）。每次都传递参数很麻烦，而且会面临函数参数越加越多的问题。因此添加这个
 # 处理网络请求的类，它带有默认的属性，但是也可以在各个抓取器模块里进行进行定制
@@ -46,16 +74,23 @@ class Request():
 
         self.proxies = read_proxy()
         self.timeout = Cfg().network.timeout.total_seconds()
+        # 统一在此处注入 verify, 而不是让 40+ 个调用点各自记得传 —— 漏一个就等于
+        # 该站点在 MITM 代理下静默失效。用 partial 绑定比逐处改更不易漏。
+        _verify = tls_verify()
+        _get = partial(requests.get, verify=_verify)
+        _post = partial(requests.post, verify=_verify)
+        _head = partial(requests.head, verify=_verify)
         if not use_scraper:
             self.scraper = None
-            self.__get = requests.get
-            self.__post = requests.post
-            self.__head = requests.head
+            self.__get = _get
+            self.__post = _post
+            self.__head = _head
         else:
             self.scraper = cloudscraper.create_scraper()
-            self.__get = self._scraper_monitor(self.scraper.get, requests.get)
-            self.__post = self._scraper_monitor(self.scraper.post, requests.post)
-            self.__head = self._scraper_monitor(self.scraper.head, requests.head)
+            # cloudscraper 的方法同样要绑定 verify; 回退路径用普通 requests
+            self.__get = self._scraper_monitor(partial(self.scraper.get, verify=_verify), _get)
+            self.__post = self._scraper_monitor(partial(self.scraper.post, verify=_verify), _post)
+            self.__head = self._scraper_monitor(partial(self.scraper.head, verify=_verify), _head)
 
     def _scraper_monitor(self, func, fallback):
         """监控cloudscraper的工作状态，遇到不支持的Challenge时尝试退回常规的requests请求
@@ -121,7 +156,7 @@ def request_get(url, cookies={}, timeout=None, delay_raise=False):
     if timeout is None:
         timeout = Cfg().network.timeout.seconds
     
-    r = requests.get(url, headers=headers, proxies=read_proxy(), cookies=cookies, timeout=timeout)
+    r = requests.get(url, headers=headers, proxies=read_proxy(), cookies=cookies, timeout=timeout, verify=tls_verify())
     if not delay_raise:
         if r.status_code == 403 and b'>Just a moment...<' in r.content:
             raise SiteBlocked(f"403 Forbidden: 无法通过CloudFlare检测: {url}")
@@ -134,7 +169,7 @@ def request_post(url, data, cookies={}, timeout=None, delay_raise=False):
     """向指定url发送post请求"""
     if timeout is None:
         timeout = Cfg().network.timeout.seconds
-    r = requests.post(url, data=data, headers=headers, proxies=read_proxy(), cookies=cookies, timeout=timeout)
+    r = requests.post(url, data=data, headers=headers, proxies=read_proxy(), cookies=cookies, timeout=timeout, verify=tls_verify())
     if not delay_raise:
         r.raise_for_status()
     return r
@@ -203,7 +238,7 @@ def dump_xpath_node(node, filename=None):
 def is_connectable(url, timeout=3):
     """测试与指定url的连接"""
     try:
-        r = requests.get(url, headers=headers, timeout=timeout)
+        r = requests.get(url, headers=headers, timeout=timeout, verify=tls_verify())
         return True
     except requests.exceptions.RequestException as e:
         logger.debug(f"Not connectable: {url}\n" + repr(e))
@@ -216,7 +251,8 @@ def urlretrieve(url, filename=None, reporthook=None, headers=None, max_bytes=Non
     """使用requests实现urlretrieve"""
     # https://blog.csdn.net/qq_38282706/article/details/80253447
     with contextlib.closing(requests.get(url, headers=headers,
-                                         proxies=read_proxy(), stream=True)) as r:
+                                         proxies=read_proxy(), stream=True,
+                                         verify=tls_verify())) as r:
         header = r.headers
         # 下载体积上限: 封面/剧照本应是几 MB 的图片, 超过上限说明要么是异常响应,
         # 要么是被重定向到了别处(可能是内网探测响应)。不设限时可能把磁盘写满。

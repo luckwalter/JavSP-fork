@@ -419,18 +419,38 @@ const browseRoot = ref('')
 // 选完后写入哪个绑定值。默认 'scanPath'; 设置页传 'config.input_directory'。
 const browseTarget = ref('scanPath')
 
-// 扫描目录预填「允许浏览的根」: Docker 部署时即挂载点(默认 /data), 与镜像部署配置
-// 自动保持一致, 免得每次先手工填一遍才能点「浏览目录…」。失败不阻塞页面。
+// 扫描目录预填, 优先级: 用户在「设置」里保存的 scanner.input_directory > 允许浏览的根。
+// 设置项本身就是「默认扫描位置」的语义, 保存后应当自动回填到扫描框, 否则用户每次打开
+// 页面都得再点一次「浏览目录…」重选 —— 配置存了却不起作用。
 // 放在状态声明之后注册, 避免 onMounted 回调引用尚未初始化的绑定。
 onMounted(async () => {
+  let root = ''
+  let browseCurrent = ''
   try {
     const b = await api.browse('')
     if (b && b.current) {
-      browseRoot.value = b.root || ''
-      if (!scanPath.value) scanPath.value = b.current
+      root = b.root || ''
+      browseCurrent = b.current
     }
   } catch (_) {
     /* 列举失败就留空, 用户仍可手输路径或用浏览按钮 */
+  }
+  browseRoot.value = root
+
+  // 再取配置里的默认扫描目录(失败不阻塞页面)
+  let saved = ''
+  try {
+    const c = await api.getConfig()
+    saved = (c && c.scanner && c.scanner.input_directory) || ''
+  } catch (_) {
+    /* 配置读不到就退回浏览根 */
+  }
+  if (saved) {
+    // 配置里可能是 CLI 用的相对路径或宿主机路径, 与 Web 端容器内路径不一定一致;
+    // 后端 /api/scan 会用 isdir 校验, 填了但扫不了时用户能看到明确报错, 不静默改写。
+    scanPath.value = saved
+  } else if (browseCurrent) {
+    scanPath.value = browseCurrent
   }
 })
 
@@ -706,6 +726,11 @@ async function saveConfig() {
     }
     const r = await api.putConfig(payload)
     configMsg.value = r.note || '已保存'
+    // 设置里的扫描目录是「默认扫描位置」——保存后同步到扫描页输入框,
+    // 免得用户保存完还要切 tab 重新选一次(且切过去看到的仍是旧值)。
+    if (payload.scanner && payload.scanner.input_directory) {
+      scanPath.value = payload.scanner.input_directory
+    }
     if (r.reloaded) {
       const n = (r.refreshed || []).length
       ElMessage.success(`已写回 config.yml 并即时生效（刷新 ${n} 个爬虫出口），无需重启`)

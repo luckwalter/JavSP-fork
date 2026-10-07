@@ -918,6 +918,70 @@ v0.1.20 为修「番号正则注入」把 `re.sub(r'[_-]','[_-]*',avid)` 改成
 3. 验证脚本里写了 `check('...', os.path.isdir(x) or not os.path.exists(x))` 这种
    **恒真断言**（永真），发现后改为真实判定。
 
+## v0.1.25 设置里的扫描目录自动回填 + 站点抓取失败的正确诊断
+
+### 1. `scanner.input_directory` 存了却不生效
+
+- 现象：在「设置」里选好扫描目录并保存，但扫描页输入框仍是旧值，等于配置没起作用。
+- 修法两处：
+  1. **页面加载时按优先级预填**：`scanner.input_directory`（用户保存的默认扫描位置）
+     > 允许浏览的根。原先只用后者，所以配置值形同虚设。
+  2. **保存后立即同步**：设置页保存成功即把 `scanner.input_directory` 写回扫描页输入框，
+     免得保存完还要切 tab 重新选一次（且切过去看到的仍是旧值）。
+- 不静默改写配置值：配置里可能是 CLI 用的相对路径或宿主机路径，与 Web 端容器内路径未必
+  一致；后端 `/api/scan` 有 `isdir` 校验，填了但扫不了时用户能看到明确报错。
+
+### 2. 「只有个别站点抓得到」的根因（实测推翻了两处想当然的判断）
+
+**先说被实测推翻的**：
+- 最初以为 NAS 出口直连被墙 → 实测 `ConnectionReset`，但**经代理是通的**；
+- 最初以为是 MITM 证书校验失败 → 实测**容器内严格校验反而是通的**
+  （`javdb.com`/`javbus.com`/`jav321.com`/`prestige-av.com` 全 200）；
+  且经代理握手 `issuer=Google Trust Services WE1`，说明 **squid 对这些域名是透传不解密**。
+
+**真正的两个原因**：
+1. **配置里的镜像地址已失效**：`javdb368.com` / `seedmm.help` / `y78k.com` 四个全部
+   `is_connectable=False`，自动获取新地址也全部失败。实测可用：`avsox.click`、
+   `javdb.com`、`javbus.com`、`javlibrary.org`。已更新 `config.yml` 默认值。
+   自动获取机制本身是活的（实测 javlib 成功拿到 `https://202608.urldance.com`），
+   只是它同样走那套请求层。
+2. **javdb 主站对中国出口返回「版权限制」提示页**：
+   `https://javdb.com/search?q=MIDE-800` 返回
+   `Due to copyright restrictions, access to this site is...`（仅 1278 字节），
+   于是解析成「未找到影片」——**连 `MIDE-800` 这种常见番号都报未收录**，可确认是地域
+   限制而非地址失效，`/cn/` 路径还额外 404（站点结构已变）。**属环境问题，需换镜像或换出口**。
+
+**代码侧补的能力（不默认降低安全性）**：新增 `javsp/web/base.py: tls_verify()`。
+代理若做 TLS 解密(MITM)，默认校验会让**所有**走代理的站点一起失效。本项目**不默认关闭
+校验**（那是 v0.1.20 审查明确肯定的安全基线），改为支持注入：
+- `JAVSP_CA_BUNDLE=/certs/proxy-ca.crt` —— 指定代理根证书，校验**仍开启**；
+- `JAVSP_TLS_VERIFY=0` —— 显式关闭（不推荐，仅受控内网）。
+
+实现要点：本项目有 40+ 个请求点（cloudscraper ×3 + requests get/post/head + 模块级函数 +
+`urlretrieve`），**逐处加 `verify=` 易漏**，故在 `Request.__init__` 里用
+`functools.partial` **一次性绑定**到三个方法，模块级 4 处调用单独注入。
+
+### 验证
+
+- 新增 `verify_tls_inject.py` **23/23**：`tls_verify()` 三种取值语义（默认校验 / 自定义 CA /
+  显式关闭）、CA 文件不存在时退回默认而非抛错、**CA 优先于关闭开关**、空白值被忽略、
+  运行时 `partial.keywords` 确实带 `verify`、**全项目无硬编码 `verify=False`**、
+  模块级调用点数量守恒（4 处）。
+- `verify_config_io.py` 42/42：修 T3「同级站点未被误改」——原断言硬编码了
+  `seedmm` 这个会随时间失效的域名，换镜像地址后**假失败**。改为比对「改动前后同级键
+  逐行相等」，不再耦合具体地址。
+- **全量 16 个验证脚本通过**；`npm run build` 通过。
+
+### 踩坑
+
+1. **我改 `config.yml` 时把 `proxy_free` 写成空串**，而该字段类型是 `Url`（不接受空串），
+   导致**整个配置校验失败**、测试直接跑不起来。前端「留空 = 不改动该键」是 PUT 语义，
+   与 yml 文件里「键必须有合法 URL」是两回事——**文档没说清这点**。
+2. **`verify_tls_inject.py` 第一版有环境变量泄漏**：用例里设了 `JAVSP_CA_BUNDLE` 指向临时
+   文件，`finally` 只还原初始快照，导致后续「空白 CA 值」用例继承了上一个用例的路径而假失败。
+   修法：每个用例前显式清空两个变量（比依赖 try/finally 更可靠）。
+3. `verify_config_io.py` 早前也有一处恒真式断言，本轮顺手清掉了。
+
 ---
 
 ## 问题排查与修复（Issue 记录）
