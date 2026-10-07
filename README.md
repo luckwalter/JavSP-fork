@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.15-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.16-blue.svg)
 
 ## 功能特点
 
@@ -80,10 +80,26 @@
 ### 方式一：Docker / NAS（推荐，最契合媒体栈）
 
 ```bash
-docker build -t javsp-fork .
+# Dockerfile 在 docker/ 子目录, 必须带 -f
+docker build -f docker/Dockerfile -t javsp-fork .
 docker run -d -p 8000:8000 -v /你的/媒体库:/data javsp-fork
 # 浏览器打开 http://<宿主机>:8000
 ```
+
+#### 选择 NAS 上的 share 目录进行刮削 / 改名
+
+应用层对扫描目录没有任何限制：Web 界面「扫描」页填的是任意绝对路径，后端只校验目录是否存在。因此只需把 NAS 的 share 目录用 bind mount 挂进容器，前端填**容器内的挂载路径**，即可直接刮削、重命名、生成 NFO / 封面——**无需修改任何代码或配置**。
+
+- **挂卷**：把 NAS 真机 share 映射到容器路径（建议统一用 `/data`）。例如 QNAP 的 `/share/Multimedia/JAV`、群晖的 `/volume1/视频/JAV`：
+  ```bash
+  docker run -d --name javsp -p 8000:8000 \
+    -v /share/Multimedia/JAV:/data javsp-fork
+  ```
+  嫌手敲命令麻烦可用仓库里的 `docker-compose.yml`（`docker compose up -d`），挂载写法一致。
+- **前端填路径**：扫描框填容器内的 `/data`，**不要填 NAS 真机路径**（如 `/share/Multimedia/JAV`，否则报 400「目录不存在」）。bind mount 双向即时，容器内写回即落盘到 NAS。
+- **权限 / 属主**：容器默认以 root（uid 0）运行，写回的文件属主会变成 root。Jellyfin / Emby **只读**这些 NFO / 封面通常没问题；若它们要回写元数据，可能因属主受限。可用 `docker run --user 1000:1000`（或 `docker-compose.yml` 里取消 `user:` 注释）对齐 NAS 媒体文件的 uid:gid。
+- **落盘行为**：改名 / 移动 / NFO / 封面都落在扫描根（`/data`）之下；默认 `move_files: true` 会移到 `#整理完成/{actress}/...` 子目录，只想**原地改名 + 同级生成 NFO** 就在「设置」关掉「移动文件」。
+- **其它**：小于 `scanner.minimum_size`（默认 232MiB）的文件不扫描；`hard_link` 默认关闭（同卷想省空间可开，跨文件系统会失败）；爬虫访问外站若 NAS 出口需代理，在「设置」填 `network.proxy_server`（这与拉镜像用的 squid 是两码事）。
 
 > 多阶段构建会自动 `npm run build` 前端并托管 `frontend/dist`。
 
@@ -169,7 +185,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.15**
+当前版本：**0.1.16**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

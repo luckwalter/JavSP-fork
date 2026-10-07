@@ -13,6 +13,7 @@ RUN pip install pipx && pipx ensurepath && pipx install poetry
 WORKDIR /app
 COPY . .
 RUN poetry config virtualenvs.in-project true && \
+    poetry lock && \
     poetry install --only main && \
     rm -rf /app/.git
 
@@ -26,5 +27,6 @@ COPY --from=builder /app /app
 ENV JAVSP_HOST=0.0.0.0
 ENV JAVSP_PORT=8000
 EXPOSE 8000
-ENTRYPOINT ["/app/.venv/bin/javsp"]
-CMD ["server"]
+# Web 服务入口: poetry 生成的 `server` 控制台脚本(= javsp.server:entry)
+# 注意不能用 `javsp server` —— `javsp` 脚本是 CLI 入口, 不解析子命令, 会跑成扫描模式而不起 HTTP 服务
+ENTRYPOINT ["/app/.venv/bin/server"]

@@ -339,6 +339,57 @@ poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此
 
 ---
 
+## v0.1.16 — 修复 Docker/NAS 部署阻断：让 `docker build` + 容器真能起服务
+
+在 NAS（QNAP Container Station）上实测部署时，连续暴露三个「代码本身能跑、但一部署就废」的问题。
+它们都属于**长期潜伏、从未被本地开发环境触发**的类型——本地 `pip install -e .` 恰好绕过了每一个。
+
+### 1. `packaging` 是运行时依赖，却从未在 `pyproject.toml` 声明
+- **现象**：容器启动即崩 `ModuleNotFoundError: No module named 'packaging'`，反复重启。
+- **根因**：`javsp/func.py` 有 `from packaging import version`（用于版本号解析），但 `packaging`
+  只作为 dev 组 `cx-freeze` 的**传递依赖**存在于 lock 里。`poetry install --only main` 把 dev 组
+  整个排除 → 干净 venv 里就没有它。本地之所以一直没暴露，是因为 pip / poetry 自身就携带 `packaging`，
+  恰好掩盖了「没声明」这件事。
+- **修复**：在 `[tool.poetry.dependencies]` 主依赖显式声明 `packaging = "*"`。
+
+### 2. Dockerfile 入口点用了 CLI 脚本，容器实际在跑扫描模式
+- **现象**：容器 `Up` 但 8000 端口永不监听、日志一片空白。
+- **根因**：`ENTRYPOINT ["/app/.venv/bin/javsp"]` + `CMD ["server"]`。但 `javsp` 是 **CLI** 入口
+  （`javsp.__main__:entry`），**根本不解析子命令**——`server` 这个参数被当作没看见，容器实际在执行
+  完整 CLI 流程（`Cfg()` → `check_update` 联网 → 扫描目录），跟 Web 服务毫无关系。
+- **修复**：改用 poetry 为 `[tool.poetry.scripts]` 中 `server = "javsp.server:entry"` 生成的
+  控制台脚本：`ENTRYPOINT ["/app/.venv/bin/server"]`（同时移除多余的 `CMD`）。
+  > 顺带厘清：poetry 会为每个 scripts 项生成独立入口（`javsp`→CLI、`server`→Web），
+  > 跑 Web 服务必须用 `server`，写 `javsp server` 是无效的。
+
+### 3. README 的 `docker build` 缺 `-f`，按文档构建必然失败
+- **现象**：`docker build -t javsp-fork .` 报 `open Dockerfile: no such file`。
+- **根因**：Dockerfile 在 `docker/` 子目录，仓库根没有。
+- **修复**：README 命令改为 `docker build -f docker/Dockerfile -t javsp-fork .`。
+
+### 附带：`poetry.lock` 与 `pyproject.toml` 失同步
+- `poetry.lock` 自 v0.1.6 起未再更新，`content-hash` 与 `pyproject.toml` 已不匹配，干净环境执行
+  `poetry install` 会报 `pyproject.toml changed significantly`。
+- **修复**：重生 `poetry.lock`（保持 `lock-version=2.0`）。同时给 Dockerfile 的 `poetry install`
+  前补 `poetry lock &&`，使后续任何人从零构建都能自恢复。
+- 注意：重生 lock 会把依赖树解析到各包的最新兼容版本（本次 diff 较大），已由回归验证兜底。
+
+### 改动的文件
+- `pyproject.toml`：主依赖补 `packaging = "*"`；`version` 0.1.15 → 0.1.16
+- `poetry.lock`：重生（`lock-version` 保持 2.0）
+- `docker/Dockerfile`：`ENTRYPOINT` 改为 `/app/.venv/bin/server`；`poetry install` 前补 `poetry lock &&`
+- `README.md`：`docker build` 补 `-f docker/Dockerfile`；新增「选择 NAS 上的 share 目录进行刮削/改名」小节
+- `frontend/package.json` / `frontend/package-lock.json` / `README.md`：版本号经 `sync_version.py` 同步至 0.1.16
+
+### 验证
+- NAS 实测部署通过：`http://<NAS_IP>:8000` 可访问，`/` 返回 WebUI、`/api/health` 返回
+  `{"status":"ok","version":"0.1.15→0.1.16"}`，`/api/config` 200，`/data` 正确挂载 NAS share 目录。
+- 全量回归：既有验证脚本（`verify_output_toggles` / `verify_nfo_jellyfin` / `verify_cropper` /
+  `verify_config_io` / `verify_config_reload` / `verify_batch_e2e` / `verify_sources_e2e` /
+  `verify_scrape_refactor`）全部通过。
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复
@@ -465,6 +516,34 @@ poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此
    - 验证：新增 `verify_output_toggles.py`（**70/70 PASS**），覆盖四种封面组合的实际落盘、
      NFO / 剧照开关、旧配置向后兼容、CLI 与 Web 共用判据（源码扫描防止漂移）、
      开关经 `/api/config` 写回后 `describe_runtime` 跟随变化、前端纯函数从 App.vue 提取求值。
+
+16. **【部署阻断】`packaging` 是运行时依赖却从未声明，容器启动即崩**
+   - 现象：NAS Docker 部署后容器反复重启，`ModuleNotFoundError: No module named 'packaging'`。
+   - 根因：`javsp/func.py` 用了 `from packaging import version`，但 `pyproject.toml` 未声明该依赖，
+     它仅作为 dev 组 `cx-freeze` 的传递依赖存在于 lock；`poetry install --only main` 排除 dev 组后，
+     干净 venv 里就没有它。本地长期未暴露是因为 pip / poetry 自身携带 `packaging`，恰好掩盖了「未声明」。
+   - 隐蔽性：这是一类**只有干净环境才暴露**的 bug——本地 `pip install -e .` 会解析传递依赖而侥幸存活。
+   - 修复：主依赖显式声明 `packaging = "*"`（v0.1.16）。
+
+17. **【部署阻断】Dockerfile 入口点用 CLI 脚本，容器跑成扫描模式、永不监听端口**
+   - 现象：容器状态 `Up` 但 8000 端口不监听、容器日志空白，看起来「启动了又没起来」。
+   - 根因：`ENTRYPOINT ["/app/.venv/bin/javsp"]` + `CMD ["server"]`；而 `javsp` 是 CLI 入口
+     （`javsp.__main__:entry`），**不解析子命令**，`server` 参数被忽略，容器实际执行完整 CLI 流程
+     （读配置 → `check_update` 联网 → 扫描目录），与 Web 服务无关。
+   - 踩坑记录：为快速修复曾用 `docker run --entrypoint sleep ...` 起临时容器改镜像再 `docker commit`，
+     结果 **`docker commit` 会把临时容器的 ENTRYPOINT 一并固化进镜像**，导致后续 `docker run`
+     起的是 sleep 而非服务。改镜像入口点必须用 `docker commit --change 'ENTRYPOINT [...]'` 显式覆盖。
+   - 修复：改用 poetry 生成的 `server` 控制台脚本（`= javsp.server:entry`）作为入口点（v0.1.16）。
+
+18. **【文档/流程】README 的 `docker build` 缺 `-f`，`poetry.lock` 与 pyproject 失同步**
+   - `docker build -t javsp-fork .` 报 `open Dockerfile: no such file`——Dockerfile 实际在 `docker/` 子目录，
+     仓库根没有；README 命令缺 `-f docker/Dockerfile`（v0.1.16 修正）。
+   - `poetry.lock` 的 `content-hash` 与 `pyproject.toml` 已不匹配，干净环境 `poetry install` 会报
+     `pyproject.toml changed significantly since poetry.lock was last generated`，只能靠 Dockerfile 里
+     临时加 `poetry lock &&` 绕过。已重生 lock，并给 Dockerfile 加 `poetry lock &&` 使其自恢复（v0.1.16）。
+   - 相关工具坑：Windows 下 `poetry lock` 会把整个 lock 写成 CRLF（与本项目长期坚持的 LF 冲突），
+     已用二进制方式还原为 LF；且 `poetry lock` 会拿项目 venv 的解释器校验 pyproject 的 python 约束，
+     必须先 `env use` 到合规版本（本项目 `<3.13`，故用 3.12）。
 
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 

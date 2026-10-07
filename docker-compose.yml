@@ -1,0 +1,28 @@
+# JavSP-fork Docker 部署（NAS / 服务器通用）
+#
+# 构建镜像（首次或更新后）：
+#   docker build -f docker/Dockerfile -t javsp-fork .
+# 启动：
+#   docker compose up -d
+#
+# 重要：扫描时在前端「扫描目录」框填写【容器内】的挂载路径（本例为 /data），
+#       不是 NAS 真机路径（如 /share/Multimedia/JAV）。bind mount 是双向即时的，
+#       容器内写回即直接落盘到 NAS 的 share 目录。
+services:
+  javsp:
+    image: javsp-fork          # 换成你的镜像仓库地址也可，例如 registry.example.com/javsp-fork:latest
+    container_name: javsp
+    ports:
+      - "8000:8000"
+    volumes:
+      # 主机路径 = NAS 本机的共享文件夹真实路径（不是 Windows 的 \\HOMENAS\Downloads 这种 SMB/UNC 路径；
+      # 容器跑在 NAS 本机，直接挂本机路径即可，无需走 SMB，bind mount 双向即时）
+      # \\HOMENAS\Downloads 对应 QNAP 共享文件夹「Downloads」的本机路径：
+      #   /share/Downloads
+      # 若 Container Station 找不到该路径，用 NAS 终端执行 `realpath /share/Downloads` 查真实卷路径，
+      # 通常形如 /share/CACHEDEV1_DATA/Downloads，把下面这行替换成真实路径即可。
+      # （若 HOMENAS 实为群晖 Synology，则本机路径为 /volume1/Downloads）
+      - /share/Downloads:/data
+    # 可选：对齐 NAS 媒体文件的属主 uid:gid，避免 Jellyfin 回写 NFO/封面时因属主为 root 而受限
+    # user: "1000:1000"
+    restart: unless-stopped
