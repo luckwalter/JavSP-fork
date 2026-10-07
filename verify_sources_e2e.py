@@ -24,7 +24,19 @@ import tempfile
 import subprocess
 
 PROJ = "C:/Users/luckw/WorkBuddy/2026-10-06-17-16-37/JavSP"
-NODE = "C:/Users/luckw/.workbuddy/binaries/node/versions/22.22.2-3/node.exe"
+
+
+def find_node():
+    """定位 node 可执行文件（managed node 目录带版本号、会随环境升级漂移，不能写死）"""
+    import glob
+    base = os.path.expanduser('~/.workbuddy/binaries/node/versions')
+    cands = sorted(glob.glob(os.path.join(base, '*/node.exe')), key=os.path.getmtime)
+    if cands:
+        return cands[-1]
+    return shutil.which('node') or 'node'
+
+
+NODE = find_node()
 sys.path.insert(0, PROJ)
 os.chdir(PROJ)          # Cfg 需能找到 config.yml
 

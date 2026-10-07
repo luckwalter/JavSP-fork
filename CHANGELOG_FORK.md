@@ -198,6 +198,43 @@
 
 ---
 
+## v0.1.13 — 封面 AI 裁剪：让那句宣传站得住，并能确认它到底有没有生效
+
+起因是逐条核对 README 里的宣传语，发现「基于 AI 人体分析裁剪素人等非常规封面的海报」与实现有出入：
+实现早已从「百度人体分析」换成 `slimeface` 本地**人脸检测**（措辞过时）；配置里 `crop.engine` 默认是 `null`
+（**根本没启用**）；更棘手的是失败时用**裸 `except`** 静默回退默认裁剪，日志一个字不留。三者叠加的结果：
+用户以为有这功能，即便开了也无从判断到底有没有用上。
+
+### 改动内容
+- **裁剪器不再静默失败**（`javsp/cropper/interface.py`、`javsp/cropper/slimeface_crop.py`）
+  - 基类新增 `last_status` 记录本次裁剪去向，子类用 `_mark_ok` / `_mark_fallback` 上报；
+  - 原先一句裸 `except` 覆盖全部情况，现按四类分别捕获：依赖缺失 / 未检测到人脸 / 检测出错 / 定位裁剪失败，
+    每类都带回具体原因 —— 「没检测到人脸」其实是预期内的常见情形，过去却被当成异常一并吞掉；
+  - 补 `get_cropper` 兜底：将来新增引擎若漏了分支，返回默认裁剪器而不是 None
+    （否则调用点报 `'NoneType' object has no attribute 'crop'`，很难联想到是裁剪器分支漏了）。
+- **裁剪结果如实回传**（`javsp/core.py`）
+  - `process_poster` 返回 `{engine, applied, reason}`：AI 生效记 info，回退记 **warning 并写明原因**；
+  - `organize_movie` 把结果放进 `result['crop']`，Web 整理结果与界面提示都看得到；
+  - 语义统一：`applied=True` 只在**真的用上 AI 引擎**时为真，未启用时为 False 且说明「使用默认居中裁剪」。
+- **配置可写回、状态可观测**
+  - `config_io` 支持把标量改写成 YAML flow mapping（`engine: {name: slimeface}`），以及把多行嵌套块收敛回 `null`（删除子行），
+    注释与排版不受影响 —— 这是开关能从 Web 保存的前提（原先只会渲染标量，dict 会被写成 Python 字典字符串）；
+  - `describe_runtime()` 新增 `cover_crop`：引擎名 / 是否启用 / **依赖可用性探测** / 生效番号规则，`GET /api/config/runtime` 可见。
+- **前端**：「设置」页新增「封面裁剪」分组 —— 人脸检测裁剪开关、启用条件（番号正则，可增改）、依赖状态查询；
+  整理完成后明确提示本次是否真的用上了人脸检测、没用上是因为什么，不再笼统报「整理完成」。
+- 附带修复：`verify_config_io.py` / `verify_sources_e2e.py` 里写死的 node 版本号改为动态探测（详见 Issue #13）。
+- 验证：新增 `verify_cropper.py`（**65/65 PASS**），覆盖开关写回保注释、四类回退上报、
+  AI 生效时结果与默认确有差异、整理结果透出、接口端到端开关、以及前端四个判定函数。
+
+### 测试上的一个坑（值得记住）
+验证「AI 裁剪是否真的生效」时必须用**宽图 + 主体偏左**的构图：宽图下默认裁剪固定取最右侧，
+只有人脸不在右边时两者的裁剪框才会不同；拿纯色图或不带人脸的合成图来测，
+任何裁剪结果都相同，会误判成「功能没生效」（本次踩过）。
+
+- 关联 commit：本提交（v0.1.13 同笔提交：`javsp/cropper/interface.py` + `javsp/cropper/slimeface_crop.py` + `javsp/cropper/__init__.py` + `javsp/core.py` + `javsp/config_io.py` + `javsp/config_reload.py` + `frontend/src/App.vue` + `frontend/src/api.js` + `verify_cropper.py`(新) + `verify_config_io.py` + `verify_sources_e2e.py` + `README.md` + `CHANGELOG_FORK.md` + `pyproject.toml` + `frontend/package.json` + `frontend/package-lock.json`）
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复
@@ -262,6 +299,22 @@
    - 实现热重载时发现的**隐藏坑**：`javsp/web/*.py` 在 import 时就执行 `request = Request(...)`，而 `Request.__init__` 把 `proxies` / `timeout` **当场固化**（`self.proxies = read_proxy()`、`self.timeout = Cfg()...`）。仅重载 `Cfg` 的话，6 个爬虫仍会拿着旧代理发请求 —— 界面改了却看不到效果，属于「改了一半」的假生效。
    - 修复：重载 `Cfg` 单例后，再遍历已加载的 `javsp.web.*` 模块刷新其 `request.proxies` / `request.timeout`；超时下限（airav 20s / javlib 5s）提取为模块级 `_TIMEOUT_FLOOR` 常量供刷新复用，避免被全局值冲掉（v0.1.12）。
    - 安全设计：重载失败会立即恢复旧实例（否则 `confz_instance` 一直是 None，后续任何 `Cfg()` 都会重建并抛错，等于打瘫服务）；文件同步回滚；写入改为原子替换，避免重载读到半截文件。
+
+13. **【文档与功能不符】README 宣传的「AI 人体分析裁剪」名不副实**
+   - 现象：功能列表写着「基于 AI 人体分析裁剪素人等非常规封面的海报」，核对后发现三处出入：
+     ① **措辞过时** —— 上游早年确实用过「百度人体分析」接口，几经改版后已换成 `slimeface`（本地**人脸检测**），但宣传语没跟着改；
+     ② **默认并未启用** —— `config.yml` 里 `crop.engine: null`（注释明示「null 表示禁用图像剪裁」），实际一直走默认居中裁剪；
+     ③ **静默回退** —— `SlimefaceCropper` 用**裸 `except`** 吞掉一切异常，连「没检测到人脸」这种完全正常的情况也一并吞掉：封面照旧生成，日志一个字没有。
+   - 影响：用户以为有这个能力；即便手动开启，也**无法判断到底有没有生效** —— 「开了 AI 裁剪」和「真的用了 AI 裁剪」完全不可区分。
+   - 修复：
+     1. 裁剪器改为分类捕获四类失败并记录 `last_status`（依赖缺失 / 未检测到人脸 / 检测出错 / 定位裁剪失败），不再用裸 except；
+     2. `process_poster` 返回本次**实际采用**的裁剪方式（`{engine, applied, reason}`），按级别写日志，并由 `organize_movie` 放进整理结果 `result['crop']`；统一语义 —— `applied=True` 只在真的用上 AI 引擎时为 True；
+     3. `describe_runtime()` 暴露 `cover_crop`（引擎 / 是否启用 / **依赖可用性探测** / 生效番号规则），界面可直接看出「装没装」；
+     4. 前端「设置」页提供开关与番号规则编辑；整理结果明确提示未生效及原因；
+     5. README 改为准确描述，勾选状态从「已完成」改为「默认关闭的可选项」。
+   - 附带修复：为让开关能从 Web 写回，`config_io` 支持把标量改写成 YAML flow mapping（`engine: {name: slimeface}`）以及把多行嵌套块收敛回 `null`（删除子行），注释与排版均不受影响。
+   - 另修复：`verify_config_io.py` / `verify_sources_e2e.py` 里 node 路径写死了 managed 版本号，环境升级后报 `FileNotFoundError`（看着像功能坏了，实为路径漂移）→ 改为动态探测。
+   - 验证：新增 `verify_cropper.py`（**65/65 PASS**）。
 
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 

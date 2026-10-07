@@ -23,7 +23,25 @@ import tempfile
 import subprocess
 
 PROJ = "C:/Users/luckw/WorkBuddy/2026-10-06-17-16-37/JavSP"
-NODE = "C:/Users/luckw/.workbuddy/binaries/node/versions/22.22.2-3/node.exe"
+
+
+def find_node():
+    """定位 node 可执行文件
+
+    WorkBuddy 的 managed node 装在**带版本号**的目录下（如 versions/22.22.2-6/node.exe），
+    环境升级后目录名就会变。早期把具体版本写死，一升级脚本就 FileNotFoundError
+    （看起来像功能坏了，其实是路径漂移）。故改为扫描 versions 目录取最新，
+    再回退到 PATH 里的 node。
+    """
+    import glob
+    base = os.path.expanduser('~/.workbuddy/binaries/node/versions')
+    cands = sorted(glob.glob(os.path.join(base, '*/node.exe')), key=os.path.getmtime)
+    if cands:
+        return cands[-1]
+    return shutil.which('node') or 'node'
+
+
+NODE = find_node()
 sys.path.insert(0, PROJ)
 os.chdir(PROJ)
 

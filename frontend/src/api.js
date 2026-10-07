@@ -29,6 +29,13 @@ export async function getConfig() {
   return r.json()
 }
 
+// 运行时实际生效的配置（区别于 /api/config 的磁盘值），含封面裁剪引擎与依赖可用性
+export async function getConfigRuntime() {
+  const r = await fetch(BASE + '/api/config/runtime')
+  if (!r.ok) throw new Error((await r.json()).detail || 'config runtime get failed')
+  return r.json()
+}
+
 export async function putConfig(cfg) {
   const r = await fetch(BASE + '/api/config', {
     method: 'PUT',

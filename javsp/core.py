@@ -455,7 +455,15 @@ def generate_names(movie: Movie):
         return legalize_info()
 
 
-def process_poster(movie: Movie):
+def process_poster(movie: Movie) -> dict:
+    """裁剪 poster，并返回本次**实际采用**的裁剪方式
+
+    返回 {'engine': 引擎名|None, 'applied': bool, 'reason': str|None}
+
+    为什么要返回这个：AI 裁剪引擎失败时会静默回退到默认裁剪，封面照样生成。
+    于是「配置里开了 AI 裁剪」和「真的用了 AI 裁剪」是两回事，过去无任何提示。
+    这里把结果显式返回 + 打日志，engine 非 None 但 applied=False 即为回退。
+    """
     def should_use_ai_crop_match(label):
         for r in Cfg().summarizer.cover.crop.on_id_pattern:
             if re.match(r, label):
@@ -470,12 +478,31 @@ def process_poster(movie: Movie):
     fanart_image = Image.open(movie.fanart_file)
     fanart_cropped = cropper.crop(fanart_image)
 
+    if crop_engine is None:
+        # 统一语义：applied=True 只表示**真的用上了 AI 引擎**，未启用时一律为 False
+        crop_status = {'engine': None, 'applied': False,
+                       'reason': '未启用 AI 裁剪引擎，使用默认居中裁剪'}
+    else:
+        crop_status = {
+            'engine': crop_engine.name,
+            'applied': bool(cropper.last_status.get('applied')),
+            'reason': cropper.last_status.get('reason'),
+        }
+    if crop_status['engine']:
+        if crop_status['applied']:
+            logger.info(f'封面裁剪: 已使用 {crop_status["engine"]} 按人脸位置定位')
+        else:
+            # 最容易被忽略的一种情况：开了 AI 裁剪却走的默认裁剪
+            logger.warning(f'封面裁剪: {crop_status["engine"]} 未生效'
+                           f'（{crop_status["reason"]}），已回退为默认裁剪')
+
     if Cfg().summarizer.cover.add_label:
         if movie.hard_sub:
             fanart_cropped = add_label_to_poster(fanart_cropped, SUBTITLE_MARK_FILE, LabelPostion.BOTTOM_RIGHT)
         if movie.uncensored:
             fanart_cropped = add_label_to_poster(fanart_cropped, UNCENSORED_MARK_FILE, LabelPostion.BOTTOM_LEFT)
     fanart_cropped.save(movie.poster_file)
+    return crop_status
 
 
 def download_cover(covers, fanart_path, big_covers=[]):
@@ -604,8 +631,10 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
             actual_ext = os.path.splitext(pic_path)[1]
             movie.poster_file = os.path.splitext(movie.poster_file)[0] + actual_ext
     try:
-        process_poster(movie)
+        crop = process_poster(movie)
         result['steps'].append('poster')
+        # 把实际裁剪方式带回给调用方(Web 整理结果)，否则界面上无从判断是否用了 AI 裁剪
+        result['crop'] = crop
     except Exception as e:
         logger.warning(f"裁剪封面失败: {e}")
         result['errors'].append(f'poster: {e}')

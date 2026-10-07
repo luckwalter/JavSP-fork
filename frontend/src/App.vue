@@ -208,6 +208,26 @@
             <el-form-item label="翻译标题"><el-switch v-model="configObj.translator.fields.title" /></el-form-item>
             <el-form-item label="翻译剧情"><el-switch v-model="configObj.translator.fields.plot" /></el-form-item>
 
+            <el-divider>封面裁剪</el-divider>
+            <el-alert type="info" :closable="false" style="margin-bottom: 12px"
+                      title="默认关闭。开启后，无码 / FC2 / 番号匹配下方规则的封面会改用本地人脸检测来定位裁剪区，能把主体偏在一侧的封面救回来。代价：每张封面多一次检测耗时，且依赖 slimeface。" />
+            <el-form-item label="人脸检测裁剪">
+              <el-switch v-model="cropEnabled" />
+            </el-form-item>
+            <el-form-item label="依赖状态">
+              <el-tag v-if="cropRuntime" size="small"
+                      :type="cropAvailable ? 'success' : 'danger'">
+                {{ cropAvailable ? 'slimeface 已安装' : 'slimeface 未安装' }}
+              </el-tag>
+              <span v-else style="color: #909399">未查询</span>
+              <el-button size="small" style="margin-left: 8px" @click="loadRuntime">查询运行时</el-button>
+            </el-form-item>
+            <el-form-item label="启用条件(番号正则)">
+              <el-select v-model="configObj.summarizer.cover.crop.on_id_pattern"
+                         multiple filterable allow-create default-first-option
+                         style="width: 100%" placeholder="回车新增，如 ^SIRO" />
+            </el-form-item>
+
             <el-button type="primary" @click="saveConfig">保存并写回 config.yml</el-button>
           </el-form>
           <el-alert v-else title="点击「加载配置」从服务端读取 config.yml" type="info" style="margin-top: 10px" />
@@ -248,6 +268,34 @@ const configMsg = ref('')
 const timeoutSec = ref(10)
 // 需要填写免代理地址的站点（对应 config.yml 的 network.proxy_free）
 const proxyFreeSites = ['avsox', 'javbus', 'javdb', 'javlib']
+// 封面裁剪：配置项是 `crop.engine: {name} | null`，界面只暴露一个开关
+const cropEnabled = ref(false)
+const cropRuntime = ref(null)
+const cropAvailable = ref(false)
+
+// 纯函数便于从源码提取后单测（见 verify_cropper.py）
+// 从裁剪配置读出开关初值：engine 为 null / 缺失即视为关闭
+function readCropEnabled(crop) {
+  return !!(crop && crop.engine && crop.engine.name)
+}
+
+// 按开关构造写回用的 engine 载荷
+function buildCropEngine(enabled) {
+  return enabled ? { name: 'slimeface' } : null
+}
+
+// 从 /api/config/runtime 的返回判断 slimeface 是否真的可用
+function isCropAvailable(runtime) {
+  const c = runtime && runtime.cover_crop
+  return !!(c && c.available)
+}
+
+// 整理完成后关于封面裁剪的提示文案；无需提示时返回 null
+function cropResultNote(crop) {
+  if (!crop || !crop.engine) return null
+  if (crop.applied) return '封面已按人脸检测位置裁剪'
+  return `已开启 ${crop.engine} 裁剪，但本次未生效：${crop.reason || '未知原因'}，已回退为默认裁剪`
+}
 
 // "PT10S" / "PT1M30S" / 纯数字 → 秒；无法识别时返回 null（保留界面原值不动）
 function parseDurationToSec(v) {
@@ -305,7 +353,14 @@ async function organizeTask(row) {
     if (d.type === 'stage') taskLog.value += `[${d.stage}]\n`
     if (d.type === 'result') {
       taskLog.value += '完成: ' + JSON.stringify(d.result, null, 2)
-      ElMessage.success('整理完成')
+      // 封面裁剪是否真的用上了 AI：没用上时要点明，否则用户会以为配置已生效
+      const note = cropResultNote(d.result && d.result.crop)
+      if (note) {
+        taskLog.value += '\n' + note
+        ElMessage.warning(note)
+      } else {
+        ElMessage.success('整理完成')
+      }
     }
     if (d.type === 'error') {
       taskLog.value += '错误: ' + d.msg
@@ -422,9 +477,30 @@ async function loadConfig() {
     })
     const sec = parseDurationToSec(c.network.timeout)
     if (sec !== null) timeoutSec.value = sec
+    // 封面裁剪段：补齐结构（旧配置可能整段缺失），并把引擎归一化成开关
+    if (c.summarizer) {
+      const cover = (c.summarizer.cover = c.summarizer.cover || {})
+      const crop = (cover.crop = cover.crop || {})
+      crop.on_id_pattern = crop.on_id_pattern || []
+      cropEnabled.value = readCropEnabled(crop)
+      crop.engine = crop.engine || { name: 'slimeface' }
+    }
     configObj.value = c
+    // 顺带查一次运行时，让「依赖是否装了」无需额外操作就能看到（失败不影响配置编辑）
+    loadRuntime(true)
   } catch (e) {
     ElMessage.error('加载失败: ' + e.message)
+  }
+}
+
+async function loadRuntime(silent) {
+  try {
+    const r = await api.getConfigRuntime()
+    cropRuntime.value = r.runtime || null
+    cropAvailable.value = isCropAvailable(r.runtime)
+    if (!silent) ElMessage.success('已读取运行时配置')
+  } catch (e) {
+    if (!silent) ElMessage.error('读取运行时配置失败: ' + e.message)
   }
 }
 
@@ -438,6 +514,10 @@ async function saveConfig() {
       const v = (payload.network.proxy_free || {})[s]
       if (v === undefined || String(v).trim() === '') delete payload.network.proxy_free[s]
     })
+    // 封面裁剪：开关 → engine 载荷（关闭即 null，写回为 `engine: null`）
+    if (payload.summarizer && payload.summarizer.cover && payload.summarizer.cover.crop) {
+      payload.summarizer.cover.crop.engine = buildCropEngine(cropEnabled.value)
+    }
     const r = await api.putConfig(payload)
     configMsg.value = r.note || '已保存'
     if (r.reloaded) {

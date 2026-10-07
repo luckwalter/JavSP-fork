@@ -77,10 +77,28 @@ def _scalar(v):
     return s
 
 
+def _render_key(k):
+    """渲染映射的键（与标量同理，必要时加引号）"""
+    s = str(k)
+    return "'" + s.replace("'", "''") + "'" if _needs_quote(s) else s
+
+
 def _render(value):
-    """渲染字段值：列表用 flow 风格，其余按标量"""
+    """渲染字段值：列表→flow 序列、映射→flow 映射（均单行），其余按标量
+
+    flow 映射形如 `{name: slimeface}`，YAML 能正常解析成嵌套对象。这样做的好处是
+    「把一个标量字段改成嵌套对象」（如 `engine: null` → `engine: {name: slimeface}`）
+    只需替换一行，不必往满是注释的文件里插入多行块，注释与排版都不会动。
+    """
     if isinstance(value, (list, tuple)):
+        if not value:
+            return '[]'
         return '[' + ', '.join(_scalar(v) for v in value) + ']'
+    if isinstance(value, dict):
+        if not value:
+            return '{}'
+        items = ', '.join(f'{_render_key(k)}: {_render(v)}' for k, v in value.items())
+        return '{' + items + '}'
     return _scalar(value)
 
 
@@ -172,8 +190,11 @@ def write_config_preserving_comments(cfg_path, changes):
         content, eol = _split_eol(lines[i])
         indent = len(content) - len(content.lstrip())
         new_line = ' ' * indent + path[-1] + ': ' + _render(value)
-        if kind == 'container' and isinstance(value, (list, tuple)):
-            # 原为多行 block 列表，整块替换成单行 flow 风格
+        if kind == 'container':
+            # 原字段是多行嵌套块，而 _render 对任何取值都只产出**单行**，
+            # 故必须把原有子行整块删除，否则残留的缩进行会让 YAML 结构错乱
+            # （如 `engine: null` 写成 `engine: {name: slimeface}`，或反过来收敛为 null）。
+            # 注意：块内部更深缩进的注释会一并被吞掉，这是「替换整块」语义的固有代价。
             end = _block_end(lines, i, indent)
             to_delete.update(range(i + 1, end))
         to_replace[i] = new_line + eol

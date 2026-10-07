@@ -94,6 +94,19 @@ def reload_runtime_config():
         return {'ok': False, 'refreshed': [], 'error': str(e)}
 
 
+def _slimeface_available():
+    """slimeface 是否可用
+
+    它是**可选依赖**：缺失时 AI 裁剪会静默回退到默认裁剪，功能看起来“开了没效果”。
+    这里给出明确探针，界面可据此提示「依赖未安装」。
+    """
+    try:
+        import slimeface       # noqa: F401  # pylint: disable=unused-import
+        return True
+    except Exception:
+        return False
+
+
 def describe_runtime():
     """取当前运行时配置的关键项（供接口返回/验证脚本断言）"""
     from javsp.config import Cfg
@@ -106,12 +119,21 @@ def describe_runtime():
             'timeout': getattr(req, 'timeout', None),
             'proxies': dict(getattr(req, 'proxies', None) or {}),
         }
+    crop_cfg = cfg.summarizer.cover.crop
     return {
         'proxy_server': str(cfg.network.proxy_server) if cfg.network.proxy_server else None,
         'timeout': cfg.network.timeout.total_seconds(),
         'retry': cfg.network.retry,
         'max_concurrency': cfg.crawler.max_concurrency,
         'crawlers': crawlers,
+        # 封面裁剪：enabled 是配置意图，available 是依赖是否真的装了，
+        # 两者都为真 AI 裁剪才可能生效（最终还得看封面里检测不检测得到人脸）
+        'cover_crop': {
+            'engine': crop_cfg.engine.name if crop_cfg.engine else None,
+            'enabled': crop_cfg.engine is not None,
+            'available': _slimeface_available(),
+            'on_id_pattern': list(crop_cfg.on_id_pattern or []),
+        },
     }
 
 
