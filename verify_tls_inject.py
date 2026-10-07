@@ -166,9 +166,40 @@ def test_all_request_points_bound():
                 bad.append(f'{os.path.relpath(p, ROOT)}:{line}')
     check('全项目无硬编码 verify=False', not bad, str(bad))
 
-    # 5) 除 4 处模块级调用外, 再确认 Request 内是 partial 绑定(而非裸 requests.get)
-    n_verify = src.count('verify=tls_verify()')
-    check('模块级调用点数量符合预期(4 处)', n_verify == 4, f'实际 {n_verify} 处')
+    # 5) 用 AST 精确统计模块级 requests 调用点数量(字符串 count 会被多行写法少算)
+    import ast
+    tree = ast.parse(src)
+    mod_level_calls = []
+    for node in tree.body:                      # 只看模块级函数
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                    and isinstance(sub.func.value, ast.Name)
+                    and sub.func.value.id == 'requests'
+                    and sub.func.attr in ('get', 'post')):
+                kw = {k.arg for k in sub.keywords}
+                mod_level_calls.append((node.name, sub.func.attr, 'verify' in kw,
+                                        'proxies' in kw))
+    check('模块级 requests 调用共 4 处(request_get/request_post/is_connectable/urlretrieve)',
+          len(mod_level_calls) == 4, f'实际 {len(mod_level_calls)}: '
+          f'{[(n, f) for n, f, _, _ in mod_level_calls]}')
+    no_verify = [(n, f) for n, f, v, _ in mod_level_calls if not v]
+    check('模块级调用全部带 verify', not no_verify, str(no_verify))
+    # 走代理的调用(is_connectable / urlretrieve / get_html / post_html)必须带 proxies;
+    # 逐一核对, 不抽样
+    no_proxies = [(n, f) for n, f, _, p in mod_level_calls if not p]
+    check('模块级调用全部带 proxies', not no_proxies, str(no_proxies))
+
+    # 6) is_connectable 必须带 proxies —— 它是「自动获取新镜像」能力的唯一探测入口,
+    # 漏了 proxies 会让它永远走直连, 在需要代理的环境里恒返回 False, 自动恢复形同虚设。
+    m = re.search(r'def is_connectable\(.*?(?=\n\ndef |\n\nclass )', src, re.S)
+    check('is_connectable 函数体可定位', m is not None)
+    if m:
+        body = m.group(0)
+        check('is_connectable 带 proxies=read_proxy()', 'proxies=read_proxy()' in body,
+              '漏了会让探测走直连 -> 自动获取镜像地址失效')
+        check('is_connectable 带 verify', 'verify=tls_verify()' in body)
 
 
 def test_default_behavior_unchanged():

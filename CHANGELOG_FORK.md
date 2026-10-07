@@ -961,12 +961,21 @@ v0.1.20 为修「番号正则注入」把 `re.sub(r'[_-]','[_-]*',avid)` 改成
 `urlretrieve`），**逐处加 `verify=` 易漏**，故在 `Request.__init__` 里用
 `functools.partial` **一次性绑定**到三个方法，模块级 4 处调用单独注入。
 
+**`is_connectable` 漏传 `proxies` —— 「地址失效自动获取新地址」长期失效的根因**（本轮
+实测才发现）。该函数是 `proxyfree.get_proxy_free_url` 的**唯一探测入口**，原先不传
+proxies ⇒ 永远走**直连**探测，而实际抓取走代理。实测后果：NAS 上四个站点的
+`is_connectable` **全部 False**，自动获取全部返回空串 —— 主人镜像地址失效后**无法自动
+恢复**，只能手工填。已修。这是「探测与实际使用配置不一致」的典型：**探测必须与真实路径
+同配置**，否则结论不可用。
+
 ### 验证
 
-- 新增 `verify_tls_inject.py` **23/23**：`tls_verify()` 三种取值语义（默认校验 / 自定义 CA /
+- 新增 `verify_tls_inject.py` **28/28**：`tls_verify()` 三种取值语义（默认校验 / 自定义 CA /
   显式关闭）、CA 文件不存在时退回默认而非抛错、**CA 优先于关闭开关**、空白值被忽略、
   运行时 `partial.keywords` 确实带 `verify`、**全项目无硬编码 `verify=False`**、
-  模块级调用点数量守恒（4 处）。
+  **用 AST 精确统计**模块级 `requests.get/post` 调用点数量与 `verify`/`proxies` 覆盖
+  （不靠字符串 `count`——多行写法会少算，本轮就因此误报过一次）、`is_connectable`
+  必须带 `proxies=read_proxy()`。
 - `verify_config_io.py` 42/42：修 T3「同级站点未被误改」——原断言硬编码了
   `seedmm` 这个会随时间失效的域名，换镜像地址后**假失败**。改为比对「改动前后同级键
   逐行相等」，不再耦合具体地址。

@@ -236,9 +236,16 @@ def dump_xpath_node(node, filename=None):
 
 
 def is_connectable(url, timeout=3):
-    """测试与指定url的连接"""
+    """测试与指定url的连接
+
+    必须带 `proxies=read_proxy()` —— 否则探测走的是**直连**，而实际抓取走代理。
+    两者不一致会造成两个后果：①部署在需要代理的环境（NAS 直连被墙）时，本函数恒返回
+    False，使 `proxyfree.get_proxy_free_url` 的「自动获取新镜像」能力**整体失效**（实测
+    四个站点全部返回空）；②探测结果与真实可用性无关。
+    """
     try:
-        r = requests.get(url, headers=headers, timeout=timeout, verify=tls_verify())
+        r = requests.get(url, headers=headers, timeout=timeout,
+                         proxies=read_proxy(), verify=tls_verify())
         return True
     except requests.exceptions.RequestException as e:
         logger.debug(f"Not connectable: {url}\n" + repr(e))
