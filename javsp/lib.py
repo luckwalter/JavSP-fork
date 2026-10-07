@@ -61,12 +61,16 @@ def detect_special_attr(filepath: str, avid: str = None) -> str:
     if postfix in ('U', 'C', 'UC'):
         result += postfix
     elif avid:
-        # avid 来自文件名或 /api/scrape 的入参, 属不可信输入: 必须先 re_escape 转义,
-        # 否则其中的 * + ( ) . 等正则元字符会成为活跃语法
-        # (既能操纵下面的判定, 也可构造嵌套量词触发 ReDoS)。
-        # 之后再把 -/_ 放宽成 [_-]*, 保持既有语义(ABC-123 仍可匹配 ABC123);
-        # re_escape 的转义表不含 - 与 _, 故这一步不会破坏已转义的部分。
-        pattern_str = re_escape(avid).replace('-', '[_-]*').replace('_', '[_-]*')
+        # avid 来自文件名或 /api/scrape 的入参, 属不可信输入: 必须转义正则元字符,
+        # 否则其中的 * + ( ) . 等会成为活跃语法(既能操纵下面的判定, 也可构造嵌套量词触发 ReDoS)。
+        #
+        # 顺序很关键 —— 必须**先切分、再逐段转义、最后用未转义的分隔符合并**:
+        # - 先 replace 再 re_escape: re_escape 会把刚插入的 [ ] * 一并转义, 放宽语义全失效;
+        # - 先 re_escape 再 replace: 第一次 replace 生成的 '[_-]*' 里的 _ 和 [ 会被第二次
+        #   replace 当作待处理字符, 产出 '[[_-]*-]*' 这种嵌套字符类(Python 发 FutureWarning:
+        #   Possible nested set), 既让放宽语义失效又能匹配到本不该匹配的内容。
+        # 切分->逐段转义->拼接则不受两种顺序问题影响: 分隔符是我们自己加的、不参与转义。
+        pattern_str = '[_-]*'.join(re_escape(seg) for seg in re.split(r'[-_]', avid))
         pattern_str += r'(UC|U|C)\b'
         match = re.search(pattern_str, base, flags=re.I)
         if match:

@@ -280,6 +280,121 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+# --------------------------------------------------------------------------
+section('I NAS 缩略图缓存目录(.@__thumb / @eaDir)不算内容')
+
+# 这是 v0.1.23 在 NAS 上的实际失败场景: 刮削后源目录只剩 '.@__thumb'
+# (QNAP 缩略图缓存, 内含 s100/s800/s2000/default 前缀的几十 KB 缩略图副本),
+# 于是 os.listdir 认为非空 -> 目录永远清不掉。
+tmp = tempfile.mkdtemp(prefix='emptythumb_')
+try:
+    root = os.path.join(tmp, 'scanroot')
+    cat = os.path.join(root, '分类X')          # 上层分类目录
+    movie = os.path.join(cat, 'TST-001')       # 影片目录
+    os.makedirs(movie)
+    f = os.path.join(movie, 'TST-001.mp4')
+    open(f, 'wb').write(b'x' * 100)
+
+    # 模拟 QNAP 在影片目录里生成缩略图缓存
+    thumb = os.path.join(movie, '.@__thumb')
+    os.makedirs(thumb)
+    open(os.path.join(thumb, 's100TST-001.mp4'), 'wb').write(b'x' * 25)
+    open(os.path.join(thumb, 'defaultTST-001.mp4'), 'wb').write(b'x' * 25)
+
+    save = os.path.join(root, 'out')
+    os.makedirs(save, exist_ok=True)
+
+    m = make_movie(root, [f])
+    m.scan_root = root
+    m.save_dir = save
+    m.rename_files(False)
+
+    check('影片目录(仅剩缩略图缓存)已删除', not os.path.exists(movie),
+          f'仍存在: {movie}')
+    check('上层分类目录也一并清理', not os.path.exists(cat), f'仍存在: {cat}')
+    check('扫描根保留', os.path.isdir(root))
+    check('影片本体已移走', os.path.exists(os.path.join(save, m.basename + '.mp4')))
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+tmp = tempfile.mkdtemp(prefix='emptyeadir_')
+try:
+    # 群晖的 @eaDir(非隐藏, 但同为缩略图缓存) 也应被忽略
+    root = os.path.join(tmp, 'scanroot')
+    movie = os.path.join(root, 'TST-002')
+    os.makedirs(movie)
+    f = os.path.join(movie, 'TST-002.mp4')
+    open(f, 'wb').write(b'x' * 100)
+    os.makedirs(os.path.join(movie, '@eaDir'))
+    open(os.path.join(movie, '@eaDir', 'TST-002_SES.jpg'), 'wb').write(b'x' * 10)
+    save = os.path.join(root, 'out')
+    os.makedirs(save, exist_ok=True)
+
+    m = make_movie(root, [f])
+    m.scan_root = root
+    m.save_dir = save
+    m.rename_files(False)
+
+    check('含 @eaDir 的影片目录已删除', not os.path.exists(movie), f'仍存在: {movie}')
+    check('扫描根保留', os.path.isdir(root))
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+tmp = tempfile.mkdtemp(prefix='emptythumbkeep_')
+try:
+    # 关键反向: 目录里除缩略图缓存外还有**不会被移动的文件**时, 判定「有效非空」-> 必须保留。
+    # 构造: 影片本体在 movie/ 下(会被移动), 另有一个 extra/ 子目录含未被移动的文件。
+    root = os.path.join(tmp, 'scanroot')
+    movie = os.path.join(root, 'TST-003')
+    extra = os.path.join(movie, 'extra')        # 不在 self.files 里 -> 不会被移动
+    os.makedirs(extra)
+    keep_file = os.path.join(extra, 'note.txt')
+    open(keep_file, 'w').write('x')
+    os.makedirs(os.path.join(movie, '.@__thumb'))
+    open(os.path.join(movie, '.@__thumb', 's100TST-003.mp4'), 'wb').write(b'x' * 25)
+    src = os.path.join(movie, 'TST-003.mp4')
+    open(src, 'wb').write(b'x' * 100)
+    save = os.path.join(root, 'out')
+    os.makedirs(save, exist_ok=True)
+
+    m = make_movie(root, [src])
+    m.scan_root = root
+    m.save_dir = save
+    m.rename_files(False)
+
+    # movie 里剩 extra/(含 note.txt) + .@__thumb -> 「有效非空」必须保留
+    check('有效非空的影片目录未被误删', os.path.isdir(movie), f'{movie} 不应被删')
+    check('未被移动的真实文件仍在', os.path.exists(keep_file))
+    check('影片本体已移到输出目录', os.path.exists(os.path.join(save, m.basename + '.mp4')))
+    check('扫描根保留', os.path.isdir(root))
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+tmp = tempfile.mkdtemp(prefix='emptydotgit_')
+try:
+    # .git / .Trash 这类隐藏目录仍必须被保护, 不能当缓存删掉
+    root = os.path.join(tmp, 'scanroot')
+    movie = os.path.join(root, 'TST-004')
+    os.makedirs(movie)
+    f = os.path.join(movie, 'TST-004.mp4')
+    open(f, 'wb').write(b'x' * 100)
+    os.makedirs(os.path.join(movie, '.Trash-1000'))
+    open(os.path.join(movie, '.Trash-1000', 'x.bin'), 'wb').write(b'x' * 10)
+    save = os.path.join(root, 'out')
+    os.makedirs(save, exist_ok=True)
+
+    m = make_movie(root, [f])
+    m.scan_root = root
+    m.save_dir = save
+    m.rename_files(False)
+
+    check('.Trash-1000 未被当作缓存删除', os.path.isdir(os.path.join(movie, '.Trash-1000')))
+    check('含 .Trash 的影片目录被保留', os.path.isdir(movie))
+    check('扫描根保留', os.path.isdir(root))
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 print('\n' + '=' * 60)
 print(f'RESULT: {PASS} passed, {FAIL} failed')
 print('=' * 60)

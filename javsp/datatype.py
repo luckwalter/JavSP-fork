@@ -214,6 +214,27 @@ class Movie:
     # 通常 1~2 层足够; 设上限可避免无 scan_root 时(CLI)一路删到用户目录树的顶端。
     _CLEANUP_MAX_DEPTH = 2
 
+    # 「不算内容」的目录名: NAS 的媒体缩略图缓存。
+    # QNAP 用 '.@__thumb'、群晖用 '@eaDir', 被访问过的目录里都会生成, 内含
+    # s100/s800/s2000/default 前缀的**缩略图副本**(几十 KB 的 jpg/png, 不是影片本体)。
+    # 它们会让「目录看起来非空」, 使空目录永远清理不掉 —— 实测 NAS 上刮削完
+    # 源目录只剩 '.@__thumb' 而被保留。删掉它们不丢用户数据(NAS 下次访问时自建),
+    # 故判定「是否为空」时须忽略这些目录。
+    _THUMB_CACHE_DIRS = frozenset({'.@__thumb', '@eaThumb', '@eadir', '.@__thumb_v2'})
+
+    @classmethod
+    def _is_effectively_empty(cls, path: str) -> bool:
+        """目录是否为空(忽略 NAS 缩略图缓存目录)
+
+        不能用 os.listdir 直接判空 —— 上面 _THUMB_CACHE_DIRS 里的目录会让它永远非空。
+        """
+        try:
+            entries = os.listdir(path)
+        except OSError:
+            return False           # 读不到就别删, 交由上层记录并停止
+        real = {e.lower() for e in entries}
+        return not (real - cls._THUMB_CACHE_DIRS)
+
     def _cleanup_empty_dirs(self, start_dir: str, stop_at: str = None) -> None:
         """从 start_dir 起向上递归删除空目录
 
@@ -243,16 +264,40 @@ class Movie:
             # 越出扫描根即停: Web 端 scan_root 是硬边界
             if stop and not _is_within(real_cur, stop):
                 return
-            # 隐藏目录(如 .Trash/@eaDir)及其祖先一律不动
-            if os.path.basename(real_cur).startswith('.'):
+            # 本级目录若是缩略图缓存, 直接删掉(它不是用户数据), 再继续向上。
+            # 注意不能只靠下面的「隐藏目录一律不动」—— .@__thumb 是隐藏目录, 会被跳过,
+            # 于是它的父目录因残留该项而永远清不掉(这正是 v0.1.23 在 NAS 上的实际表现)。
+            name = os.path.basename(real_cur)
+            if name.lower() in self._THUMB_CACHE_DIRS:
+                try:
+                    shutil.rmtree(real_cur, ignore_errors=True)
+                    logger.debug(f'清理缩略图缓存: {real_cur}')
+                except OSError as e:
+                    logger.debug(f'缩略图缓存 {real_cur} 删除失败(忽略): {e}')
+                cur = os.path.realpath(os.path.dirname(real_cur))
+                depth += 1
+                continue
+            # 其余隐藏目录(如 .Trash、.git)及其祖先一律不动
+            if name.startswith('.'):
                 return
             # 已达最大层数即停。检查放在删除**之前**, 保证「最多删 _CLEANUP_MAX_DEPTH
             # 个目录」语义 —— 放在循环开头会多删一个。
             if depth >= self._CLEANUP_MAX_DEPTH:
                 return
             try:
-                if os.listdir(real_cur):
-                    return                    # 非空, 停
+                if not self._is_effectively_empty(real_cur):
+                    return                    # 有真实内容, 停
+                # 先清掉缩略图缓存再删目录 —— 否则 os.rmdir 会因残留项报 ENOTEMPTY。
+                # 用 try/except 逐个删: 缓存删不掉时只是让本次清理失败, 不能连带
+                # 影响主流程(用户数据安全优先于目录整洁)。
+                for name in os.listdir(real_cur):
+                    if name.lower() in self._THUMB_CACHE_DIRS:
+                        victim = os.path.join(real_cur, name)
+                        try:
+                            shutil.rmtree(victim, ignore_errors=True)
+                            logger.debug(f'清理缩略图缓存: {victim}')
+                        except OSError as e:
+                            logger.debug(f'缩略图缓存 {victim} 删除失败(忽略): {e}')
                 os.rmdir(real_cur)             # 空 -> 删
                 logger.info(f"清理空目录: {real_cur}")
             except OSError as e:

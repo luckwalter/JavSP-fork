@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.23-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.24-blue.svg)
 
 ## 功能特点
 
@@ -103,12 +103,48 @@ docker run -d -p 8000:8000 -v /你的/媒体库:/data javsp-fork
     `JAVSP_BROWSE_ROOT=<路径>`。**镜像已内置 `ENV JAVSP_BROWSE_ROOT=/data`**（与
     `docker-compose.yml` 的挂载点一致），开箱即用、无需手工填；挂载到别的位置时覆盖它即可。
   - 扫描页与**设置页**的「扫描目录」都有浏览按钮；页面加载时会把允许浏览的根**自动填入**
-    输入框，所以新部署镜像点开就能直接选目录。
+    输入框，所以新部署镜像点开就能直接选目录。对话框放在 `el-tabs` **之外**，从任意 tab
+    打开都正常（嵌在某个 `el-tab-pane` 内时，因 tab 默认懒渲染而会出现点击无反应）。
   - 若输入框里残留了上一轮的旧路径（常见于换环境后），点「浏览目录…」会**自动回退到根**
     而不是报错 —— 否则新部署环境里旧值必然越界，会导致「点开就是失败」。
 - **权限 / 属主**：容器默认以 root（uid 0）运行，写回的文件属主会变成 root。Jellyfin / Emby **只读**这些 NFO / 封面通常没问题；若它们要回写元数据，可能因属主受限。可用 `docker run --user 1000:1000`（或 `docker-compose.yml` 里取消 `user:` 注释）对齐 NAS 媒体文件的 uid:gid。
 - **落盘行为**：改名 / 移动 / NFO / 封面都落在扫描根（`/data`）之下；默认 `move_files: true` 会移到 `#整理完成/{actress}/...` 子目录，只想**原地改名 + 同级生成 NFO** 就在「设置」关掉「移动文件」。
 - **其它**：小于 `scanner.minimum_size`（默认 232MiB）的文件不扫描；`hard_link` 默认关闭（同卷想省空间可开，跨文件系统会失败）；爬虫访问外站若 NAS 出口需代理，在「设置」填 `network.proxy_server`（这与拉镜像用的 squid 是两码事）。
+
+### 排查「只有个别站点抓得到」
+
+这是常见现象，**多数不是故障**。逐站点实测方法：容器内直接跑爬虫看真实结果/异常：
+
+```bash
+docker exec javsp /app/.venv/bin/python -c "
+from javsp.config import Cfg
+from javsp.datatype import MovieInfo
+import importlib, time
+for cid in Cfg().crawler.selection.normal:
+    name = cid.value
+    mod = importlib.import_module(f'javsp.web.{name}')
+    parser = getattr(mod, 'parse_data', None) or getattr(mod, 'parse_clean_data', None)
+    info = MovieInfo('ABC-123'); t0 = time.time()
+    try:
+        parser(info)
+        print(f'{name:10} {time.time()-t0:5.1f}s OK   title={(info.title or \"\")[:26]}')
+    except Exception as e:
+        print(f'{name:10} {time.time()-t0:5.1f}s {type(e).__name__}: {str(e)[:80]}')
+"
+```
+
+常见原因对照：
+
+| 现象 | 含义 | 处理 |
+|---|---|---|
+| `MovieNotFoundError` | 该站未收录此番号 | 正常，不是故障 |
+| `HTTPError 403` | 站点需登录 / 反爬 | 该站本就不可用 |
+| `SSLCertVerificationError` | **代理在解密 HTTPS**（MITM），容器内没有代理的 CA 证书 | 把代理服务器的根证书挂进容器（`/usr/local/share/ca-certificates/` + `update-ca-certificates`），或对该站改用直连 |
+| `Fail to connect` / `ConnectionReset` | 镜像站不可用 | `network.proxy_free` 里换一个镜像地址 |
+
+> ⚠️ `network.proxy_free` 的语义是**「该站的镜像 / 免代理地址」**（如 `javdb368.com`），
+> 不是「让这个站绕过代理」——填错会导致请求被送到失效镜像上。软件在地址失效时会
+> 自动尝试获取新地址（`javsp/web/proxyfree.py`）。
 
 > 多阶段构建会自动 `npm run build` 前端并托管 `frontend/dist`。
 
@@ -149,8 +185,11 @@ javsp server
   > 已知平台差异：`realpath` 在 Linux 上会解析符号链接、在 Windows 上对目录联接（junction）
   > 不跟踪。两种平台都拿不到根外的目录列表，只是失败形态不同（回退 vs 400）。
 - **空目录清理**：移动影片文件后，源目录变空会被删除，并**向上递归清理**残留的空分类目录
-  （最多 2 层）。边界保护：绝不删除扫描根、用户主目录、当前工作目录、隐藏目录（`.` 开头）
-  及非空目录；任一步出错即停止，不会强行处理。
+  （最多 2 层）。NAS 的缩略图缓存目录（QNAP `.@__thumb`、群晖 `@eaDir`）**不计入内容**
+  —— 没有这条规则时，刮削完的源目录只剩缓存目录会被判为「非空」而永久残留。缓存目录被删
+  不丢数据（NAS 下次访问时自建）。
+  边界保护：绝不删除扫描根、用户主目录、当前工作目录、其他隐藏目录（`.Trash`/`.git` 等）
+  及有效非空的目录；任一步出错即停止，不会强行处理。
 - `GET /api/config` 返回的配置里，翻译密钥等敏感字段已做**掩码**（`***MASKED***`），
   前端保存时会自动还原，不会丢密钥。请勿把掩码值手工填到别处。
 - `config.yml` 是**被 git 跟踪**的文件。填入 `api_key` 后请**不要** `git commit -a`；
@@ -227,7 +266,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.23**
+当前版本：**0.1.24**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

@@ -16,42 +16,6 @@
           </div>
           <el-alert v-if="scanMsg" :title="scanMsg" type="info" style="margin-top: 10px; max-width: 600px" />
 
-          <!-- 目录选择器: 扫描页与设置页共用。browseTarget 指明选完后写入哪个字段,
-               browseTarget 为空串时表示浏览但不写回(纯查看)。 -->
-          <el-dialog v-model="browserVisible" :title="browseTarget === 'scanPath' ? '选择扫描目录' : '选择扫描目录（配置项）'" width="640px">
-            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px">
-              <el-button size="small" :disabled="!browseParent" @click="loadBrowse(browseParent)">上一层</el-button>
-              <el-input size="small" v-model="browseInput" placeholder="也可直接输入路径回车" style="flex: 1"
-                        @keyup.enter="loadBrowse(browseInput)" />
-              <el-button size="small" type="primary" :loading="browseLoading" @click="loadBrowse(browseInput)">转到</el-button>
-            </div>
-            <div style="font-size: 12px; color: #888; margin-bottom: 8px">
-              当前：<span style="color: #409EFF">{{ browseCurrent || '-' }}</span>
-              <span style="margin-left: 10px">（仅列目录，不列文件）</span>
-              <span v-if="browseRoot" style="margin-left: 10px">根目录：{{ browseRoot }}</span>
-            </div>
-            <el-scrollbar max-height="46vh">
-              <div v-if="!browseDirs.length && !browseLoading" style="color: #999; padding: 12px 0">
-                该目录下没有子目录
-              </div>
-              <div v-for="d in browseDirs" :key="d.path"
-                   style="padding: 7px 10px; cursor: pointer; border-radius: 4px; display: flex; align-items: center"
-                   :style="browseHover === d.path ? 'background:#f5f7fa' : ''"
-                   @click="loadBrowse(d.path)"
-                   @click.stop="chooseDir(d.path)"
-                   @mouseenter="browseHover = d.path" @mouseleave="browseHover = ''">
-                <span style="margin-right: 8px">📁</span>
-                <span style="flex: 1">{{ d.name }}</span>
-                <el-button size="small" text type="primary" @click.stop="chooseDir(d.path)">选择</el-button>
-              </div>
-            </el-scrollbar>
-            <template #footer>
-              <el-button @click="browserVisible = false">取消</el-button>
-              <el-button type="primary" :disabled="!browseCurrent" @click="chooseDir(browseCurrent)">
-                选择当前目录
-              </el-button>
-            </template>
-          </el-dialog>
 
           <div v-if="movies.length" style="margin-top: 14px">
             <el-button :disabled="!selectedGuids.length || batch.running" type="primary" @click="doBatch(false)">
@@ -298,6 +262,44 @@
           <el-alert v-else title="点击「加载配置」从服务端读取 config.yml" type="info" style="margin-top: 10px" />
         </el-tab-pane>
       </el-tabs>
+
+      <!-- 目录选择器: 扫描页与设置页共用。browseTarget 指明选完后写入哪个字段。
+           必须放在 el-tabs 之外: el-tab-pane 默认懒渲染, 嵌在某个 tab 内时, 从另一个 tab
+           打开对话框会出现定位/层级异常(表现为「点了浏览目录但没反应」)。 -->
+          <el-dialog v-model="browserVisible" :title="browseTarget === 'scanPath' ? '选择扫描目录' : '选择扫描目录（配置项）'" width="640px" append-to-body>
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px">
+              <el-button size="small" :disabled="!browseParent" @click="loadBrowse(browseParent)">上一层</el-button>
+              <el-input size="small" v-model="browseInput" placeholder="也可直接输入路径回车" style="flex: 1"
+                        @keyup.enter="loadBrowse(browseInput)" />
+              <el-button size="small" type="primary" :loading="browseLoading" @click="loadBrowse(browseInput)">转到</el-button>
+            </div>
+            <div style="font-size: 12px; color: #888; margin-bottom: 8px">
+              当前：<span style="color: #409EFF">{{ browseCurrent || '-' }}</span>
+              <span style="margin-left: 10px">（仅列目录，不列文件）</span>
+              <span v-if="browseRoot" style="margin-left: 10px">根目录：{{ browseRoot }}</span>
+            </div>
+            <el-scrollbar max-height="46vh">
+              <div v-if="!browseDirs.length && !browseLoading" style="color: #999; padding: 12px 0">
+                该目录下没有子目录
+              </div>
+              <div v-for="d in browseDirs" :key="d.path"
+                   style="padding: 7px 10px; cursor: pointer; border-radius: 4px; display: flex; align-items: center"
+                   :style="browseHover === d.path ? 'background:#f5f7fa' : ''"
+                   @click="loadBrowse(d.path)"
+                   @click.stop="chooseDir(d.path)"
+                   @mouseenter="browseHover = d.path" @mouseleave="browseHover = ''">
+                <span style="margin-right: 8px">📁</span>
+                <span style="flex: 1">{{ d.name }}</span>
+                <el-button size="small" text type="primary" @click.stop="chooseDir(d.path)">选择</el-button>
+              </div>
+            </el-scrollbar>
+            <template #footer>
+              <el-button @click="browserVisible = false">取消</el-button>
+              <el-button type="primary" :disabled="!browseCurrent" @click="chooseDir(browseCurrent)">
+                选择当前目录
+              </el-button>
+            </template>
+          </el-dialog>
     </el-main>
   </el-container>
 </template>
@@ -456,13 +458,17 @@ function openBrowser(target = 'scanPath') {
   browserVisible.value = true
   // 已有输入值就以它为起点，否则留空让后端从允许浏览的根开始。
   // 注意: 残留旧值在新部署环境里可能越界, 后端会自动回退到根, 不会失败。
-  const cur = target === 'scanPath' ? scanPath.value : (configObj.value?.scanner?.input_directory || '')
+  const cur = target === 'scanPath'
+    ? scanPath.value
+    : ((configObj.value && configObj.value.scanner && configObj.value.scanner.input_directory) || '')
   loadBrowse(cur || '')
 }
 
 // 选定目录：写回对应输入框并关闭对话框（不立即扫描，避免误触直接扫根目录）
 function chooseDir(p) {
   if (browseTarget.value === 'config.input_directory') {
+    // scanner 段在旧配置里可能整段缺失，直接赋值会抛 TypeError（表现为点击无反应）
+    if (!configObj.value.scanner) configObj.value.scanner = {}
     configObj.value.scanner.input_directory = p
   } else {
     scanPath.value = p
