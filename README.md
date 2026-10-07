@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.14-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.15-blue.svg)
 
 ## 功能特点
 
@@ -33,6 +33,8 @@
 - **配置 Web 化**：「设置」页用分组表单直接编辑并写回 `config.yml`
 - **每站点数据透传**：结果可看到各站点分别贡献了哪些字段（`sources`）
 - **单一版本源**：版本号以 `pyproject.toml` 为准，界面显示的版本由后端 `/api/health` 提供
+- **输出项可单独关闭**：封面 poster / fanart / 剧照 / NFO 各有开关
+  （元数据交给 Jellyfin 自行刮削时可以全关，省掉下载与裁剪，整理更快）
 - **封面裁剪可选 AI**：关键是**能确认它到底有没有生效**
 
   > 这项能力派生自上游。上游早年用的是「百度人体分析」接口，后来换成
@@ -127,6 +129,23 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 
 更详细的刮削源与命名规则见原项目 [JavSP Wiki](https://github.com/Yuukiy/JavSP/wiki)。
 
+### 输出控制：不想生成的东西可以关掉
+
+元数据最终交给 Jellyfin / Emby 自行刮削时，本项目再去下载高清封面（单张 8-10 MiB）、裁剪 poster、抓剧照、写 NFO 都是重复劳动。
+「设置」页的**输出控制**分组可以把每一项单独关掉（写回 `config.yml` 的 `summarizer` 段）：
+
+| 开关 | 控制什么 | 关掉之后 |
+|---|---|---|
+| `cover.enabled` | 竖版封面 poster | 不做裁剪也不生成 poster |
+| `fanart.enabled` | 横版原图 fanart | 仍会下载封面用于裁剪 poster，生成完即删除原图 |
+| `extra_fanarts.enabled` | 剧照 | 完全不抓（这一项最耗时） |
+| `nfo.enabled` | NFO 文件 | 完全不写 NFO |
+
+poster 与 fanart 同源：只要有任意一项开着才会下载封面，**两项都关时连下载都不会发生**，批量整理能明显变快。
+被跳过的项目会记录在整理结果的 `skipped` 里，界面上也会提示，不会让你以为生成成功了却找不到文件。
+
+> CLI 与 Web 共用同一份判据（`javsp/core.py` 的 `output_enabled`），命令行模式同样生效。
+
 ### 与 Jellyfin / Kodi 对接 NFO
 
 整理后每部影片落在**独立文件夹**下（`output_folder_pattern` 默认为 `#整理完成/{actress}/[{num}] {title}`），
@@ -150,7 +169,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.14**
+当前版本：**0.1.15**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 
@@ -189,6 +208,7 @@ python sync_version.py --check  # 只校验，任何一处不一致则以退出�
 | `verify_config_io.py`       | 配置写回：保注释（标量 / 整数 / 嵌套 / 单行列表 / 多行列表）+ 换行符 + API 端到端        |
 | `verify_config_reload.py`   | 配置热重载：运行时跟随 + 爬虫出口刷新 + 超时下限保留 + 非法配置自动回滚                 |
 | `verify_cropper.py`         | 封面 AI 裁剪：开关写回(保注释) / 人脸检测生效与四类回退上报 / 整理结果透出 / 接口与前端判定     |
+| `verify_output_toggles.py`  | 输出开关：封面 poster/fanart 四种组合的实际落盘 / 剧照 / NFO 开关 / 旧配置向后兼容 / CLI 与 Web 共用判据 |
 | `verify_k4.py`              | 历史 bug 回归守卫（`all_info` 键名切片）               |
 | `verify_robust.py`          | 历史 bug 回归守卫（爬虫加载健壮性）                       |
 

@@ -208,6 +208,26 @@
             <el-form-item label="翻译标题"><el-switch v-model="configObj.translator.fields.title" /></el-form-item>
             <el-form-item label="翻译剧情"><el-switch v-model="configObj.translator.fields.plot" /></el-form-item>
 
+            <el-divider>输出控制</el-divider>
+            <el-alert type="info" :closable="false" style="margin-bottom: 12px"
+                      title="如果元数据最终交给 Jellyfin / Emby 自行管理，这里的封面与 NFO 都是重复劳动，可以全部关掉——省下下载高清封面（单张 8-10 MiB）和裁剪的开销，整理会明显变快。注意：关闭后本项目不会再生成对应文件，媒体库里没有封面是预期结果。" />
+            <el-form-item label="封面 poster">
+              <el-switch v-model="configObj.summarizer.cover.enabled" />
+              <span style="color: #909399; margin-left: 10px">竖版封面，由下载的原图裁剪而来</span>
+            </el-form-item>
+            <el-form-item label="封面 fanart">
+              <el-switch v-model="configObj.summarizer.fanart.enabled" />
+              <span style="color: #909399; margin-left: 10px">横版原图；关掉后仍会下载用于裁剪 poster，生成完即删除</span>
+            </el-form-item>
+            <el-form-item label="剧照">
+              <el-switch v-model="configObj.summarizer.extra_fanarts.enabled" />
+              <span style="color: #909399; margin-left: 10px">逐张下载，最耗时的一项</span>
+            </el-form-item>
+            <el-form-item label="NFO 文件">
+              <el-switch v-model="configObj.summarizer.nfo.enabled" />
+              <span style="color: #909399; margin-left: 10px">由 Jellyfin 自行刮削元数据时可关闭</span>
+            </el-form-item>
+
             <el-divider>封面裁剪</el-divider>
             <el-alert type="info" :closable="false" style="margin-bottom: 12px"
                       title="默认关闭。开启后，无码 / FC2 / 番号匹配下方规则的封面会改用本地人脸检测来定位裁剪区，能把主体偏在一侧的封面救回来。代价：每张封面多一次检测耗时，且依赖 slimeface。" />
@@ -297,6 +317,27 @@ function cropResultNote(crop) {
   return `已开启 ${crop.engine} 裁剪，但本次未生效：${crop.reason || '未知原因'}，已回退为默认裁剪`
 }
 
+// 输出开关：把可能缺失的布尔项归一化为 true/false（旧配置没有这些键）
+function readOutputToggles(summarizer) {
+  const s = summarizer || {}
+  const pick = (section, key, value) => (value === undefined ? true : !!value)
+  return {
+    poster: pick('cover', 'enabled', (s.cover || {}).enabled),
+    fanart: pick('fanart', 'enabled', (s.fanart || {}).enabled),
+    extrafanart: pick('extra_fanarts', 'enabled', (s.extra_fanarts || {}).enabled),
+    nfo: pick('nfo', 'enabled', (s.nfo || {}).enabled),
+  }
+}
+
+// 整理结果里「本次按设置跳过了哪些输出」的提示；无需提示时返回 null
+function skippedOutputNote(result) {
+  const skipped = (result && result.skipped) || []
+  if (!skipped.length) return null
+  const names = { cover: '封面下载', poster: '封面 poster', fanart: '封面 fanart', extrafanart: '剧照', nfo: 'NFO' }
+  const human = skipped.map((k) => names[k] || k)
+  return `按「输出控制」设置跳过了：${human.join('、')}`
+}
+
 // "PT10S" / "PT1M30S" / 纯数字 → 秒；无法识别时返回 null（保留界面原值不动）
 function parseDurationToSec(v) {
   if (v === null || v === undefined || v === '') return null
@@ -355,11 +396,17 @@ async function organizeTask(row) {
       taskLog.value += '完成: ' + JSON.stringify(d.result, null, 2)
       // 封面裁剪是否真的用上了 AI：没用上时要点明，否则用户会以为配置已生效
       const note = cropResultNote(d.result && d.result.crop)
+      // 被「输出控制」跳过的内容也要说一声，否则用户不知道为什么媒体库里没有封面
+      const skippedNote = skippedOutputNote(d.result)
       if (note) {
         taskLog.value += '\n' + note
         ElMessage.warning(note)
       } else {
         ElMessage.success('整理完成')
+      }
+      if (skippedNote) {
+        taskLog.value += '\n' + skippedNote
+        ElMessage.info(skippedNote)
       }
     }
     if (d.type === 'error') {
@@ -484,6 +531,14 @@ async function loadConfig() {
       crop.on_id_pattern = crop.on_id_pattern || []
       cropEnabled.value = readCropEnabled(crop)
       crop.engine = crop.engine || { name: 'slimeface' }
+      // 输出开关：旧配置没有这些键，缺失一律按「启用」处理
+      if (cover.enabled === undefined) cover.enabled = true
+      const fanart = (c.summarizer.fanart = c.summarizer.fanart || {})
+      if (fanart.enabled === undefined) fanart.enabled = true
+      const extraFanarts = (c.summarizer.extra_fanarts = c.summarizer.extra_fanarts || {})
+      if (extraFanarts.enabled === undefined) extraFanarts.enabled = true
+      const nfo = (c.summarizer.nfo = c.summarizer.nfo || {})
+      if (nfo.enabled === undefined) nfo.enabled = true
     }
     configObj.value = c
     // 顺带查一次运行时，让「依赖是否装了」无需额外操作就能看到（失败不影响配置编辑）

@@ -104,6 +104,8 @@ summarizer:
 
   # NFO文件生成相关的选项
   nfo:
+    # 是否生成 nfo 文件？false 时完全不写 nfo（由 Jellyfin/Emby 自行刮削元数据时可设为 false）
+    enabled: true
     # nfo文件的名称
     basename_pattern: "movie"
     # nfo文件中的影片标题（即媒体管理工具中显示的标题）
@@ -116,6 +118,9 @@ summarizer:
   censor_options_representation: ['无码', '有码', '打码情况未知']
 
   cover:
+    # 是否生成封面图 poster（竖版封面，由下载的原图裁剪而来）
+    # poster 与 fanart 同源：只要其中一项启用，就会下载封面；两者都关闭时完全不下载封面，整理最快
+    enabled: true
     # 封面文件的名称（不含拓展名），可以使用如`{title}`等字段
     basename_pattern: "poster"
     # 尽可能下载高清封面？（高清封面大小约 8-10 MiB，远大于普通封面，如果你的网络条件不佳，会降低整理速度）
@@ -140,6 +145,9 @@ summarizer:
       ## }}}
 
   fanart:
+    # 是否保留横版封面图 fanart（下载下来的原始封面）
+    # 只想要 poster 时设为 false：仍会下载封面用于裁剪，但生成 poster 后删除这份原图，不占空间
+    enabled: true
     # 横版封面文件的名称（不含拓展名），可以使用如`{title}`等字段
     basename_pattern: "fanart"
 

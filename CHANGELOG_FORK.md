@@ -291,6 +291,54 @@
 
 ---
 
+## v0.1.15 — 输出项可分别关闭：不再为 Jellyfin 会自己做的事买单
+
+既然影片元数据最终交给 Jellyfin / Emby 自行刮削，本项目再去下载高清封面（单张 8-10 MiB）、
+裁剪 poster、抓剧照、写 NFO 就是纯重复劳动。新增四项输出开关，可在「设置」页直接控制，
+也可写 `config.yml` 的 `summarizer` 段。
+
+### 开关与行为
+| 开关 | 位置 | 关闭后的行为 |
+|---|---|---|
+| `cover.enabled` | `summarizer.cover` | 不裁剪也不生成 poster |
+| `fanart.enabled` | `summarizer.fanart` | 仍下载封面用于裁剪 poster，生成完即删除原图，不占空间 |
+| `extra_fanarts.enabled` | `summarizer.extra_fanarts` | 完全不抓剧照（原本就有此开关） |
+| `nfo.enabled` | `summarizer.nfo` | 完全不写 NFO |
+
+poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此只有「任意一项开着」才会下载封面，
+**两项都关时连下载都不发生**——这是真正省时间的地方。
+
+三个容易忽略的点，本次都做了处理：
+1. **被跳过的输出不能再对外声称生成了**：`result` 里相应的 `poster_file` / `fanart_file` / `nfo_file`
+   置 `None`，否则 Web 界面拿着不存在的路径，看起来像成功实际没生成。
+2. **跳过不算失败**：原先封面下载失败会置 `status='cover_failed'`，关闭封面时不能走这条分支。
+3. **跳过要能看见**：结果里新增 `skipped` 列表，界面上提示「按『输出控制』设置跳过了：…」。
+
+### CLI 不能漂移
+`javsp/__main__.py` 有一份**独立的整理流程**（不走 `core.organize_movie`）——Web 侧就是从它抽出来的，
+但抽取后它自己没改成复用。这类「两份逻辑」历史上吃过亏，所以本次在 `javsp/core.py` 加了唯一判据
+`output_enabled(kind)`，Web 与 CLI 都调它，并用源码扫描断言 CLI 确实在用（而不是各写各的）。
+顺带两处修正：
+- CLI 的 `total_step` 原本写死 6，必须与实际 `check_step` 次数一致，否则关闭输出后进度条走不满 → 改为按开关动态累加；
+- CLI 里打印「剧照大小」时误用了封面图的 `pic_path`（显示的是海报的尺寸），且关闭封面时该变量未定义会 `NameError` → 改为用目标路径。
+
+### 向后兼容
+新增字段在 `javsp/config.py` 中均带默认值 `= True`，**旧 `config.yml` 不写这些键也能正常加载**
+（`verify_output_toggles.py` 用 `Cfg.model_validate` 显式验证过缺键的配置仍被接受且按启用处理）。
+
+### 改动的文件
+- `javsp/config.py`：`CoverSummarize` / `FanartSummarize` / `NFOSummarize` 各加 `enabled: bool = True`
+- `javsp/core.py`：新增 `OUTPUT_TOGGLES` 与 `output_enabled()`；`organize_movie` 按开关分支，结果新增 `skipped`
+- `javsp/__main__.py`：CLI 走同一判据；修 `total_step` 计数与剧照日志取路径
+- `javsp/config_reload.py`：`describe_runtime` 新增 `output`（供 `/api/config/runtime` 与验证脚本断言）
+- `frontend/src/App.vue`：设置页新增「输出控制」分组；整理结果提示本次跳过了哪些输出
+- `config.yml`：补齐四个开关及说明注释
+- 新增 `verify_output_toggles.py`（**70/70 PASS**）、`README.md`
+
+- 关联 commit：本提交（v0.1.15 同笔提交：`javsp/config.py` + `javsp/core.py` + `javsp/__main__.py` + `javsp/config_reload.py` + `frontend/src/App.vue` + `config.yml` + `verify_output_toggles.py`(新) + `README.md` + `CHANGELOG_FORK.md` + `pyproject.toml` + `frontend/package.json` + `frontend/package-lock.json`）
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复
@@ -396,6 +444,27 @@
    - 另发现（需用户侧处理）：本机 `system.xml` 中 Movie 的 `LocalMetadataReaderOrder` 为空 ——
      **即使 NFO 完全正确，Jellyfin 也不会读它**。需在「管理媒体库」中把 Nfo 加入本地元数据读取顺序。
    - 验证：新增 `verify_nfo_jellyfin.py`（**31/31 PASS**）。
+
+15. **【无用功】整理时必须产出全部封面与 NFO，无法按需关闭**
+   - 起因：元数据最终交给 Jellyfin 自行刮削时，本项目再下载高清封面（单张 8-10 MiB）、
+     裁剪 poster、抓剧照、写 NFO 全是重复劳动，且没有任何开关可以省掉它们。
+   - 现象：`summarizer` 下只有 `extra_fanarts.enabled` 一个开关，其余输出写在流程里无条件执行；
+     想不用封面只能手工 `os.chdir` 之类的土办法，Web 界面更是完全没法控制。
+   - 隐蔽性：这些步骤失败时会被容忍（封面失败置 `cover_failed` 但流程继续），用户很难区分
+     「生成失败」和「本来就不想要」；而且 CLI（`javsp/__main__.py`）还有一份**独立的整理流程**，
+     只改 Web 侧的话命令行用户依然全部生成 —— 属于典型的「两份逻辑」漂移风险。
+   - 修复：
+     1. `config.py` 为 `cover` / `fanart` / `nfo` 各加 `enabled: bool = True`（缺键默认启用，旧配置无需改动）；
+     2. `core.py` 新增唯一判据 `output_enabled(kind)`，Web 与 CLI 共用；`organize_movie` 按开关分支；
+     3. poster 与 fanart 同源说明：任一项开才下载，两项皆关时**连下载都不发生**（这才是真正的省时点）；
+     4. 被跳过的输出在 `result['skipped']` 中记录，且相应的 `*_file` 置 `None` ——
+        不能对外声称生成了不存在的文件；跳过时不计入失败状态；
+     5. CLI 的 `total_step` 原本写死 6，关闭输出后进度条会走不满 → 改为按开关动态累加。
+   - 另修复（CLI 既有 bug）：打印剧照大小时误用封面图的 `pic_path`（显示的其实是海报的尺寸），
+     且在关闭封面输出时该变量未定义会 `NameError` → 改用目标文件路径。
+   - 验证：新增 `verify_output_toggles.py`（**70/70 PASS**），覆盖四种封面组合的实际落盘、
+     NFO / 剧照开关、旧配置向后兼容、CLI 与 Web 共用判据（源码扫描防止漂移）、
+     开关经 `/api/config` 写回后 `describe_runtime` 跟随变化、前端纯函数从 App.vue 提取求值。
 
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 

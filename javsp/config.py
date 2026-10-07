@@ -137,6 +137,8 @@ class TitleSummarize(BaseConfig):
     remove_trailing_actor_name: bool
 
 class NFOSummarize(BaseConfig):
+    # 是否生成 nfo 文件（由 Jellyfin/Emby 自行刮削元数据时可以关闭）
+    enabled: bool = True
     basename_pattern: str
     title_pattern: str
     custom_genres_fields: list[str]
@@ -154,12 +156,16 @@ class CoverCrop(BaseConfig):
   on_id_pattern: list[str]
 
 class CoverSummarize(BaseConfig):
+    # 是否生成封面图(poster)。poster 由下载的原图裁剪而来，关掉它可以省下裁剪开销
+    enabled: bool = True
     basename_pattern: str
     highres: bool
     add_label: bool
     crop: CoverCrop
 
 class FanartSummarize(BaseConfig):
+    # 是否保留横版封面图(fanart)。封面下载与 poster 同源，关掉后原图会在生成 poster 后被删除
+    enabled: bool = True
     basename_pattern: str
 
 class Summarizer(BaseConfig):

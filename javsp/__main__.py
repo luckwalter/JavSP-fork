@@ -51,6 +51,7 @@ from javsp.prompt import prompt
 from javsp.core import (
     import_crawlers, parallel_crawler, info_summary,
     generate_names, process_poster, download_cover, load_alias_map,
+    output_enabled,
 )
 
 
@@ -97,10 +98,18 @@ def RunNormalMode(all_movies):
             raise Exception(msg + '\n')
 
     outer_bar = tqdm(all_movies, desc='整理影片', ascii=True, leave=False)
-    total_step = 6
+    # 步骤数必须与下面实际执行的 check_step 次数一致，否则进度条走不满或溢出
+    total_step = 3                      # 抓取 / 汇总 / 生成目标文件夹
     if Cfg().translator.engine:
         total_step += 1
-    if Cfg().summarizer.extra_fanarts.enabled:
+    _need_cover = output_enabled('poster') or output_enabled('fanart')
+    if _need_cover:
+        total_step += 1                 # 下载封面
+    if output_enabled('poster'):
+        total_step += 1                 # 由封面裁剪出 poster
+    if output_enabled('extrafanart'):
+        total_step += 1
+    if output_enabled('nfo'):
         total_step += 1
 
     return_movies = []
@@ -130,27 +139,35 @@ def RunNormalMode(all_movies):
             if not os.path.exists(movie.save_dir):
                 os.makedirs(movie.save_dir)
 
-            inner_bar.set_description('下载封面图片')
-            if Cfg().summarizer.cover.highres:
-                cover_dl = download_cover(movie.info.covers, movie.fanart_file, movie.info.big_covers)
-            else:
-                cover_dl = download_cover(movie.info.covers, movie.fanart_file)
-            check_step(cover_dl, '下载封面图片失败')
-            cover, pic_path = cover_dl
-            # 确保实际下载的封面的url与即将写入到movie.info中的一致
-            if cover != movie.info.cover:
-                movie.info.cover = cover
-            # 根据实际下载的封面的格式更新fanart/poster等图片的文件名
-            if pic_path != movie.fanart_file:
-                movie.fanart_file = pic_path
-                actual_ext = os.path.splitext(pic_path)[1]
-                movie.poster_file = os.path.splitext(movie.poster_file)[0] + actual_ext
+            cover_dl = None
+            if _need_cover:
+                inner_bar.set_description('下载封面图片')
+                if Cfg().summarizer.cover.highres:
+                    cover_dl = download_cover(movie.info.covers, movie.fanart_file, movie.info.big_covers)
+                else:
+                    cover_dl = download_cover(movie.info.covers, movie.fanart_file)
+                check_step(cover_dl, '下载封面图片失败')
+                cover, pic_path = cover_dl
+                # 确保实际下载的封面的url与即将写入到movie.info中的一致
+                if cover != movie.info.cover:
+                    movie.info.cover = cover
+                # 根据实际下载的封面的格式更新fanart/poster等图片的文件名
+                if pic_path != movie.fanart_file:
+                    movie.fanart_file = pic_path
+                    actual_ext = os.path.splitext(pic_path)[1]
+                    movie.poster_file = os.path.splitext(movie.poster_file)[0] + actual_ext
 
-            process_poster(movie)
+                if output_enabled('poster'):
+                    process_poster(movie)
+                    check_step(True)
 
-            check_step(True)
+                # 不需要保留横版封面原图时，poster 生成完毕即可删除
+                if not output_enabled('fanart'):
+                    if movie.fanart_file and os.path.exists(movie.fanart_file):
+                        os.remove(movie.fanart_file)
+                    movie.fanart_file = None
 
-            if Cfg().summarizer.extra_fanarts.enabled:
+            if output_enabled('extrafanart'):
                 scrape_interval = Cfg().summarizer.extra_fanarts.scrap_interval.total_seconds()
                 inner_bar.set_description('下载剧照')
                 if movie.info.preview_pics:
@@ -162,8 +179,9 @@ def RunNormalMode(all_movies):
                         try:
                             info = download(pic_url, fanart_destination)
                             if valid_pic(fanart_destination):
-                                filesize = get_fmt_size(pic_path)
-                                width, height = get_pic_size(pic_path)
+                                # 注意: 这里要显示的是剧照自身的大小, 不能沿用封面图的 pic_path
+                                filesize = get_fmt_size(fanart_destination)
+                                width, height = get_pic_size(fanart_destination)
                                 elapsed = time.strftime("%M:%S", time.gmtime(info['elapsed']))
                                 speed = get_fmt_size(info['rate']) + '/s'
                                 logger.info(f"已下载剧照{pic_url} {id}.png: {width}x{height}, {filesize} [{elapsed}, {speed}]")
@@ -174,16 +192,18 @@ def RunNormalMode(all_movies):
                         time.sleep(scrape_interval)
                 check_step(True)
 
-            inner_bar.set_description('写入NFO')
-            write_nfo(movie.info, movie.nfo_file)
-            check_step(True)
+            if output_enabled('nfo'):
+                inner_bar.set_description('写入NFO')
+                write_nfo(movie.info, movie.nfo_file)
+                check_step(True)
             if Cfg().summarizer.move_files:
                 inner_bar.set_description('移动影片文件')
                 movie.rename_files(Cfg().summarizer.path.hard_link)
                 check_step(True)
                 logger.info(f'整理完成，相关文件已保存到: {movie.save_dir}\n')
             else:
-                logger.info(f'刮削完成，相关文件已保存到: {movie.nfo_file}\n')
+                saved_to = movie.nfo_file if output_enabled('nfo') else movie.save_dir
+                logger.info(f'刮削完成，相关文件已保存到: {saved_to}\n')
 
             if movie != all_movies[-1] and Cfg().crawler.sleep_after_scraping > Duration(0):
                 time.sleep(Cfg().crawler.sleep_after_scraping.total_seconds())

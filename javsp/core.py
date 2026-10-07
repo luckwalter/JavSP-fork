@@ -350,6 +350,27 @@ def _root_save_dir(pattern_dir: str, movie: Movie) -> str:
     return pattern_dir
 
 
+OUTPUT_TOGGLES = ('poster', 'fanart', 'extrafanart', 'nfo')
+
+
+def output_enabled(kind: str) -> bool:
+    """查询某类输出是否需要生成（Web 与 CLI 共用同一判据，避免两边语义漂移）
+
+    kind: poster=竖版封面, fanart=横版封面, extrafanart=剧照, nfo=nfo 文件
+    """
+    cfg = Cfg().summarizer
+    match kind:
+        case 'poster':
+            return cfg.cover.enabled
+        case 'fanart':
+            return cfg.fanart.enabled
+        case 'extrafanart':
+            return cfg.extra_fanarts.enabled
+        case 'nfo':
+            return cfg.nfo.enabled
+    raise ValueError(f'未知的输出类型: {kind}')
+
+
 def generate_names(movie: Movie):
     """按照模板生成相关文件的文件名"""
 
@@ -593,9 +614,12 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
                    move_files: Optional[bool] = None) -> dict:
     """整理(落盘): 生成 NFO + 封面 + 重命名。movie 需已含 files 与 info。
 
-    返回结果字典: {status, steps, save_dir, nfo_file, ...}
+    各项输出（poster/fanart/extrafanart/nfo）可由 summarizer 下同名 enabled 开关单独关闭，
+    关闭的项目记录在 result['skipped'] 中。
+
+    返回结果字典: {status, steps, skipped, save_dir, nfo_file, ...}
     """
-    result = {'status': 'ok', 'steps': [], 'errors': []}
+    result = {'status': 'ok', 'steps': [], 'skipped': [], 'errors': []}
 
     do_translate = Cfg().translator.engine if translate is None else translate
     if do_translate:
@@ -612,35 +636,59 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
     if not os.path.exists(movie.save_dir):
         os.makedirs(movie.save_dir)
 
-    # 下载封面
-    if Cfg().summarizer.cover.highres:
-        cover_dl = download_cover(movie.info.covers, movie.fanart_file, movie.info.big_covers)
+    # 下载封面。poster 与 fanart 同源：任一项启用才需要下载，两者都关闭时完全跳过（省下整次下载）
+    cover_dl = None
+    if output_enabled('poster') or output_enabled('fanart'):
+        if Cfg().summarizer.cover.highres:
+            cover_dl = download_cover(movie.info.covers, movie.fanart_file, movie.info.big_covers)
+        else:
+            cover_dl = download_cover(movie.info.covers, movie.fanart_file)
+        if not cover_dl:
+            result['status'] = 'cover_failed'
+            result['errors'].append('下载封面图片失败')
+        else:
+            cover, pic_path = cover_dl
+            # 确保实际下载的封面的url与即将写入到movie.info中的一致
+            if cover != movie.info.cover:
+                movie.info.cover = cover
+            # 根据实际下载的封面的格式更新fanart/poster等图片的文件名
+            if pic_path != movie.fanart_file:
+                movie.fanart_file = pic_path
+                actual_ext = os.path.splitext(pic_path)[1]
+                movie.poster_file = os.path.splitext(movie.poster_file)[0] + actual_ext
+            result['steps'].append('cover_download')
     else:
-        cover_dl = download_cover(movie.info.covers, movie.fanart_file)
-    if not cover_dl:
-        result['status'] = 'cover_failed'
-        result['errors'].append('下载封面图片失败')
-    else:
-        cover, pic_path = cover_dl
-        # 确保实际下载的封面的url与即将写入到movie.info中的一致
-        if cover != movie.info.cover:
-            movie.info.cover = cover
-        # 根据实际下载的封面的格式更新fanart/poster等图片的文件名
-        if pic_path != movie.fanart_file:
-            movie.fanart_file = pic_path
-            actual_ext = os.path.splitext(pic_path)[1]
-            movie.poster_file = os.path.splitext(movie.poster_file)[0] + actual_ext
-    try:
-        crop = process_poster(movie)
-        result['steps'].append('poster')
-        # 把实际裁剪方式带回给调用方(Web 整理结果)，否则界面上无从判断是否用了 AI 裁剪
-        result['crop'] = crop
-    except Exception as e:
-        logger.warning(f"裁剪封面失败: {e}")
-        result['errors'].append(f'poster: {e}')
+        result['skipped'].append('cover')
+
+    # 由下载的原图裁剪出 poster
+    if cover_dl and output_enabled('poster'):
+        try:
+            crop = process_poster(movie)
+            result['steps'].append('poster')
+            # 把实际裁剪方式带回给调用方(Web 整理结果)，否则界面上无从判断是否用了 AI 裁剪
+            result['crop'] = crop
+        except Exception as e:
+            logger.warning(f"裁剪封面失败: {e}")
+            result['errors'].append(f'poster: {e}')
+    elif cover_dl:
+        result['skipped'].append('poster')
+
+    # 不需要保留横版封面原图时，poster 生成完毕即可删除
+    fanart_kept = False
+    if cover_dl and not output_enabled('fanart'):
+        try:
+            if movie.fanart_file and os.path.exists(movie.fanart_file):
+                os.remove(movie.fanart_file)
+            movie.fanart_file = None
+        except Exception as e:
+            logger.warning(f"删除横版封面失败: {e}")
+            result['errors'].append(f'fanart_cleanup: {e}')
+        result['skipped'].append('fanart')
+    elif cover_dl:
+        fanart_kept = True
 
     # 剧照(可选)
-    if Cfg().summarizer.extra_fanarts.enabled:
+    if output_enabled('extrafanart'):
         scrape_interval = Cfg().summarizer.extra_fanarts.scrap_interval.total_seconds()
         if movie.info.preview_pics:
             extrafanartdir = movie.save_dir + '/extrafanart'
@@ -653,14 +701,19 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
                 except Exception as e:
                     logger.warning(f"下载剧照失败 {pic_url}: {e}")
                 time.sleep(scrape_interval)
+    else:
+        result['skipped'].append('extrafanart')
 
-    try:
-        write_nfo(movie.info, movie.nfo_file)
-        result['steps'].append('nfo')
-    except Exception as e:
-        logger.error(f"写入 NFO 失败: {e}")
-        result['status'] = 'nfo_failed'
-        result['errors'].append(f'nfo: {e}')
+    if output_enabled('nfo'):
+        try:
+            write_nfo(movie.info, movie.nfo_file)
+            result['steps'].append('nfo')
+        except Exception as e:
+            logger.error(f"写入 NFO 失败: {e}")
+            result['status'] = 'nfo_failed'
+            result['errors'].append(f'nfo: {e}')
+    else:
+        result['skipped'].append('nfo')
 
     do_move = Cfg().summarizer.move_files if move_files is None else move_files
     if do_move:
@@ -672,10 +725,11 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
             result['status'] = 'move_failed'
             result['errors'].append(f'move: {e}')
 
+    # 被开关跳过的输出不应该再对外声称已生成，避免调用方(含 Web 界面)拿着不存在的文件路径
     result['save_dir'] = movie.save_dir
-    result['nfo_file'] = movie.nfo_file
-    result['poster_file'] = getattr(movie, 'poster_file', None)
-    result['fanart_file'] = getattr(movie, 'fanart_file', None)
+    result['nfo_file'] = movie.nfo_file if output_enabled('nfo') else None
+    result['poster_file'] = getattr(movie, 'poster_file', None) if (cover_dl and output_enabled('poster')) else None
+    result['fanart_file'] = getattr(movie, 'fanart_file', None) if fanart_kept else None
     return result
 
 

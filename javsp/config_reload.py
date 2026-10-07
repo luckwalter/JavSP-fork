@@ -110,6 +110,7 @@ def _slimeface_available():
 def describe_runtime():
     """取当前运行时配置的关键项（供接口返回/验证脚本断言）"""
     from javsp.config import Cfg
+    from javsp.core import output_enabled  # 局部导入: 开关判据唯一出处, 避免与 Web/CLI 出现语义漂移
 
     cfg = Cfg()
     crawlers = {}
@@ -133,6 +134,13 @@ def describe_runtime():
             'enabled': crop_cfg.engine is not None,
             'available': _slimeface_available(),
             'on_id_pattern': list(crop_cfg.on_id_pattern or []),
+        },
+        # 输出开关：告诉调用方哪些产物这次会被生成（由 Jellyfin 自行管理元数据时可全部关闭）
+        'output': {
+            'poster': output_enabled('poster'),
+            'fanart': output_enabled('fanart'),
+            'extrafanart': output_enabled('extrafanart'),
+            'nfo': output_enabled('nfo'),
         },
     }
 
