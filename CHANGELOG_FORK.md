@@ -235,6 +235,62 @@
 
 ---
 
+## v0.1.14 — 对照本机 Jellyfin 校准 NFO：修复评分量纲越界
+
+起因是交叉检查「本项目生成的 NFO 是否和 Jellyfin 一致」。结论是：**结构层面本来就是一致的**，
+真正不一致的是**数据层面的一处评分量纲 bug**（详见 Issue #14）。
+
+### 如何取证的（不靠网上的 NFO 教程）
+1. 本机 `C:\Program Files\Jellyfin\Server\jellyfin.dll` 读出 `ProductVersion = 10.10.7`；
+2. 同目录 `MediaBrowser.XbmcMetadata.dll` 的 UTF-16 字符串表 → 取出 NFO 标签常量清单；
+3. 拉 GitHub 源码 **v10.10.7** 与 **v12.2** 的 `MediaBrowser.XbmcMetadata/Parsers/BaseNfoParser.cs`
+   （`FetchDataFromXmlNode` 的 switch-case）+ `MovieNfoParser.cs` + `MovieNfoSaver.cs` 做权威比对。
+
+两份证据互相印证，也顺带确定了：**10.10.7 与 12.2 在涉及本项目的字段上语义完全一致**
+（12.2 仅多一个带范围校验的 `<communityrating>`），因此本次结论对两个版本都成立。
+
+### 交叉检查结论
+| 维度 | 结论 |
+|---|---|
+| 标签是否被识别 | ✅ 本项目写入的 17 个标签全部在 Jellyfin 支持清单内 |
+| NFO 文件名 | ✅ 默认 `movie.nfo`，且每部片独立文件夹，落在 Jellyfin 查找规则内、不会互相覆盖 |
+| 日期 `premiered` | ✅ 各站点均为 `yyyy-MM-dd`，符合 Exact 解析要求 |
+| 时长 `runtime` | ✅ 各站点均为分钟整数，能被 `int.TryParse` 接住 |
+| 演员 `actor` | ✅ `<name>` / `<thumb>` 结构与 `GetPersonFromXmlNode` 一致 |
+| 系列 `set` | ✅ `<set><name>` 与 Jellyfin `MovieNfoSaver` 自己的写法一致 |
+| **评分 `rating`** | ❌ **存在越界**（见下） |
+
+### 改动内容
+- **修复评分量纲**（`javsp/web/fanza.py`）
+  - FANZA 没有打分区、只有星星图时会走到另一分支，原实现把图片文件名（形如 `00`/`05`/…/`50`，
+    即 **5 分制的十倍值**）**直接赋给 `score`**，既没换算也没转成约定的字符串类型；
+  - 存档数据实测到 `score = 45`（int），写入 NFO 就是在 Jellyfin 界面上显示「45 分」；
+  - 现已按 `/5` 换算到 10 分制并保持字符串类型，与同一文件中其它分支的 `*2` 换算保持一致；
+  - 顺带修：打分区用 `r'\d+'` 提取会丢掉小数（`4.5` → 取到 `4`），改为 `r'[\d.]+'`。
+- **写入 NFO 时加边界兜底**（`javsp/nfo.py`）
+  - 新增 `_normalize_rating()`：把评分规范化到 Jellyfin 的 0~10 区间，越界钳制并记 warning，无法解析则跳过该字段；
+  - 必要性来自取证发现：Jellyfin 解析 `<rating>` 时**只做一次浮点转换，没有范围校验**
+    （12.2 才给新标签 `<communityrating>` 加了 0~10 校验），所以错误不会被服务端纠正，只会在界面上原样显示；
+  - 加 warning 而非静默钳制，是为了保留线索回查上游爬虫 —— 这与本项目「失败要可观测」的一贯原则一致。
+- 新增 `verify_nfo_jellyfin.py`（**31/31 PASS**）：把取证到的 Jellyfin 标签清单固化成断言，
+  覆盖标签识别、`set`/`actor`/`uniqueid` 结构、日期与时长格式、评分边界、端到端越界兜底、
+  以及用源码扫描防止「直接赋 int 原始值」这类写法复活。
+- README 新增「与 Jellyfin / Kodi 对接 NFO」小节。
+
+### 两个值得记住的教训
+1. **别凭印象判断站点的评分量纲**：一度以为 javlib 也是 5 分制需要换算，核对存档数据后发现它抓下来就是
+   `8.20` / `8.70` 这类 10 分制数值，改了反而会错。凡是「要不要换算」，一律回到真实数据求证。
+2. **二进制字符串取证要警惕漏判**：首轮扫描 `MediaBrowser.XbmcMetadata.dll` 的字符串表时没匹配到
+   `uniqueid`，差点误判成「Jellyfin 不支持该标签」；改用 UTF-16LE **精确字节匹配**后确认存在。
+   结论要在二进制层面下最终判断前，务必再用另一种取证方式交叉验证（本次是靠源码比对挽回的）。
+
+> Jellyfin 侧还有一处需要用户手动设置：本机 `system.xml` 中 Movie 的 `LocalMetadataReaderOrder` 为空，
+> 意味着**即使 NFO 格式完全正确，Jellyfin 也不会去读它**。需在「管理媒体库」中把 Nfo 加入本地元数据读取顺序。
+
+- 关联 commit：本提交（v0.1.14 同笔提交：`javsp/web/fanza.py` + `javsp/nfo.py` + `verify_nfo_jellyfin.py`(新) + `README.md` + `CHANGELOG_FORK.md` + `pyproject.toml` + `frontend/package.json` + `frontend/package-lock.json`）
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复
@@ -315,6 +371,31 @@
    - 附带修复：为让开关能从 Web 写回，`config_io` 支持把标量改写成 YAML flow mapping（`engine: {name: slimeface}`）以及把多行嵌套块收敛回 `null`（删除子行），注释与排版均不受影响。
    - 另修复：`verify_config_io.py` / `verify_sources_e2e.py` 里 node 路径写死了 managed 版本号，环境升级后报 `FileNotFoundError`（看着像功能坏了，实为路径漂移）→ 改为动态探测。
    - 验证：新增 `verify_cropper.py`（**65/65 PASS**）。
+
+14. **【数据失真】FANZA 部分影片评分超出 Jellyfin 的 0~10 区间**
+   - 起因：交叉检查本项目生成的 NFO 与本机 Jellyfin 10.10.7 是否一致。
+   - 现象：`javsp/web/fanza.py` 中，影片没有打分区、只有星星图时会走到另一个分支，该分支把图片文件名
+     （形如 `00`/`05`/…/`50`，即 **5 分制的十倍值**）**直接赋给 `score`**，既没换算到 10 分制，
+     也违背了 `MovieInfo.score`「应以字符串类型表示」的约定。存档数据实测到 `score = 45`（int）——
+     写入 NFO 后 Jellyfin 界面显示「45 分」。
+   - 隐蔽性：**Jellyfin 解析 `<rating>` 时只做一次 `float.TryParse`，没有范围校验**
+     （直到 12.2 才给新标签 `<communityrating>` 加了 0~10 校验），因此越界值不会被纠正，只会在界面原样显示。
+     文件照样生成、刮削照样「成功」，用户只会觉得某个评分数字怪，很难联想到是爬虫的量纲漏了换算。
+   - 同一文件里另两条分支（`*2`、`/5`）都是对的，唯独这一条漏了 —— 属于典型的分支间不一致。
+   - 修复：
+     1. 源头换算 —— 星星图分支改为 `/5` 换到 10 分制并保持字符串类型；
+     2. 顺带修 —— 打分区用 `r'\d+'` 提取评分会丢小数（`4.5` 被取成 `4`），改为 `r'[\d.]+'`；
+     3. 兜底 —— `javsp/nfo.py` 新增 `_normalize_rating()`，写入前把评分规范化到 0~10，越界钳制并记 warning，
+        无法解析则跳过该字段。用 warning 而非静默钳制，是为了留下线索回查上游爬虫。
+   - 取证方式：本机 `jellyfin.dll` 读出 ProductVersion=`10.10.7`；取 `MediaBrowser.XbmcMetadata.dll`
+     的 UTF-16 字符串表得到标签清单；再拉 v10.10.7 / v12.2 的 `BaseNfoParser.cs`、
+     `MovieNfoParser.cs`、`MovieNfoSaver.cs` 源码做权威比对。结论：两个版本在涉及本项目的字段上语义一致。
+   - **踩坑**：首轮字符串扫描没匹配到 `uniqueid`，差点误判成「Jellyfin 不支持该标签」；
+     改用 UTF-16LE 精确字节匹配后确认存在。另外一度以为 javlib 也是 5 分制要换算，
+     核对存档数据（8.20 / 8.70）后发现它本来就是 10 分制，改了反而会错。
+   - 另发现（需用户侧处理）：本机 `system.xml` 中 Movie 的 `LocalMetadataReaderOrder` 为空 ——
+     **即使 NFO 完全正确，Jellyfin 也不会读它**。需在「管理媒体库」中把 Nfo 加入本地元数据读取顺序。
+   - 验证：新增 `verify_nfo_jellyfin.py`（**31/31 PASS**）。
 
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 

@@ -1,10 +1,34 @@
 """与操作nfo文件相关的功能"""
+import logging
 from lxml.etree import tostring
 from lxml.builder import E
 
 
 from javsp.datatype import MovieInfo
 from javsp.config import Cfg
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_rating(score):
+    """把评分规范化为 Jellyfin 认可的 0~10 分制字符串, 无法解析时返回 None
+
+    背景: 实测 Jellyfin 10.10.7 与 12.2 解析 <rating> 时只做一次 float 解析,
+    **不做范围校验**(12.2 才给新标签 <communityrating> 加了 0~10 校验)。
+    也就是说爬虫一旦漏做量纲换算, 界面会原样显示 45 这类越界值, 服务端不会纠正。
+
+    这里是最后一道兜底: 越界值钳制到区间内并记 warning, 既能避免污染媒体库,
+    又保留线索便于回查上游爬虫的量纲问题。
+    """
+    try:
+        value = float(str(score).strip())
+    except ValueError:
+        logger.warning(f'无法解析的评分值: {score!r}, 已跳过该字段')
+        return None
+    if value < 0 or value > 10:
+        logger.warning(f'评分 {value} 超出 Jellyfin 的 0~10 区间(已钳制), 请检查对应站点的量纲换算')
+        value = 10.0 if value > 10 else 0.0
+    return f'{value:.2f}'
 
 
 def write_nfo(info: MovieInfo, nfo_file):
@@ -23,8 +47,11 @@ def write_nfo(info: MovieInfo, nfo_file):
         nfo.append(E.originaltitle(info.ori_title))
 
     # Kodi的文档中评分支持多个来源，但经测试，添加了多个评分时Kodi也只显示了第一个评分
+    # Jellyfin 同样只认第一个 <rating>, 且其取值范围是 0~10
     if info.score:
-        nfo.append(E.rating(info.score))
+        rating = _normalize_rating(info.score)
+        if rating is not None:
+            nfo.append(E.rating(rating))
 
     # 目前没有合适的字段用于outline（一行简短的介绍），力求不在nfo中写入冗余的信息，因此不添加outline标签
     # 而且无论是Kodi还是Jellyfin中都没有找到实际显示outline的位置；tagline倒是都有发现

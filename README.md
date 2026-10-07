@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.13-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.14-blue.svg)
 
 ## 功能特点
 
@@ -127,6 +127,21 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 
 更详细的刮削源与命名规则见原项目 [JavSP Wiki](https://github.com/Yuukiy/JavSP/wiki)。
 
+### 与 Jellyfin / Kodi 对接 NFO
+
+整理后每部影片落在**独立文件夹**下（`output_folder_pattern` 默认为 `#整理完成/{actress}/[{num}] {title}`），
+NFO 默认名为 `movie.nfo`，正好落在 Jellyfin 的查找规则内 —— 非混合文件夹中的电影会读取该目录下的 `movie.nfo`。
+
+NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对其 **10.10.7** 本机安装的程序集取证，
+并与 **12.2** 的 `BaseNfoParser` 源码复核比对），两边字段语义一致。
+
+> **一个容易忽略的前提**：Jellyfin 需要在媒体库里**启用本地元数据读取**才会认 NFO。
+> 在「管理媒体库」中把 **Nfo** 加入「本地元数据读取顺序」。缺失时不会报错，只是整份 NFO 被无视。
+
+评分字段有个坑值得记一笔：Jellyfin 解析 `<rating>` 时**只做一次浮点转换、不做范围校验**
+（12.2 才给新标签 `<communityrating>` 加了 0~10 校验）。爬虫一旦漏做量纲换算，界面会原样显示越界值。
+本项目在写入 NFO 时会把评分规范化到 0~10，越界则钳制并记 warning 便于回查上游爬虫。
+
 ## 版本规则
 
 本项目**不沿用上游版本号**，从 `0.0.1` 起步：
@@ -135,7 +150,7 @@ javsp -h                    # 查看原 CLI 参数（逻辑已抽到 core，行�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.13**
+当前版本：**0.1.14**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

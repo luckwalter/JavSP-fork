@@ -137,13 +137,17 @@ def parse_videoa_page(movie: MovieInfo, html):
     preview_pics = container.xpath("//a[@name='sample-image']/img/@src")
     score_tag = container.xpath("//p[@class='d-review__average']/strong/text()")
     if score_tag:
-        match = re.search(r'\d+', score_tag[0].strip())
+        # 用 [\d.]+ 而非 \d+ : FANZA 这里的评分带一位小数(形如'4.5'), 用 \d+ 会截断成'4'
+        match = re.search(r'[\d.]+', score_tag[0].strip())
         if match:
-            score = float(match.group()) * 2
+            score = float(match.group()) * 2     # 站点为5分制, 换算到10分制
             movie.score = f'{score:.2f}'
     else:
+        # 部分影片没有打分区, 只有星星图片, 文件名形如 00/05/.../50(即5分制的十倍值)
+        # 必须与上面的分支一样换算到10分制并保持字符串类型, 否则写入 nfo 后 Jellyfin 会显示 45 这种越界值
         score_img = container.xpath("//td[text()='平均評価：']/following-sibling::td/img/@src")[0]
-        movie.score = int(score_img.split('/')[-1].split('.')[0]) # 00, 05 ... 50
+        score = int(score_img.split('/')[-1].split('.')[0]) / 5
+        movie.score = f'{score:.2f}'
     
     if Cfg().crawler.hardworking:
         # 预览视频是动态加载的，不在静态网页中
