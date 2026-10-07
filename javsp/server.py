@@ -128,10 +128,75 @@ class BatchRequest(BaseModel):
     organize: bool = False
 
 
+# 目录浏览的根边界: 目录列举只允许在该路径及其子目录内进行。
+# 为什么要限制: 本服务无鉴权, 若允许任意路径浏览, 等于把整个文件系统的目录结构
+# 暴露给任何能访问该端口的客户端(审查时已标记「/api/scan 无白名单」是中风险面,
+# 浏览功能会把它从「能读媒体目录」扩大到「能枚举任意目录」)。
+# 默认值: 取环境变量 JAVSP_BROWSE_ROOT; 未设置时用 '/' (即不限制, 与原先手输路径
+# 的能力一致——本项目定位是单用户自用工具, 详见 README 安全说明)。
+def _browse_root() -> str:
+    return os.getenv('JAVSP_BROWSE_ROOT', '/')
+
+
+def _within_browse_root(target: str) -> bool:
+    """判断 target 是否位于允许浏览的根内(realpath 消解 .. 与符号链接后再比)"""
+    root = os.path.realpath(_browse_root())
+    cand = os.path.realpath(target)
+    return cand == root or cand.startswith(root + os.sep)
+
+
 # ----------------------------- 路由 -----------------------------
 @app.get('/api/health')
 def api_health():
     return {'status': 'ok', 'version': __version__}
+
+
+@app.get('/api/browse')
+def api_browse(path: Optional[str] = None):
+    """列举指定目录下的**子目录**(不列文件), 供前端目录选择器逐级导航
+
+    只返回目录名与拼接后的完整路径, 不返回文件列表 —— 避免把文件名等无关信息
+    也一并暴露出去。路径必须在 JAVSP_BROWSE_ROOT 之内; 省略 path 时从该根本身开始。
+    """
+    # 缺省/空路径时用「允许浏览的根」而不是硬编码 '/':
+    # 否则 JAVSP_BROWSE_ROOT 设成别处(如容器里的 /data)时, '/' 会落在根之外 → 403。
+    if not path:
+        path = _browse_root()
+    path = os.path.abspath(path)
+    if not _within_browse_root(path):
+        raise HTTPException(status_code=403, detail='该路径不在允许浏览的范围内')
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail='目录不存在或无法访问')
+
+    # os.scandir + follow_symlinks=False: 避免跟随符号链接导致越界; 单层列举不递归,
+    # 因此不存在符号链接环路问题
+    dirs = []
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        dirs.append({'name': entry.name,
+                                     'path': os.path.join(path, entry.name)})
+                except OSError:
+                    # 单个条目不可读(权限等)不应让整个列举失败
+                    continue
+    except PermissionError:
+        raise HTTPException(status_code=403, detail='无权访问该目录')
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f'读取目录失败: {e}')
+
+    # 排序: 目录名自然序; 并给出上级路径便于「返回上一层」
+    dirs.sort(key=lambda d: d['name'].lower())
+    parent = os.path.dirname(path.rstrip(os.sep)) or path
+    # 上级若已越出允许根, 置为 None(前端隐藏「上一层」按钮)
+    parent_ok = (os.path.realpath(parent) != os.path.realpath(path)) and _within_browse_root(parent)
+    return {
+        'current': path,
+        'parent': parent if parent_ok else None,
+        'dirs': dirs,
+        'root': _browse_root(),
+    }
 
 
 @app.post('/api/scan')

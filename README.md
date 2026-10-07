@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.21-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.22-blue.svg)
 
 ## 功能特点
 
@@ -97,6 +97,10 @@ docker run -d -p 8000:8000 -v /你的/媒体库:/data javsp-fork
   ```
   嫌手敲命令麻烦可用仓库里的 `docker-compose.yml`（`docker compose up -d`），挂载写法一致。
 - **前端填路径**：扫描框填容器内的 `/data`，**不要填 NAS 真机路径**（如 `/share/Multimedia/JAV`，否则报 400「目录不存在」）。bind mount 双向即时，容器内写回即落盘到 NAS。
+  - 也可以直接点扫描框左侧的 **「浏览目录…」** 按钮逐级选择，不用手输——容器内路径与 Windows 侧
+    看到的 `\\HOMENAS\Downloads` 不一致时尤其省事。该按钮只列**目录**不列文件。
+  - 想把可选范围收敛到媒体目录（而不是整个文件系统），给容器加一个环境变量
+    `JAVSP_BROWSE_ROOT=/data`；不设则不限制（详见下文「安全说明」）。
 - **权限 / 属主**：容器默认以 root（uid 0）运行，写回的文件属主会变成 root。Jellyfin / Emby **只读**这些 NFO / 封面通常没问题；若它们要回写元数据，可能因属主受限。可用 `docker run --user 1000:1000`（或 `docker-compose.yml` 里取消 `user:` 注释）对齐 NAS 媒体文件的 uid:gid。
 - **落盘行为**：改名 / 移动 / NFO / 封面都落在扫描根（`/data`）之下；默认 `move_files: true` 会移到 `#整理完成/{actress}/...` 子目录，只想**原地改名 + 同级生成 NFO** 就在「设置」关掉「移动文件」。
 - **其它**：小于 `scanner.minimum_size`（默认 232MiB）的文件不扫描；`hard_link` 默认关闭（同卷想省空间可开，跨文件系统会失败）；爬虫访问外站若 NAS 出口需代理，在「设置」填 `network.proxy_server`（这与拉镜像用的 squid 是两码事）。
@@ -132,6 +136,10 @@ javsp server
   - 若确需局域网访问，请确认所在网络可信，并自行在前面加一层反向代理 + 认证。
 - 访问的主机名必须在 `JAVSP_ALLOWED_HOSTS` 白名单里（默认只放行 `127.0.0.1`/`localhost`；
   容器部署已默认放开）。这一项用于阻断 **DNS Rebinding** 攻击。
+- 扫描页的 **「浏览目录…」** 只列目录、不列文件，且**限制在 `JAVSP_BROWSE_ROOT` 之内**
+  （用 `realpath` 消解 `..` 与符号链接后再校验，可防借软链绕过）。
+  该环境变量**未设置时为 `/`（不限制）**，与手输路径的能力一致。建议容器部署时设
+  `JAVSP_BROWSE_ROOT=/data` 收敛范围——否则等于把整个文件系统的目录结构开放给可访问该端口的客户端。
 - `GET /api/config` 返回的配置里，翻译密钥等敏感字段已做**掩码**（`***MASKED***`），
   前端保存时会自动还原，不会丢密钥。请勿把掩码值手工填到别处。
 - `config.yml` 是**被 git 跟踪**的文件。填入 `api_key` 后请**不要** `git commit -a`；
@@ -208,7 +216,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.21**
+当前版本：**0.1.22**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

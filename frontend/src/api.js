@@ -45,6 +45,13 @@ export async function getMovies() {
   return r.json()
 }
 
+// 列举目录下的子目录(不列文件), 供目录选择器逐级导航
+export async function browse(path) {
+  const r = await fetch(BASE + '/api/browse?path=' + encodeURIComponent(path || '/'))
+  if (!r.ok) throw new Error(await readDetail(r, '读取目录失败'))
+  return r.json()
+}
+
 // 健康检查(同时用于获取服务端版本号, 单一版本源在后端 pyproject.toml)
 export async function getHealth() {
   const r = await fetch(BASE + '/api/health')

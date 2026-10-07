@@ -8,10 +8,48 @@
       <el-tabs v-model="active">
         <!-- 扫描目录 -->
         <el-tab-pane label="扫描目录" name="scan">
-          <el-input v-model="scanPath" placeholder="输入影片目录绝对路径，如 D:/Movies" style="max-width: 600px">
-            <template #append><el-button type="primary" @click="doScan">扫描</el-button></template>
-          </el-input>
+          <div style="display: flex; gap: 8px; max-width: 600px">
+            <el-button @click="openBrowser">浏览目录…</el-button>
+            <el-input v-model="scanPath" placeholder="输入影片目录绝对路径，如 D:/Movies；也可点左侧按钮逐级选择" style="flex: 1">
+              <template #append><el-button type="primary" @click="doScan">扫描</el-button></template>
+            </el-input>
+          </div>
           <el-alert v-if="scanMsg" :title="scanMsg" type="info" style="margin-top: 10px; max-width: 600px" />
+
+          <!-- 目录选择器 -->
+          <el-dialog v-model="browserVisible" title="选择扫描目录" width="640px">
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px">
+              <el-button size="small" :disabled="!browseParent" @click="loadBrowse(browseParent)">上一层</el-button>
+              <el-input size="small" v-model="browseInput" placeholder="也可直接输入路径回车" style="flex: 1"
+                        @keyup.enter="loadBrowse(browseInput)" />
+              <el-button size="small" type="primary" :loading="browseLoading" @click="loadBrowse(browseInput)">转到</el-button>
+            </div>
+            <div style="font-size: 12px; color: #888; margin-bottom: 8px">
+              当前：<span style="color: #409EFF">{{ browseCurrent || '-' }}</span>
+              <span style="margin-left: 10px">（仅列目录，不列文件）</span>
+            </div>
+            <el-scrollbar max-height="46vh">
+              <div v-if="!browseDirs.length && !browseLoading" style="color: #999; padding: 12px 0">
+                该目录下没有子目录
+              </div>
+              <div v-for="d in browseDirs" :key="d.path"
+                   style="padding: 7px 10px; cursor: pointer; border-radius: 4px; display: flex; align-items: center"
+                   :style="browseHover === d.path ? 'background:#f5f7fa' : ''"
+                   @click="loadBrowse(d.path)"
+                   @click.stop="chooseDir(d.path)"
+                   @mouseenter="browseHover = d.path" @mouseleave="browseHover = ''">
+                <span style="margin-right: 8px">📁</span>
+                <span style="flex: 1">{{ d.name }}</span>
+                <el-button size="small" text type="primary" @click.stop="chooseDir(d.path)">选择</el-button>
+              </div>
+            </el-scrollbar>
+            <template #footer>
+              <el-button @click="browserVisible = false">取消</el-button>
+              <el-button type="primary" :disabled="!browseCurrent" @click="chooseDir(browseCurrent)">
+                选择当前目录
+              </el-button>
+            </template>
+          </el-dialog>
 
           <div v-if="movies.length" style="margin-top: 14px">
             <el-button :disabled="!selectedGuids.length || batch.running" type="primary" @click="doBatch(false)">
@@ -358,6 +396,44 @@ const batch = ref({ running: false, index: 0, total: 0, current: '', crawlers: [
 
 function onSelect(rows) {
   selectedGuids.value = rows.map((r) => r.guid)
+}
+
+// ---------------- 目录选择器 ----------------
+const browserVisible = ref(false)
+const browseLoading = ref(false)
+const browseCurrent = ref('')
+const browseParent = ref(null)
+const browseDirs = ref([])
+const browseInput = ref('')
+const browseHover = ref('')
+
+async function loadBrowse(path) {
+  // 路径为空时让后端从「允许浏览的根」开始(后端已处理, 不要在前端硬编码 '/')
+  const target = (path === undefined || path === null || path === '') ? '' : path
+  browseLoading.value = true
+  try {
+    const r = await api.browse(target)
+    browseCurrent.value = r.current
+    browseParent.value = r.parent
+    browseDirs.value = r.dirs || []
+    browseInput.value = r.current
+  } catch (e) {
+    ElMessage.error('读取目录失败: ' + e.message)
+  } finally {
+    browseLoading.value = false
+  }
+}
+
+function openBrowser() {
+  browserVisible.value = true
+  // 已有输入值就以它为起点，否则留空让后端从允许浏览的根开始
+  loadBrowse(scanPath.value || '')
+}
+
+// 选定目录：写回输入框并关闭对话框（不立即扫描，避免误触直接扫根目录）
+function chooseDir(p) {
+  scanPath.value = p
+  browserVisible.value = false
 }
 
 async function doScan() {
