@@ -111,6 +111,10 @@ def RunNormalMode(all_movies):
         total_step += 1
     if output_enabled('nfo'):
         total_step += 1
+    # 移动影片文件也是一次 check_step(见下方), 必须计入, 否则默认配置(move_files=true)
+    # 下进度条会走到 8/7 溢出; 少算则走不满
+    if Cfg().summarizer.move_files:
+        total_step += 1
 
     return_movies = []
     for movie in outer_bar:
@@ -172,7 +176,7 @@ def RunNormalMode(all_movies):
                 inner_bar.set_description('下载剧照')
                 if movie.info.preview_pics:
                     extrafanartdir = movie.save_dir + '/extrafanart'
-                    os.mkdir(extrafanartdir)
+                    os.makedirs(extrafanartdir, exist_ok=True)
                     for (id, pic_url) in enumerate(movie.info.preview_pics):
                         inner_bar.set_description(f"Downloading extrafanart {id} from url: {pic_url}")
                         fanart_destination = f"{extrafanartdir}/{id}.png"
@@ -208,9 +212,12 @@ def RunNormalMode(all_movies):
             if movie != all_movies[-1] and Cfg().crawler.sleep_after_scraping > Duration(0):
                 time.sleep(Cfg().crawler.sleep_after_scraping.total_seconds())
             return_movies.append(movie)
-        # except Exception as e:
-        #     logger.debug(e, exc_info=True)
-        #     logger.error(f'整理失败: {e}')
+        except Exception as e:
+            # 单部失败只记录并继续下一部（与 Web 侧 core.organize_movie 的逐部捕获对齐）。
+            # 原先这里被注释掉, 只有 finally —— check_step 失败时 raise 会被抛出到函数外,
+            # 导致整个 CLI 进程终止, 后面所有影片都不再处理且没有失败汇总。
+            logger.debug(e, exc_info=True)
+            logger.error(f'整理失败: {e}')
         finally:
             inner_bar.close()
     return return_movies

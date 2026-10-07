@@ -26,15 +26,34 @@ import os
 import sys
 import logging
 import threading
+import tempfile
 
 from javsp.config_io import write_config_preserving_comments
 
-__all__ = ['reload_runtime_config', 'apply_config_changes', 'describe_runtime']
+__all__ = ['reload_runtime_config', 'apply_config_changes', 'describe_runtime',
+           'config_transaction']
 
 logger = logging.getLogger(__name__)
 
 # 写入与重载共用，避免多线程下「写到一半被重载读到」
 _lock = threading.RLock()
+
+
+class config_transaction:
+    """配置读-改-写的临界区上下文管理器（复用 apply_config_changes 的同一把 RLock）。
+
+    并发 PUT /api/config 时，若「取快照 + 合并 + 算 diff」在锁外，两个请求会各自基于
+    旧快照算 changes，后写者把先写者的改动覆盖掉（丢失更新）。调用方应把整个
+    「读快照→合并→校验→apply」包进本上下文。
+    """
+
+    def __enter__(self):
+        _lock.acquire()
+        return _lock
+
+    def __exit__(self, *exc):
+        _lock.release()
+        return False
 
 
 def _iter_crawler_modules():
@@ -112,17 +131,31 @@ def describe_runtime():
     from javsp.config import Cfg
     from javsp.core import output_enabled  # 局部导入: 开关判据唯一出处, 避免与 Web/CLI 出现语义漂移
 
+    def _mask_proxy(url):
+        """代理URL 可能内嵌 user:pass@host, 属凭据, 输出给前端前抹掉 userinfo"""
+        if not url:
+            return None
+        s = str(url)
+        if '://' not in s or '@' not in s:
+            return s
+        scheme, rest = s.split('://', 1)
+        userinfo, hostpart = rest.rsplit('@', 1)
+        # 只保留用户名(便于排查是哪个账号), 抹掉密码
+        user = userinfo.split(':', 1)[0]
+        return f'{scheme}://{user}:***@{hostpart}'
+
     cfg = Cfg()
     crawlers = {}
     for name, mod in _iter_crawler_modules():
         req = mod.request
+        proxies = dict(getattr(req, 'proxies', None) or {})
         crawlers[name.rsplit('.', 1)[-1]] = {
             'timeout': getattr(req, 'timeout', None),
-            'proxies': dict(getattr(req, 'proxies', None) or {}),
+            'proxies': {k: _mask_proxy(v) for k, v in proxies.items()},
         }
     crop_cfg = cfg.summarizer.cover.crop
     return {
-        'proxy_server': str(cfg.network.proxy_server) if cfg.network.proxy_server else None,
+        'proxy_server': _mask_proxy(cfg.network.proxy_server),
         'timeout': cfg.network.timeout.total_seconds(),
         'retry': cfg.network.retry,
         'max_concurrency': cfg.crawler.max_concurrency,
@@ -150,9 +183,27 @@ def _read_bytes(path):
         return f.read()
 
 
-def _write_bytes(path, data):
-    with open(path, 'wb') as f:
-        f.write(data)
+def _atomic_write_bytes(path, data):
+    """原子写回（同目录临时文件 + os.replace）。
+
+    回滚路径必须也是原子的：原先用 open(path,'wb') 会先把文件截断为 0，
+    回滚窗口内并发 Cfg() 会读到空/半份配置；若进程在回滚中途崩溃，磁盘上会留下
+    长度为 0 的 config.yml —— 下次启动直接失败(持久化损坏，需人工修)。
+    """
+    folder = os.path.dirname(os.path.abspath(path)) or '.'
+    fd, tmp = tempfile.mkstemp(prefix='.cfg_', suffix='.tmp', dir=folder)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def apply_config_changes(cfg_path, changes):
@@ -183,7 +234,7 @@ def apply_config_changes(cfg_path, changes):
         result['error'] = rr['error']
         if not rr['ok']:
             # 新配置加载不了 —— 回滚文件，并让运行时回到旧配置
-            _write_bytes(cfg_path, original)
+            _atomic_write_bytes(cfg_path, original)
             reload_runtime_config()
             result['rolled_back'] = True
     return result

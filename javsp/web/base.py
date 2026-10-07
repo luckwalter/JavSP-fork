@@ -53,21 +53,23 @@ class Request():
             self.__head = requests.head
         else:
             self.scraper = cloudscraper.create_scraper()
-            self.__get = self._scraper_monitor(self.scraper.get)
-            self.__post = self._scraper_monitor(self.scraper.post)
-            self.__head = self._scraper_monitor(self.scraper.head)
+            self.__get = self._scraper_monitor(self.scraper.get, requests.get)
+            self.__post = self._scraper_monitor(self.scraper.post, requests.post)
+            self.__head = self._scraper_monitor(self.scraper.head, requests.head)
 
-    def _scraper_monitor(self, func):
-        """监控cloudscraper的工作状态，遇到不支持的Challenge时尝试退回常规的requests请求"""
+    def _scraper_monitor(self, func, fallback):
+        """监控cloudscraper的工作状态，遇到不支持的Challenge时尝试退回常规的requests请求
+
+        fallback 必须由调用方显式指定: 原实现只区分 get 与「其他」, 导致 HEAD 请求
+        失败时被回退成 POST(调用点 javdb 用它校验封面是否存在)—— 对只接受 HEAD 的
+        服务器产生非预期副作用, 对接受 POST 的服务器则等于以登录凭据发起写操作。
+        """
         def wrapper(*args, **kw):
             try:
                 return func(*args, **kw)
             except Exception as e:
                 logger.debug(f"无法通过CloudFlare检测: '{e}', 尝试退回常规的requests请求")
-                if func == self.scraper.get:
-                    return requests.get(*args, **kw)
-                else:
-                    return requests.post(*args, **kw)
+                return fallback(*args, **kw)
         return wrapper
 
     def get(self, url, delay_raise=False):
@@ -208,7 +210,7 @@ def is_connectable(url, timeout=3):
         return False
 
 
-def urlretrieve(url, filename=None, reporthook=None, headers=None):
+def urlretrieve(url, filename=None, reporthook=None, headers=None, max_bytes=None):
     if "arzon" in url:
         headers["Referer"] = "https://www.arzon.jp/"
     """使用requests实现urlretrieve"""
@@ -216,16 +218,28 @@ def urlretrieve(url, filename=None, reporthook=None, headers=None):
     with contextlib.closing(requests.get(url, headers=headers,
                                          proxies=read_proxy(), stream=True)) as r:
         header = r.headers
+        # 下载体积上限: 封面/剧照本应是几 MB 的图片, 超过上限说明要么是异常响应,
+        # 要么是被重定向到了别处(可能是内网探测响应)。不设限时可能把磁盘写满。
+        limit = _MAX_DOWNLOAD_BYTES if max_bytes is None else max_bytes
+        size = -1
+        if "content-length" in header:
+            try:
+                size = int(header["Content-Length"])
+            except ValueError:
+                size = -1
+            if size > limit:
+                raise ValueError(f'响应体过大({size} > {limit} 字节), 已中止下载: {url[:80]}')
+        written = 0
         with open(filename, 'wb+') as fp:
             bs = 1024
-            size = -1
             blocknum = 0
-            if "content-length" in header:
-                size = int(header["Content-Length"])    # 文件总大小（理论值）
             if reporthook:                              # 写入前运行一次回调函数
                 reporthook(blocknum, bs, size)
             for chunk in r.iter_content(chunk_size=1024):
                 if chunk:
+                    written += len(chunk)
+                    if written > limit:
+                        raise ValueError(f'下载超过上限({limit} 字节), 已中止: {url[:80]}')
                     fp.write(chunk)
                     fp.flush()
                     blocknum += 1
@@ -233,16 +247,25 @@ def urlretrieve(url, filename=None, reporthook=None, headers=None):
                         reporthook(blocknum, bs, size)  # 每写入一次运行一次回调函数
 
 
+# 单文件下载上限: 封面 8-10MiB 量级, 留足余量到 64MiB(剧照/海报都比封面小)
+_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+
+
 def download(url, output_path, desc=None):
     """下载指定url的资源"""
-    # 支持“下载”本地资源，以供fc2fan的本地镜像所使用
-    if not url.startswith('http'):
+    # 只允许 http/https。原实现是「非 http 开头就当本地路径复制」, 而 url 来自
+    # 爬虫解析到的 cover/big_covers(远端站点 HTML 可控) —— 站点若返回 /etc/passwd
+    # 之类就会走 shutil.copyfile 把本机文件复制出去(任意文件读取原语)。
+    # fc2fan 的本地镜像需求改由显式的 file:// 前缀表达。
+    if url.startswith('file://'):
+        local = url[len('file://'):]
         start_time = time.time()
-        shutil.copyfile(url, output_path)
-        filesize = os.path.getsize(url)
+        shutil.copyfile(local, output_path)
+        filesize = os.path.getsize(local)
         elapsed = time.time() - start_time
-        info = {'total': filesize, 'elapsed': elapsed, 'rate': filesize/elapsed}
-        return info
+        return {'total': filesize, 'elapsed': elapsed, 'rate': filesize / elapsed}
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError(f'不支持的 URL 协议(仅允许 http/https): {url[:80]}')
     if not desc:
         desc = url.split('/')[-1]
     referrer = headers.copy()

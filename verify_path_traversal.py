@@ -179,24 +179,53 @@ def test_end_to_end():
 
 
 def test_scan_root_missing_stays_relative():
-    """回归守卫：无 scan_root 时（CLI 旧路径），相对路径应保持原样交给 CLI 解析，
-    不被_root_save_dir 强行锚定——这保证 CLI 语义不变。"""
+    """回归守卫：_root_save_dir 的边界收敛语义
+
+    - 无 scan_root（CLI 旧路径）：相对路径原样返回，交给 CLI 的 os.chdir 解析 → 语义不变
+    - 有 scan_root：相对路径锚定到扫描根
+    - 越界收敛：无论绝对路径还是带.. 的相对路径，都不允许逃出扫描根
+      （绝对路径配置同样受约束—— 否则无鉴权的 PUT /api/config 就能写到任意位置）
+    """
     from javsp.core import _root_save_dir
     from javsp.datatype import Movie
+    import tempfile, shutil
 
     section('C _root_save_dir 语义回归')
     m = Movie('ABC-123')
-    # 无 scan_root → 原样返回（CLI 依赖 os.chdir 解析）
+    # 无 scan_root → 原样返回（CLI 依赖 os.chdir 解析，不干预）
     out = _root_save_dir('#整理完成/x', m)
     check('无 scan_root 时保持相对', out == '#整理完成/x', f'got {out!r}')
-    # 有 scan_root → 锚定
-    m.scan_root = '/tmp/scanroot'
-    out = _root_save_dir('#整理完成/x', m)
-    check('有 scan_root 时锚定', out == os.path.join('/tmp/scanroot', '#整理完成/x'),
-          f'got {out!r}')
-    # 绝对路径模板原样保留（用户显式指定，不该被改）
+    # 无 scan_root + 绝对路径 → 同样不干预（CLI 显式指定时用户自己负责）
     out = _root_save_dir('/abs/target', m)
-    check('绝对路径原样保留', out == '/abs/target', f'got {out!r}')
+    check('无 scan_root 时绝对路径不干预', out == '/abs/target', f'got {out!r}')
+
+    # 以下均有 scan_root，需收敛
+    tmp = tempfile.mkdtemp(prefix='javsp_root_')
+    try:
+        m.scan_root = tmp
+        out = _root_save_dir('#整理完成/x', m)
+        check('有 scan_root 时锚定',
+              out == os.path.join(tmp, '#整理完成/x'), f'got {out!r}')
+
+        out = _root_save_dir('../evil', m)
+        check('相对路径带 .. 被收敛回根内',
+              os.path.realpath(out).startswith(os.path.realpath(tmp) + os.sep)
+              or os.path.realpath(out) == os.path.realpath(tmp),
+              f'逃逸了: {out!r}')
+
+        out = _root_save_dir(os.path.join(tmp, '..', '..', 'evil2'), m)
+        check('绝对路径含 .. 被收敛回根内',
+              os.path.realpath(out).startswith(os.path.realpath(tmp) + os.sep)
+              or os.path.realpath(out) == os.path.realpath(tmp),
+              f'逃逸了: {out!r}')
+
+        # 完全无关的绝对路径 → 收敛到扫描根下的 basename
+        out = _root_save_dir('/etc/cron.d/x', m)
+        check('无关绝对路径被收敛到根内',
+              os.path.realpath(out).startswith(os.path.realpath(tmp) + os.sep),
+              f'逃逸了: {out!r}')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == '__main__':

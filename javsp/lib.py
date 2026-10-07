@@ -61,7 +61,13 @@ def detect_special_attr(filepath: str, avid: str = None) -> str:
     if postfix in ('U', 'C', 'UC'):
         result += postfix
     elif avid:
-        pattern_str = re.sub(r'[_-]', '[_-]*', avid) + r'(UC|U|C)\b'
+        # avid 来自文件名或 /api/scrape 的入参, 属不可信输入: 必须先 re_escape 转义,
+        # 否则其中的 * + ( ) . 等正则元字符会成为活跃语法
+        # (既能操纵下面的判定, 也可构造嵌套量词触发 ReDoS)。
+        # 之后再把 -/_ 放宽成 [_-]*, 保持既有语义(ABC-123 仍可匹配 ABC123);
+        # re_escape 的转义表不含 - 与 _, 故这一步不会破坏已转义的部分。
+        pattern_str = re_escape(avid).replace('-', '[_-]*').replace('_', '[_-]*')
+        pattern_str += r'(UC|U|C)\b'
         match = re.search(pattern_str, base, flags=re.I)
         if match:
             result += match.group(1)

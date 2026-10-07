@@ -161,9 +161,15 @@ summarizer:
 translator:
   # 翻译引擎，可选: google, bing, baidu, claude(haiku), openai （Google可以直接免费使用。留空表示禁用翻译功能）
   # 进阶功能的文档 https://github.com/Yuukiy/JavSP/wiki/Translation-%7C-%E7%BF%BB%E8%AF%91
+  #
+  # ⚠️ 安全提示: 填写下面的 api_key / app_id 后, 本文件即包含明文凭据。
+  # 本文件是被 git 跟踪的, 请**不要** `git commit -a` 把填好的密钥提交上去;
+  # 更稳妥的做法是用环境变量覆盖(无需改本文件): 例如
+  #   JAVSP_TRANSLATOR__ENGINE__API_KEY=xxx   (双下划线表示嵌套层级)
+  # 环境变量优先级高于本文件, 详见 README「配置」小节。
   engine: null
   ## 使用百度翻译: {{{
-  # engine: 
+  # engine:
   #   name: baidu
   #   # 百度翻译的APP ID和密钥
   #   app_id: ''

@@ -20,6 +20,13 @@ from javsp.web.base import read_proxy
 
 logger = logging.getLogger(__name__)
 
+# 翻译请求统一超时: 早前全部 requests 调用都没有 timeout, 上游卡住时线程会被
+# 无限期占住(Python 无法强杀线程) -> core 的线程池留下不可回收的孤儿线程。
+_TIMEOUT = 20
+# Google 翻译被限流(429)时的最大重试次数: 原为 while 无限循环, 遇到持续 429
+# (或响应被劫持成 429) 时等待时间单调递增到数小时, 线程被无限占用。
+_GOOGLE_MAX_RETRY = 5
+
 
 def translate_movie_info(info: MovieInfo):
     """根据配置翻译影片信息"""
@@ -73,7 +80,7 @@ def translate(texts, engine: Union[
             paragraphs = [i['dst'] for i in result['trans_result']]
             rtn = {'trans': '\n'.join(paragraphs)}
         else:
-            err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+            err_msg = "{}: {}: {}".format(engine.name, result['error_code'], result['error_msg'])
     elif engine.name == 'bing':
         # 使用动态词典保护原文中的女优名，防止翻译后认不出来
         for i in actress:
@@ -96,25 +103,25 @@ def translate(texts, engine: Union[
             trans = ''.join(trans_break)
             rtn = {'trans': trans, 'orig_break': orig_break, 'trans_break': trans_break}
         else:
-            err_msg = "{}: {}: {}".format(engine, result['error']['code'], result['error']['message'])
+            err_msg = "{}: {}: {}".format(engine.name, result['error']['code'], result['error']['message'])
     elif engine.name == 'claude':
         try:
             result = claude_translate(texts, engine.api_key)
             if 'error_code' not in result:
                 rtn = {'trans': result}
             else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+                err_msg = "{}: {}: {}".format(engine.name, result['error_code'], result['error_msg'])
         except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
+            err_msg = "{}: {}: Exception: {}".format(engine.name, -2, repr(e))
     elif engine.name == 'openai':
         try:
             result = openai_translate(texts, engine.url, engine.api_key, engine.model)
             if 'error_code' not in result:
                 rtn = {'trans': result}
             else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+                err_msg = "{}: {}: {}".format(engine.name, result['error_code'], result['error_msg'])
         except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
+            err_msg = "{}: {}: Exception: {}".format(engine.name, -2, repr(e))
     elif engine.name == 'google':
         try:
             result = google_trans(texts)
@@ -126,9 +133,9 @@ def translate(texts, engine: Union[
                 trans = ''.join(trans_break)
                 rtn = {'trans': trans, 'orig_break': orig_break, 'trans_break': trans_break}
             else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+                err_msg = "{}: {}: {}".format(engine.name, result['error_code'], result['error_msg'])
         except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
+            err_msg = "{}: {}: Exception: {}".format(engine.name, -2, repr(e))
     else:
         return {'trans': texts}
 
@@ -151,7 +158,7 @@ def baidu_translate(texts, app_id, api_key, to='zh'):
     wait = 1.0 - (now - last_access)
     if wait > 0:
         time.sleep(wait)
-    r = requests.post(api_url, params=payload, headers=headers)
+    r = requests.post(api_url, params=payload, headers=headers, timeout=_TIMEOUT)
     result = r.json()
     baidu_translate._last_access = time.perf_counter()
     return result
@@ -168,7 +175,7 @@ def bing_translate(texts, api_key, to='zh-Hans'):
         'X-ClientTraceId': str(uuid.uuid4())
     }
     body = [{'text': texts}]
-    r = requests.post(api_url, params=params, headers=headers, json=body)
+    r = requests.post(api_url, params=params, headers=headers, json=body, timeout=_TIMEOUT)
     result = r.json()
     return result
 
@@ -179,15 +186,23 @@ def google_trans(texts, to='zh_CN'):
     # API: https://www.jianshu.com/p/ce35d89c25c3
     # client参数的选择: https://github.com/lmk123/crx-selection-translate/issues/223#issue-184432017
     global _google_trans_wait
-    url = f"https://translate.google.com.hk/translate_a/single?client=gtx&dt=t&dj=1&ie=UTF-8&sl=auto&tl={to}&q={texts}"
+    # texts 是影片标题/简介(来自远端站点的不可信内容), 必须做 URL 编码,
+    # 否则其中的 & ? # 会被当作查询参数分隔符 → 可注入额外参数
+    from urllib.parse import quote
+    url = ("https://translate.google.com.hk/translate_a/single?client=gtx&dt=t&dj=1"
+           f"&ie=UTF-8&sl=auto&tl={quote(to, safe='')}&q={quote(texts, safe='')}")
     proxies = read_proxy()
-    r = requests.get(url, proxies=proxies)
-    while r.status_code == 429:
-        logger.warning(f"HTTP {r.status_code}: {r.reason}: Google翻译请求超限，将等待{_google_trans_wait}秒后重试")
+    r = requests.get(url, proxies=proxies, timeout=_TIMEOUT)
+    retry = 0
+    while r.status_code == 429 and retry < _GOOGLE_MAX_RETRY:
+        retry += 1
+        logger.warning(f"HTTP {r.status_code}: {r.reason}: Google翻译请求超限，将等待{_google_trans_wait}秒后重试({retry}/{_GOOGLE_MAX_RETRY})")
         time.sleep(_google_trans_wait)
-        r = requests.get(url, proxies=proxies)
+        r = requests.get(url, proxies=proxies, timeout=_TIMEOUT)
         if r.status_code == 429:
             _google_trans_wait += random.randint(60, 90)
+    if r.status_code == 429:
+        logger.error(f"Google翻译连续{_GOOGLE_MAX_RETRY}次被限流, 放弃本次翻译")
     if r.status_code == 200:
         result = r.json()
     else:
@@ -209,7 +224,7 @@ def claude_translate(texts, api_key, to="zh_CN"):
         "max_tokens": 1024,
         "messages": [{"role": "user", "content": texts}],
     }
-    r = requests.post(api_url, headers=headers, json=data)
+    r = requests.post(api_url, headers=headers, json=data, timeout=_TIMEOUT)
     if r.status_code == 200:
         result = r.json().get("content", [{}])[0].get("text", "").strip()
     else:
@@ -241,7 +256,7 @@ def openai_translate(texts, url: Url, api_key: str, model: str, to="zh_CN"):
          "temperature": 0,
          "max_tokens": 1024,
     }
-    r = requests.post(api_url, headers=headers, json=data)
+    r = requests.post(api_url, headers=headers, json=data, timeout=_TIMEOUT)
     if r.status_code == 200:
         if 'error' in r.json():
             result = {

@@ -450,14 +450,16 @@ async function doBatch(organize) {
       } else if (d.type === 'movie_done') {
         batch.value.log.push({ index: d.index, avid: d.avid, ok: d.ok, title: d.title, sources: d.sources })
       } else if (d.type === 'all_done') {
-        batch.value.running = false
         batch.value.done = { success: d.success, fail: d.fail, total: d.total }
         ElMessage.success(`批量完成：成功 ${d.success} / 失败 ${d.fail}`)
       }
     })
   } catch (e) {
-    batch.value.running = false
     ElMessage.error('批量任务中断: ' + e.message)
+  } finally {
+    // 无条件复位: 若 SSE 流「正常结束却没收到 all_done」(后端生成器被中断/代理截断),
+    // 原先两个复位分支都不执行 -> batch.running 永久为 true -> 按钮永久禁用, 只能刷新页面
+    batch.value.running = false
   }
 }
 
@@ -510,9 +512,17 @@ function tagType(s) {
 async function loadConfig() {
   try {
     const c = await api.getConfig()
-    // 翻译引擎归一化为 {name}，避免 Web 表单改动时残留其他引擎的必填字段
+    // 翻译引擎归一化为 {name}，避免 Web 表单改动时残留其他引擎的必填字段。
+    // 注意: 必须保留 api_key/app_id/url/model —— 后端 GET 已把它们替换为掩码串,
+    // 若这里丢弃, 保存时后端就收不到密钥字段, model_validate 会因缺键直接失败
+    // (表现为「配了翻译密钥后点保存就报错」)。后端 PUT 会把掩码串还原为真实值。
     if (c.translator && c.translator.engine) {
-      c.translator.engine = { name: c.translator.engine.name || 'none' }
+      const e = c.translator.engine
+      c.translator.engine = { name: e.name || 'none' }
+      if (e.app_id !== undefined) c.translator.engine.app_id = e.app_id
+      if (e.api_key !== undefined) c.translator.engine.api_key = e.api_key
+      if (e.url !== undefined) c.translator.engine.url = e.url
+      if (e.model !== undefined) c.translator.engine.model = e.model
     }
     // 网络段可能缺字段（旧配置/精简配置），补齐后再绑定，避免 v-model 到 undefined
     c.network = c.network || {}

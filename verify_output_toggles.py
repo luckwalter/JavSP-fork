@@ -244,6 +244,33 @@ check('T2 CLI 步骤数随开关动态计算',
       '封面与 NFO 各自对应一次 check_step')
 check('T2 Web 侧同样使用 output_enabled', 'output_enabled(' in core_src)
 
+# total_step 与「独立步骤块」的一致性守卫。
+# 背景: 之前只逐项检查了 poster/nfo 两处, 漏了「移动影片文件」也有一次 check_step,
+# 默认配置(move_files=true)下 total_step=7 而实际步骤 8 次 → 进度条溢出到 8/7。
+# 注意不能用「check_step 出现次数」直接计数: 它既包含定义处, 也包含剧照循环里的
+# 失败分支(与成功分支互斥), 直接相加会得出错误总数。改为逐项列举「顶层步骤」。
+_STEP_GUARDS = [
+    ('封面下载', r"if output_enabled\('poster'\):\s*\n\s*total_step \+= 1"),
+    ('剧照下载', r"if output_enabled\('extrafanart'\):\s*\n\s*total_step \+= 1"),
+    ('NFO 写入', r"if output_enabled\('nfo'\):\s*\n\s*total_step \+= 1"),
+    ('移动影片文件', r"if Cfg\(\)\.summarizer\.move_files:\s*\n\s*total_step \+= 1"),
+]
+for _name, _pat in _STEP_GUARDS:
+    check(f'T2 CLI total_step 计入「{_name}」',
+          re.search(_pat, cli_src) is not None, '该步骤有 check_step 但未累加 total_step')
+check('T2 CLI 基础步骤数为 3(抓取/汇总/生成目标文件夹)', 'total_step = 3' in cli_src)
+
+# 单部失败必须被捕获(原被注释掉, 导致任意一部失败即终止整个 CLI 进程)
+# 注意: 不能用「except 后面紧跟 logger.debug」的单条正则 —— 中间可能有注释行,
+# 这里拆成两项分别断言(块存在 + 错误被记录), 避免正则被注释打断。
+_m = re.search(r'except Exception as e:(.*?)\n\s*finally:', cli_src, re.S)
+check('T2 CLI 外层 try 捕获单部异常', _m is not None, '每部影片的整理应被 try/except 包住')
+if _m:
+    _blk = _m.group(1)
+    check('T2 CLI 单部失败被记录(error)', 'logger.error' in _blk, '失败应有日志, 否则用户看不到哪部失败')
+    check('T2 CLI 单部失败不中断整批(恢复 except)',
+          '整理失败' in _blk, '原被注释掉, 导致任意一部失败即终止整个 CLI')
+
 print('--- T3 封面四种组合的实际落盘 ---')
 cases = [
     # label,                     开关,                                          是否下载, poster, fanart, skipped 应含

@@ -13,7 +13,10 @@ services:
     image: javsp-fork          # 换成你的镜像仓库地址也可，例如 registry.example.com/javsp-fork:latest
     container_name: javsp
     ports:
-      - "8000:8000"
+      # 安全默认: 只绑定本机回环, 不暴露给局域网。
+      # WebUI 无鉴权且能移动/重命名媒体文件与改写配置, 暴露出去等于把共享目录写权限
+      # 交给同网段任何设备。确需局域网访问时改成 "8000:8000", 并自行加反向代理+认证。
+      - "127.0.0.1:8000:8000"
     volumes:
       # 主机路径 = NAS 本机的共享文件夹真实路径（不是 Windows 的 \\HOMENAS\Downloads 这种 SMB/UNC 路径；
       # 容器跑在 NAS 本机，直接挂本机路径即可，无需走 SMB，bind mount 双向即时）

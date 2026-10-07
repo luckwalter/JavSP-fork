@@ -41,7 +41,9 @@ class CrawlerID(str, Enum):
 
 class Network(BaseConfig):
     proxy_server: Url | None
-    retry: NonNegativeInt = 3
+    # ge=1 而非 0: retry=0 会让 core.parallel_crawler 的 for cnt in range(retry)
+    # 一次都不执行 -> success 标记永不置位 -> 全部站点结果被丢弃且无任何错误提示(静默全失败)
+    retry: int = Field(3, ge=1, le=10)
     timeout: Duration
     proxy_free: Dict[CrawlerID, Url]
 
@@ -115,7 +117,8 @@ class Crawler(BaseConfig):
     sleep_after_scraping: Duration
     use_javdb_cover: UseJavDBCover
     normalize_actress_name: bool
-    max_concurrency: PositiveInt = 5  # 刮削并发上限(各爬虫线程池大小), 防止瞬时全开打爆出口/代理
+    max_concurrency: int = Field(5, ge=1, le=32)  # 刮削并发上限(各爬虫线程池大小), 防止瞬时全开打爆出口/代理
+    # 上界 32: ThreadPoolExecutor(max_workers) 直接决定线程数, 设过大(如 10^7)会耗尽线程/内存
 
 class MovieDefault(BaseConfig):
     title: str

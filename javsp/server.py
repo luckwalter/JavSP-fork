@@ -18,10 +18,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from javsp.config import Cfg
-from javsp.config_io import diff_leaves
-from javsp.config_reload import apply_config_changes, describe_runtime
+from javsp.config_io import diff_leaves, mask_secrets, unmask_secrets
+from javsp.config_reload import apply_config_changes, describe_runtime, config_transaction
 from javsp.core import (
     import_crawlers, load_alias_map,
     parallel_crawler, info_summary,
@@ -96,6 +97,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title='JavSP WebUI', version=__version__, lifespan=lifespan)
+
+# 校验 Host 头: 阻断 DNS Rebinding(攻击者把恶意域名解析到本机/内网 IP 后,
+# 浏览器会认为是同源从而直接调用本接口)。本服务无鉴权, 故此项是必要的纵深防御。
+# 需要通过别的域名/主机名访问时, 用环境变量 JAVSP_ALLOWED_HOSTS 显式放开(逗号分隔,
+# 填'*' 表示不校验)。
+_allowed_hosts = [h.strip() for h in os.getenv('JAVSP_ALLOWED_HOSTS', '').split(',') if h.strip()]
+if _allowed_hosts != ['*']:
+    # 默认只允许回环地址 + 局域网常见主机名; IP 需显式加入(如 NAS 的局域网 IP)
+    _allowed_hosts += ['127.0.0.1', 'localhost', '[::1]', 'testserver']
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
 # ----------------------------- 请求模型 -----------------------------
@@ -305,9 +316,14 @@ def api_batch(req: BatchRequest):
 
 @app.get('/api/config')
 def api_config_get():
-    """返回当前运行时配置(只读展示)"""
+    """返回当前运行时配置(只读展示)
+
+    敏感字段(翻译 api_key / app_id 等)以掩码返回: 本服务无鉴权, 原样返回等于
+    把凭据交给任何能访问该端口的客户端。掩码串可被前端原样回传, PUT 时会还原为
+    真实值(见 unmask_secrets), 因此不会造成丢密钥。
+    """
     try:
-        return Cfg().model_dump(mode='json')
+        return mask_secrets(Cfg().model_dump(mode='json'))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'读取配置失败: {e}')
 
@@ -327,16 +343,26 @@ def api_config_put(updates: dict):
     任一环节失败都会自动回滚文件与运行时配置。
     """
     try:
-        current = Cfg().model_dump(mode='json')
-        merged = _deep_update(current, updates)
-        Cfg.model_validate(merged)  # 仅做校验, 不替换运行时单例
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'配置校验失败: {e}')
-    cfg_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
-    try:
-        changes = diff_leaves(current, merged)
-        res = apply_config_changes(cfg_path, changes)
+        # 整个「读快照→合并→校验→写入」放进同一把锁, 避免并发 PUT 互相覆盖
+        # (原先快照与合并在锁外, 后写者会用旧快照算出的 changes 覆盖先写者的改动)
+        with config_transaction():
+            try:
+                current = Cfg().model_dump(mode='json')
+                # 前端回传的敏感字段是掩码串, 先还原为真实值, 避免把 '***MASKED***' 写进 config.yml
+                updates = unmask_secrets(updates, current)
+                merged = _deep_update(current, updates)
+                Cfg.model_validate(merged)  # 仅做校验, 不替换运行时单例
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f'配置校验失败: {e}')
+            cfg_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
+            try:
+                changes = diff_leaves(current, merged)
+                res = apply_config_changes(cfg_path, changes)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f'写入 config.yml 失败: {e}')
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'写入 config.yml 失败: {e}')
 
@@ -386,7 +412,10 @@ if os.path.isdir(_dist_dir):
 def entry():
     """console script 入口: 启动 FastAPI 服务"""
     import uvicorn
-    host = os.getenv('JAVSP_HOST', '0.0.0.0')
+    # 默认只监听本机: 本服务无鉴权且具备任意目录读写/配置改写能力,
+    # 监听 0.0.0.0 等于把 NAS 共享目录的写权限暴露给整个局域网。
+    # 需要局域网/容器外访问时, 由部署方显式设 JAVSP_HOST(如 Docker 镜像里已设 0.0.0.0)。
+    host = os.getenv('JAVSP_HOST', '127.0.0.1')
     port = int(os.getenv('JAVSP_PORT', '8000'))
     logger.info(f'启动 JavSP WebUI: http://{host}:{port}')
     uvicorn.run(app, host=host, port=port)

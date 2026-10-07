@@ -543,6 +543,140 @@ poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此
 
 ---
 
+## v0.1.20 — 系统性代码审查整改：安全基线 + 正确性 + 性能
+
+依据 [`CODE_REVIEW.md`](CODE_REVIEW.md) 的四维并行审查（Web 层 / 爬虫层 / 性能 / 前端+CLI+配置），
+逐条复验后落地。审查报告的结论均由主审核对源码/实测，剔除了前提有误的项
+（`shutil.move` 同卷即 `os.rename` 并不慢、`Image.open` 未 close 不构成泄漏、`hard_link:false`
+恰好最省空间）。
+
+### 一、安全基线（6 项，均为高危且改动极小）
+
+1. **翻译 API Key 明文进日志**：`translate.py` 用 `format(engine, …)` 拼错误信息，
+   pydantic config 对象的 `__str__` 会渲染出全部字段（含 `api_key`），随后被
+   `logger.error` 写入日志——**任何一次翻译失败（网络抖动/额度耗尽）即触发，门槛为零**。
+   改为打印 `engine.name`（8 处）。
+
+2. **默认绑 `0.0.0.0` + 零鉴权 + 无 Host 校验**：`server.py` 默认监听改为 `127.0.0.1`
+   （需局域网访问时显式设 `JAVSP_HOST`；Dockerfile 已有该 ENV，容器行为不变）；
+   新增 `TrustedHostMiddleware` 阻断 **DNS Rebinding**（经`JAVSP_ALLOWED_HOSTS` 放开，
+   容器部署默认放开，裸机默认只允许回环地址）。
+   `desktop.py` 本就绑 `127.0.0.1`，此前与 `server` 不一致且文档未说明。
+
+3. **`GET /api/config` 明文返回全部密钥**：新增 `config_io.mask_secrets` /
+   `unmask_secrets`，GET 返回掩码（`***MASKED***`），PUT 时把掩码还原为真实值——
+   **既不泄露，又不会因前端回传掩码而丢密钥**。`/api/config/runtime` 的代理地址同步抹掉
+   userinfo 中的密码。
+
+4. **`config.yml` 被 git 跟踪**：仓库内该文件的凭据字段本就全为注释（无真实密钥），
+   但用户填写后 `git commit -a` 即会提交。已在文件内加显著警示并给出
+   **环境变量覆盖**写法（`JAVSP_TRANSLATOR__ENGINE__API_KEY=xxx`）。
+
+5. **番号正则注入**：`lib.py` 的 `detect_special_attr` 把 `avid` 原样拼进正则模式，
+   其中的 `*` `+` `(` 等元字符成为活跃语法（可致 ReDoS 与判定绕过）。
+   改为复用同文件**已存在却未被使用**的 `re_escape`；`-`/`_` 的 `[_-]*` 放宽语义保持不变。
+
+6. **`retry=0` 导致刮削静默全失败**：`core.py` 的 `for cnt in range(retry)` 在 `retry=0` 时
+   一次都不执行 → `success` 标记永不置位 → 全部站点结果被丢弃且**无任何错误提示**。
+   改为 `Field(3, ge=1, le=10)`；`max_concurrency` 同样加上界 `le=32`。
+
+### 二、正确性
+
+7. **`output_folder_pattern` 任意路径写**：`_root_save_dir` 原对绝对路径原样放行、
+   相对路径不做越界收敛，配合无鉴权 PUT 可写到扫描根之外。现用 `realpath` 收敛，
+   越界时 warning 并落回扫描根内（`verify_path_traversal.py` 同步补 3 条守卫，66/66）。
+
+8. **配置回滚非原子写**：`config_reload` 回滚用 `open(path,'wb')`（先截断为 0），
+   与本模块 `_atomic_write` 的设计前提自相矛盾；崩溃时会留下**长度 0 的 config.yml**。
+   改用 `mkstemp` + `os.replace`（含 `fsync`）。
+
+9. **配置写入 TOCTOU**：并发 PUT 时「取快照+合并+算diff」在锁外，后写者会用旧快照
+   覆盖先写者的改动。新增 `config_transaction` 上下文（复用同一把 RLock），
+   把「读→合并→校验→写入」整体纳入临界区。
+
+10. **换行注入**：`config_io._needs_quote` 字符类不含 `\n\r\t`，值里的裸换行会被原样写入
+    并在解析时折叠成一行（**值被静默篡改**）。已补字符类，并对含换行的值改用双引号转义。
+
+11. **CLI 单部失败整批崩**：`__main__.py` 外层 `try` 的 `except` 被注释掉，只剩 `finally`，
+    而 `check_step` 失败时 `raise` → **任意一部影片任一步失败即终止整个 CLI 进程**。
+    已恢复 `except`（记录失败并继续，与 Web 侧逐部捕获 + 计数对齐）。
+    剧照目录 `os.mkdir` 改 `os.makedirs(..., exist_ok=True)`（原先会 `FileExistsError`）。
+
+12. **进度条溢出**：`move_files` 那次 `check_step` 未计入 `total_step`，默认配置
+    （`move_files: true`）下进度条走到 `8/7`。已补累加；
+    `verify_output_toggles.py` 从「逐项列举」改为**覆盖全部顶层步骤的守卫**（70 → 78 项）。
+
+13. **前端保存丢弃 API Key**：`App.vue` 把 `engine` 裁成只留 `{name}`，保存后
+    `api_key` 消失导致 `model_validate` 失败（表现为「配了翻译密钥后点保存就报错」）。
+    改为保留 `api_key`/`app_id`/`url`/`model`。
+
+### 三、性能
+
+14. **`get_pic_size` / `valid_pic` 为拿尺寸而解码整图**：`ImageOps.exif_transpose` 内部会
+    `load()` + `copy()`，只为返回 `.size` 两个整数就要解码并复制一遍
+    （4000×6000 峰值约 137MB，每部影片每张封面各一次）。改为只读文件头 +
+    按 EXIF Orientation 判断是否交换宽高（保持返回语义不变）。
+    实测 `get_pic_size` 峰值降 92%、耗时 354ms → 190ms（`valid_pic` 354→190ms）。
+
+15. **`overall_timeout` 误杀第二波爬虫**：原按「单爬虫最坏」计算，但 8 个站点 / 5 线程
+    是**两波**，真实上界 66s 而阈值只有 45s → 第二波刚开始 12s 就被 `cf.wait` 取消，
+    每部影片白丢 3 个站点结果。改为按波数 + 退避开销估算。
+
+16. **`TaskStore` 写入 O(n²)**（v0.1.17 引入 TTL 策略时的副作用）：每次写入都全量扫描
+    `_ts` + 超限时对全部条目排序，实测 4000 条写入 2.25s，且持锁阻塞其它 API。
+    改为**时间闸门**（`_next_ttl_check`：在「现存最旧条目的到期时刻」之前直接跳过 TTL 检查，
+    每次写入约O(1)），`evict_expired` 仍是全量扫描以保证显式调用语义正确。
+    实测 4000 条 2.25s → 0.82s（**降 2.75 倍**），增长曲线由超线性转为近似线性。
+
+### 四、健壮性
+
+17. **`download()` 任意文件读取原语**：原逻辑是「非 http 开头就当本地路径 `shutil.copyfile`」，
+    而 url 来自爬虫解析的 `cover`（远端站点 HTML 可控）→ 站点返回 `/etc/passwd` 即被拷走。
+    改为只允许 `http/https`，本地镜像需求改用显式 `file://` 前缀；
+    同时加**下载体积上限**（默认 64MiB，防异常响应写满磁盘）。
+
+18. **翻译请求无 timeout + Google 无限重试**：`translate.py` 全部请求补 `timeout=20`
+    （此前卡住会留下 Python 无法强杀的孤儿线程）；Google 的 `while 429` 加最大重试 5 次
+    （原为无限循环，等待单调递增到数小时）；顺带给 Google URL 做 `quote()` 编码
+    （`texts` 是远端可控的标题/简介，未编码可注入额外查询参数）。
+
+19. **`_scraper_monitor` HEAD 失败回退成 POST**：回退逻辑只区分 get 与「其他」，
+    导致 `javdb` 用 HEAD 校验封面失败时变成 POST（对接受 POST 的服务器等于以登录凭据
+    发起写操作）。改为由调用方显式传入对应的 fallback。
+
+20. **前端健壮性**：`consumeSSE` 去掉 `new Promise(async …)` 反模式、加空闲超时与
+    `AbortController`、正常读完也 resolve；错误体解析统一 `readDetail`/`normalizeDetail`
+    （此前 `await r.json()` 无 catch，反代 502 的 HTML 错误页会让真实原因变成 `SyntaxError`；
+    422 的 `detail` 是数组，`new Error([...])`会变 `[object Object]`）；
+    批量页 `batch.running` 改在 `finally` **无条件复位**（此前若 SSE 正常结束却没收到
+    `all_done`，按钮会永久禁用，只能刷新页面）。
+
+### 五、文档
+
+21. **README 新增「安全说明」章节**：明确服务无鉴权、默认只监听本机、Docker 的端口绑定
+    注意事项、`JAVSP_ALLOWED_HOSTS`、密钥掩码行为、`config.yml` 不要提交、**不支持公网暴露**。
+    `docker-compose.yml` 的端口映射改为 `127.0.0.1:8000:8000`（安全默认）。
+
+### 验证
+- 全量 **12 个验证脚本**通过：output_toggles 78（新增 8 项守卫）/ config_io 32 /
+  config_reload 24 / task_store 47 / path_traversal 66 / cropper 65 / nfo_jellyfin 31 /
+  sources 22 / batch 11 / scrape 7 / k4 / 依赖完整性扫描 EXIT=0。
+- 端到端冒烟 `smoke_tasks.py` PASS（真起 uvicorn，health 200、scan/movies 全链路通）。
+- 前端 `npm run build` 通过（1588 modules）。
+- 新增依赖声明 `starlette`（`TrustedHostMiddleware` 直接使用），
+  被依赖完整性扫描当场抓出并补齐——**扫描器对新引入的 import 立即生效**。
+
+### 已知未做
+- **SSE 断开后后台线程与副作用仍不回收**（客户端断开≠取消操作，文件照旧被整理）。
+  需异步化生成器 + 注入 `Request` + 心跳事件（心跳会插入 SSE 序列影响断言），
+  风险高于本批改动，留待独立一轮。
+- **批量完全串行 + 剧照强制 sleep**（`PT1.5S`/张）：1000 部多花 4-8 小时纯睡眠。
+  改动涉及并发化落盘，回归面较大，建议单独一轮。
+- **未做鉴权**：本项目定位仍是单用户自用工具，本次是把「默认暴露面」收敛到安全默认，
+  真正多用户需要另行设计认证体系。
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复

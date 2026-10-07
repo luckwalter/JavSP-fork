@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.1.19-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.20-blue.svg)
 
 ## 功能特点
 
@@ -118,6 +118,29 @@ javsp server
 # 浏览器打开 http://127.0.0.1:8000
 ```
 
+### ⚠️ 安全说明（部署前必读）
+
+本项目是**单用户自用工具**，Web 界面**没有登录鉴权**——任何能访问该端口的人都可以：
+扫描任意目录、**移动/重命名媒体文件**、写入 NFO/封面、改写 `config.yml`。
+因此：
+
+- **`javsp server` 默认只监听 `127.0.0.1`**（仅本机可访问）。这是安全的默认值，
+  请不要在不受信任的网络里改`JAVSP_HOST=0.0.0.0`。
+- **Docker 部署默认监听全网卡**（镜像内已设 `JAVSP_HOST=0.0.0.0`，因为容器外需要访问）。
+  用 Docker 时请注意：
+  - `ports` 建议写成 `127.0.0.1:8000:8000`（仅本机访问），而非 `8000:8000`（暴露给整个局域网）；
+  - 若确需局域网访问，请确认所在网络可信，并自行在前面加一层反向代理 + 认证。
+- 访问的主机名必须在 `JAVSP_ALLOWED_HOSTS` 白名单里（默认只放行 `127.0.0.1`/`localhost`；
+  容器部署已默认放开）。这一项用于阻断 **DNS Rebinding** 攻击。
+- `GET /api/config` 返回的配置里，翻译密钥等敏感字段已做**掩码**（`***MASKED***`），
+  前端保存时会自动还原，不会丢密钥。请勿把掩码值手工填到别处。
+- `config.yml` 是**被 git 跟踪**的文件。填入 `api_key` 后请**不要** `git commit -a`；
+  推荐改用环境变量覆盖（`JAVSP_TRANSLATOR__ENGINE__API_KEY=xxx`，双下划线表示嵌套层级），
+  环境变量优先级高于配置文件。
+- 输出目录会限制在扫描根目录内（配置里的绝对路径与 `../` 都会被收敛），
+  但仍建议只扫描你确实打算整理的目录。
+- **把JavSP 放在公网上是明确不支持的用法**，请只在可信网络（本地/家庭内网）使用。
+
 ### 方式三：桌面程序（PyWebView 打包 exe）
 
 ```bash
@@ -185,7 +208,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.1.19**
+当前版本：**0.1.20**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

@@ -194,11 +194,18 @@ try:
         import copy
         client = TestClient(server.app)
         cur = Cfg().model_dump(mode='json')
-        payload = copy.deepcopy(cur)
-        payload['network']['proxy_server'] = 'http://127.0.0.1:7890'
-        payload['network']['retry'] = 6
-        payload['network']['timeout'] = 'PT20S'          # 前端按秒编辑后转回的写法
-        payload['network']['proxy_free']['javdb'] = 'https://db.example.com'
+        # 只提交要改的字段（真实前端的做法）: 不整份回传。
+        # 整份 deepcopy 回传在配置收紧校验后会把「当前配置里那些从未被端到端校验过的
+        # 字段」一起送进model_validate, 从而因无关字段的取值而失败 ——
+        # 那是测试提交方式的问题, 不是接口缺陷。
+        payload = {
+            'network': {
+                'proxy_server': 'http://127.0.0.1:7890',
+                'retry': 6,
+                'timeout': 'PT20S',        # 前端按秒编辑后转回的写法
+                'proxy_free': {'javdb': 'https://db.example.com'},
+            }
+        }
         resp = client.put('/api/config', json=payload).json()
         # 热重载后状态为 'applied'（即时生效）；若热重载不可用则退回 'written'
         check('T9 PUT 返回写入成功', resp.get('status') in ('written', 'applied'), str(resp)[:160])

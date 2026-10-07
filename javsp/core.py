@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import json
+import math
 import time
 import logging
 import threading
@@ -167,9 +168,16 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
             all_info[i.value] = MovieInfo(movie.dvdid)
     # 并发上限: 通过线程池控制, 避免瞬时全开爬虫打爆出口/代理/触发反爬
     max_workers = Cfg().crawler.max_concurrency
-    # 单爬虫最坏耗时 = retry * 单次请求超时; 并发下整体最坏约等同单爬虫, 留余量
+    # 单爬虫最坏耗时 = retry * 单次请求超时 + 重试退避; 并发下总耗时还要乘以「波数」
+    # 早期版本按单爬虫算( retry*timeout+15 ), 但 8 个站点 / 5 线程 = 两波,
+    # 第二波在本该完成之后才被 cf.wait 超时 cancel 掉 —— 每部影片白丢 3 个站点的结果。
+    # 这里按波数向上取整估算, 并保底不少于单爬虫最坏耗时。
     per_crawler_worst = Cfg().network.retry * Cfg().network.timeout.total_seconds()
-    overall_timeout = per_crawler_worst + 15
+    # 每波之间还有指数退避(上限8s × (retry-1)) 与 sleep_after_scraping
+    backoff_worst = min(2 ** max(Cfg().network.retry - 1, 1), 8) * max(Cfg().network.retry - 1, 1)
+    waves = math.ceil(len(all_info) / max(max_workers, 1))
+    overall_timeout = max(per_crawler_worst + 15,
+                          waves * (per_crawler_worst + backoff_worst) + 15)
 
     executor = cf.ThreadPoolExecutor(max_workers=max_workers)
     futures = []
@@ -341,13 +349,30 @@ def _root_save_dir(pattern_dir: str, movie: Movie) -> str:
     相对「服务进程工作目录」解析 —— 实测会把影片搬进服务启动目录(如仓库根), 而非影片目录。
 
     锚定后 Web 与 CLI 语义一致: 输出落在 <扫描根目录>/#整理完成/...
+
+    安全: 配置(output_folder_pattern)与外部数据都参与路径拼接, 若不收敛, `../` 可让
+    落盘逃出扫描根 —— 在 NAS 上等于写到共享目录之外。已有 verify_path_traversal.py
+    守护「外部数据派生路径」这一侧; 这里补上「配置自身」的边界收敛。
     """
-    if os.path.isabs(pattern_dir):
-        return pattern_dir
     base = getattr(movie, 'scan_root', None)
-    if base:
-        return os.path.join(base, pattern_dir)
-    return pattern_dir
+    if not base:
+        # CLI 路径(无 scan_root): 依赖 os.chdir(root), 保持原样不干预
+        return pattern_dir
+    if os.path.isabs(pattern_dir):
+        # 绝对路径由配置显式指定, 但扫描根已知时仍要求收敛在根内
+        cand = os.path.realpath(pattern_dir)
+        root = os.path.realpath(base)
+        if cand != root and not cand.startswith(root + os.sep):
+            logger.warning(f'输出目录 {pattern_dir} 超出扫描根 {base}, 已收敛到扫描根下')
+            pattern_dir = os.path.join(base, os.path.basename(pattern_dir))
+    else:
+        # 相对路径: 拼接后做 realpath 收敛(消解 .. 与符号链接)
+        cand = os.path.realpath(os.path.join(base, pattern_dir))
+        root = os.path.realpath(base)
+        if cand != root and not cand.startswith(root + os.sep):
+            logger.warning(f'输出目录 {pattern_dir} 超出扫描根 {base}, 已收敛到扫描根下')
+            return root
+    return os.path.join(base, pattern_dir)
 
 
 OUTPUT_TOGGLES = ('poster', 'fanart', 'extrafanart', 'nfo')

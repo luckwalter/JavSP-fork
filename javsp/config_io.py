@@ -21,7 +21,8 @@
 import os
 import re
 
-__all__ = ['diff_leaves', 'write_config_preserving_comments', 'render_changes']
+__all__ = ['diff_leaves', 'write_config_preserving_comments', 'render_changes',
+           'mask_secrets', 'unmask_secrets']
 
 # 匹配 "  key: value" 形式的行（值可为空）
 _KEY_RE = re.compile(r'^(\s*)([A-Za-z_][\w\-]*):(.*)$')
@@ -58,6 +59,10 @@ def _needs_quote(s):
         return True
     if re.match(r'^[-+]?\d', s):          # 看起来像数字
         return True
+    # 必须包含换行/回车/制表: 否则值里的裸换行会被原样写入 YAML,
+    # 解析时折叠成一行(值被静默篡改)甚至破坏结构。多行文本一律用双引号块标量。
+    if re.search(r'[\n\r\t]', s):
+        return True
     if re.search(r'[:#\[\]{},&*!|>%@`]', s):
         return True
     return False
@@ -72,6 +77,11 @@ def _scalar(v):
     if isinstance(v, (int, float)):
         return str(v)
     s = str(v)
+    if re.search(r'[\n\r\t]', s):
+        # 含换行/制表: 必须用双引号块标量(YAML 双引号支持 \n 转义, 单引号里换行会被折叠成空格)
+        esc = (s.replace('\\', '\\\\').replace('"', '\\"')
+                .replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t'))
+        return '"' + esc + '"'
     if _needs_quote(s):
         return "'" + s.replace("'", "''") + "'"
     return s
@@ -229,3 +239,55 @@ def _atomic_write(cfg_path, text):
         except OSError:
             pass
         raise
+
+
+# ---------------------------------------------------------------------------
+# 敏感字段脱敏 / 还原
+# ---------------------------------------------------------------------------
+# 本服务无鉴权且默认曾监听全网卡, GET /api/config 若原样返回配置, 等于把翻译
+# api_key / app_id 明文交给任何能访问该端口的客户端。这里做掩码, 但**必须同时
+# 支持还原**——否则前端把配置原样回传时会用掩码覆盖真实密钥, 反而造成丢密钥。
+_SENSITIVE_KEYS = frozenset({'api_key', 'app_id', 'secret', 'token', 'password'})
+_MASK_PREFIX = '***MASKED***'
+
+
+def _mask_value(val: str) -> str:
+    """把敏感值替换为固定掩码串（保留可识别的形态，便于前端原样回传后还原）"""
+    if not isinstance(val, str) or not val:
+        return val
+    return _MASK_PREFIX
+
+
+def mask_secrets(obj):
+    """递归地把 dict/list 中的敏感字段值替换为掩码串（返回新对象, 不改原对象）"""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if k in _SENSITIVE_KEYS:
+                out[k] = _mask_value(v)
+            else:
+                out[k] = mask_secrets(v)
+        return out
+    if isinstance(obj, list):
+        return [mask_secrets(i) for i in obj]
+    return obj
+
+
+def unmask_secrets(submitted, reference):
+    """把提交数据里的掩码串还原为 reference 里的真实值（只处理掩码, 不动用户新填的值）
+
+    这样前端拿到的是掩码, 回传时若仍是掩码, 我们就填回原值 → 既不泄露, 又不丢密钥。
+    """
+    if isinstance(submitted, dict):
+        out = {}
+        for k, v in submitted.items():
+            ref_v = reference.get(k) if isinstance(reference, dict) else None
+            if k in _SENSITIVE_KEYS and isinstance(v, str) and v == _MASK_PREFIX:
+                out[k] = ref_v
+            else:
+                out[k] = unmask_secrets(v, ref_v)
+        return out
+    if isinstance(submitted, list):
+        return [unmask_secrets(i, reference[i] if isinstance(reference, list) and i < len(reference) else None)
+                for i in range(len(submitted))]
+    return submitted
