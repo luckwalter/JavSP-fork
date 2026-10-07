@@ -258,6 +258,55 @@ finally:
     # 确保仓库里的 config.yml 从未被动过
     check('仓库 config.yml 全程未被修改', open(SRC, 'rb').read() == original)
 
+# ---------------- T11: 敏感字段脱敏/还原的往返完整性 ----------------
+# 回归起因(v0.1.20 上线事故): unmask_secrets 的列表分支写成
+#   for i in range(len(submitted)): ... reference[i] ...
+# 这里 i 是整数下标, 对标量元素递归时把「按整数取值」当成了参考值, 导致
+# ignored_id_pattern / filename_extensions 这类纯字符串数组被整段污染成 int,
+# 前端「原样保存配置」直接 400(59 个校验错误)、满屏错误。
+# 本组断言确保: 脱敏→还原必须完全保持类型与内容, 尤其**不能改变标量元素类型**。
+print('--- T11 脱敏/还原往返完整性 ---')
+from javsp.config_io import mask_secrets, unmask_secrets
+from javsp.config import Cfg
+
+_real = {'translator': {'engine': {'name': 'baidu',
+                                   'app_id': 'REAL_APP', 'api_key': 'REAL_KEY'}},
+         'scanner': {'ignored_id_pattern': ['(144|240)[Pp]', '[24][Kk]'],
+                     'filename_extensions': ['.mp4', '.mkv'],
+                     'nested_list': [{'api_key': 'INNER_KEY'}, 'plain', 42]}}
+_masked = mask_secrets(_real)
+check('T11 嵌套 api_key 被掩码', _masked['translator']['engine']['api_key'] == '***MASKED***')
+check('T11 列表内dict 的 api_key 也被掩码',
+      _masked['scanner']['nested_list'][0]['api_key'] == '***MASKED***')
+check('T11 掩码不改动原对象', _real['translator']['engine']['api_key'] == 'REAL_KEY')
+
+_restored = unmask_secrets(_masked, _real)
+check('T11 往返后 api_key 还原为真值',
+      _restored['translator']['engine']['api_key'] == 'REAL_KEY')
+check('T11 往返后列表内 api_key 还原',
+      _restored['scanner']['nested_list'][0]['api_key'] == 'INNER_KEY')
+
+# 关键回归: 纯字符串数组往返后类型/内容必须不变(此前被整段转成 int)
+check('T11 字符串数组往返后仍是 str',
+      all(isinstance(x, str) for x in _restored['scanner']['ignored_id_pattern']),
+      f"实际类型 {[type(x).__name__ for x in _restored['scanner']['ignored_id_pattern']]}")
+check('T11 字符串数组往返后内容不变',
+      _restored['scanner']['ignored_id_pattern'] == _real['scanner']['ignored_id_pattern'])
+check('T11 filename_extensions 往返不变',
+      _restored['scanner']['filename_extensions'] == _real['scanner']['filename_extensions'])
+check('T11 混合列表(数字/字符串)往返不变',
+      _restored['scanner']['nested_list'][1:] == ['plain', 42],
+      f"实际 {_restored['scanner']['nested_list'][1:]}")
+
+# 用真实配置跑一遍「整份往返 + 校验」——这是前端保存配置的真实路径
+_cur = Cfg().model_dump(mode='json')
+_rt = unmask_secrets(json.loads(json.dumps(_cur)), _cur)
+try:
+    Cfg.model_validate(_rt)
+    check('T11 真实配置整份往返后可校验(前端保存路径)', True)
+except Exception as e:
+    check('T11 真实配置整份往返后可校验(前端保存路径)', False, str(e)[:120])
+
 print('---')
 print(f'PASS {len(PASS)}  FAIL {len(FAIL)}')
 if FAIL:

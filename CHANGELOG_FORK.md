@@ -677,6 +677,61 @@ poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此
 
 ---
 
+## v0.1.21 — 紧急修复：保存配置时整份回传被拒（满屏校验错误）
+
+**这是 v0.1.20 引入的回归**，在 NAS 上手工测试时立刻暴露：Web 界面改配置点「保存」→ 满屏 `Input should be a valid string` 错误。
+
+### 现象与根因
+
+-现象：`PUT /api/config` 返回 **400 + 59 条 `string_type` 校验错误**，
+  如 `scanner.ignored_id_pattern.0 Input should be a valid string [input_value=0, input_type=int]`。
+  只改单个字段（如 `network.timeout`）却能成功 —— 说明问题出在**整份回传**这条路径上。
+- 定位过程：先确认后端 `GET /api/config` 返回的 JSON **类型完全正确**（全是字符串），
+  排除后端产出问题；再本地逐步打印类型，定位到 `unmask_secrets` 这一步
+  **`ignored_id_pattern` 从 `['str','str',...]` 变成了 `[int,int,...]`**。
+- 根因：`config_io.unmask_secrets` 的列表分支写成
+  ```python
+  return [unmask_secrets(i, reference[i] if isinstance(reference, list) and i < len(reference) else None)
+          for i in range(len(submitted))]
+  ```
+  这里的 `i` 是**整数下标**（来自 `range`），被当作「提交项的值」递归传出，
+  于是每个标量元素都被替换成了整数。`ignored_id_pattern`、`filename_extensions`
+  这类**纯字符串数组**首当其冲被整段污染成 int，校验必然全红。
+- 影响：前端「保存」按钮走的就是「取配置 → 改若干字段 → 整份 PUT」，
+  所以**每次保存都会失败**，与用户改了什么无关。
+
+### 修复
+
+改为按位置对齐遍历（并只递归、不替换标量）：
+
+```python
+out = []
+for idx, item in enumerate(submitted):
+    ref_v = reference[idx] if isinstance(reference, list) and idx < len(reference) else None
+    out.append(unmask_secrets(item, ref_v))
+return out
+```
+
+### 验证
+
+- 新增 `verify_config_io.py` 的 **T11 脱敏/还原往返完整性**（10 项断言）：
+  覆盖嵌套 api_key 掩码与还原、**字符串数组往返后类型/内容必须不变**、
+  混合列表（数字+字符串）往返不变、以及用**真实配置跑一遍「整份往返 + 模型校验」**
+  ——即前端保存路径本身。此前该用例稳定失败（59 错误），修复后通过。
+- 回归：`verify_config_io` **42/42**、`config_reload` 24、`output_toggles` 78、
+  `task_store` 47、`path_traversal` 66 全部通过。
+- NAS 实测：原样保存 → **200 `unchanged`**（修复前 400）；改 `retry` 3→4 → **200 `applied`**，
+  6 个爬虫出口即时刷新。
+
+### 教训
+
+**纯逻辑的新函数也必须覆盖「整份数据往返」这种真实路径**——本次单测全部通过
+（当时只测了 dict 形态的密钥还原），但一进真实流程就因「列表分支写错」而崩。
+新增「脱敏/还原」这类**成对变换**函数时，验证脚本必须包含：①字符串数组 ②数字数组
+③混合数组 ④嵌套 dict in list ⑤**用真实配置整体往返并校验**。
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复

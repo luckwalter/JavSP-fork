@@ -288,6 +288,12 @@ def unmask_secrets(submitted, reference):
                 out[k] = unmask_secrets(v, ref_v)
         return out
     if isinstance(submitted, list):
-        return [unmask_secrets(i, reference[i] if isinstance(reference, list) and i < len(reference) else None)
-                for i in range(len(submitted))]
+        # 必须用 enumerate 拿「值」并按同位置对齐, 不能用 for i in range(len(...)) ——
+        # 那样 reference[i] 会变成按整数下标取值, 且对非 dict 元素毫无意义。
+        # 这里保持「逐项递归, 不做替换」即可(列表里的掩码串极少, 真有则按同位置还原)。
+        out = []
+        for idx, item in enumerate(submitted):
+            ref_v = reference[idx] if isinstance(reference, list) and idx < len(reference) else None
+            out.append(unmask_secrets(item, ref_v))
+        return out
     return submitted
