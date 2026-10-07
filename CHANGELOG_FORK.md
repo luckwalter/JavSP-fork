@@ -390,6 +390,63 @@ poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此
 
 ---
 
+## v0.1.17 — TASKS 内存缓存回收：长跑不再无界增长
+
+`TASKS`（`guid -> Movie` 的运行内存缓存）原先是一个**普通 dict，全项目没有任何删除路径**：
+写入只有 `api_scan` / `api_scrape` 两处，`api_organize` / `api_batch` 只读。
+于是每扫描一个新目录、每多刮削一部影片就多一份 `Movie`（含 `MovieInfo`、封面/剧照路径等）
+常驻内存，NAS 上连续运行数天或反复扫描不同媒体库时会无界增长，只能靠重启容器释放
+——这也解释了为什么「容器重启后 TASKS 被清空」一直被当成已知现象。
+
+### 做法：dict 兼容的 `TaskStore`
+
+新增 `javsp/task_store.py`，用 `TaskStore` 顶替 `server.py` 里的 `TASKS`。
+它**刻意做成 dict 兼容**（实现 `__setitem__` / `__getitem__` / `get` / `__contains__` /
+`values` / `keys` / `items` / `__len__` / `__iter__`），因此 server.py 里既有的
+`TASKS[guid] = m`、`TASKS.get(guid)`、`g in TASKS`、`for m in TASKS.values()`
+**一行都没改**——引入一套新仓储抽象会让所有调用点跟着改，回归面反而更大。
+
+三重回收策略：
+
+1. **TTL 过期**（默认 6 小时）：超过 TTL 未访问的条目在下次写入时顺带清理，避免隔夜残留长期占内存。
+   用 `time.monotonic()`，不受系统时间跳变（NTP 校时、时区切换）影响；命中`get`/读取也会刷新时间戳，
+   让 TTL 表达「最近一次活跃」而非「创建时间」，避免用户持续操作某影片时被误回收。
+2. **容量上限**（默认 2000 条）：超限时按「最旧优先」淘汰，防止单次超大目录扫描（几千部影片）
+   一次性把内存打满。
+3. **活跃任务保护**：`organize` / `batch` 执行期间用 `mark_active()` 把涉及的条目登记为活跃，
+   回收时跳过——避免任务做到一半源对象被删导致落盘失败。**必须用 `with`**，异常路径也要解除标记，
+   否则条目会被永久保护、永不回收（验证脚本专门覆盖了这条）。
+
+清理**只在写入时触发**：内存增长必然来自写入，因此在写入点维护即可，无需引入后台定时线程；
+若长时间没有新写入，内存占用本身是稳定的，不清理也无害。另提供 `evict_expired()` 显式 API
+与 `stats()` 状态快照（`count` / `active` / `ttl_seconds` / `max_tasks`）便于观测与测试。
+
+参数可用环境变量按部署规模调整：`JAVSP_TASK_TTL`（秒）、`JAVSP_TASK_MAX`（条）。
+
+### 改动的文件
+- 新增 `javsp/task_store.py`
+- `javsp/server.py`：`TASKS = TaskStore()`；`organize` / `batch` 的后台线程用 `mark_active()` 包裹；顺带清理已成未用导入的 `Dict`
+- 新增 `verify_task_store.py`（**47/47 PASS**）、`smoke_tasks.py`（真 uvicorn 端到端冒烟）
+
+### 验证
+- `verify_task_store.py` 47/47：dict 兼容性逐条模拟、TTL 过期（含「写入顺带触发」）、访问刷新时间戳、
+  容量上限与最旧优先淘汰、活跃保护（**含异常路径解除**）、TTL 跳过活跃、边界（`ttl<=0`/`max<=0`/空 store）、
+  8 线程并发写入无异常、`stats()` 字段；外加 server.py **源码扫描**防漂移（确实用 `TaskStore`、
+  不再用普通 dict 初始化、两处 `mark_active` 都在、未用 `Dict` 已移除）。
+- `smoke_tasks.py`：真实起 uvicorn 打 `/api/health`（返回 0.1.17）、`/api/scan`、`/api/movies`，
+  确认换成 `TaskStore` 后集成层面无问题。
+- 全量回归：既有 9 个验证脚本全部通过（`verify_batch_e2e` 覆盖批量 SSE 全流程，证明换掉TASKS
+  类型未破坏批量链路）。
+
+### 已知未做（SSE 断开回收）
+三个 SSE 生成器仍是 `while True: item = q.get()`（无超时）。客户端断开后，生成器会卡在
+`q.get()`、后台 daemon 线程仍跑完整刮削并持续往队列堆积（无人消费）。彻底修复需同时做三件事：
+生成器异步化 + 端点注入 `Request` 以调用 `is_disconnected()` + 增加心跳事件（心跳会插入 SSE
+事件序列，影响前端与 `verify_batch_e2e` 的序列断言）。因风险高于本次改动、且现有脚本无法模拟
+「客户端中途断开」，留待独立一轮设计并补上断流测试后再实施。
+
+---
+
 ## 问题排查与修复（Issue 记录）
 
 ### 已修复
@@ -544,6 +601,32 @@ poster 与 fanart **同源**（poster 由下载的原图裁剪而来），因此
    - 相关工具坑：Windows 下 `poetry lock` 会把整个 lock 写成 CRLF（与本项目长期坚持的 LF 冲突），
      已用二进制方式还原为 LF；且 `poetry lock` 会拿项目 venv 的解释器校验 pyproject 的 python 约束，
      必须先 `env use` 到合规版本（本项目 `<3.13`，故用 3.12）。
+
+19. **【内存泄漏】`TASKS` 内存缓存无界增长，长跑只能靠重启释放**
+   - 现象：`server.py` 的 `TASKS`（`guid -> Movie`）是普通 dict，**全项目没有任何删除路径**：
+     写入只发生在 `api_scan`（扫描入库）与 `api_scrape`（按 avid 刮削后入库），而
+     `api_organize` / `api_batch` 只读、`api_movies` 只遍历。每扫描一个新目录、每多刮削一部影片
+     就多一份 `Movie`（含 `MovieInfo`、封面/剧照路径）常驻内存。
+   - 影响：NAS 上连续运行数天、或反复扫描不同媒体库时内存无界增长，只能重启容器释放；
+     此前「容器重启后 TASKS 被清空」一直被当作已知现象，根因未被发现。
+   - 修复：新增 `javsp/task_store.py`的 `TaskStore`（dict 兼容，实现 `__setitem__`/`get`/
+     `__contains__`/`values` 等），`TASKS = TaskStore()` 顶替普通 dict，既有调用点零改动。
+     三重策略：TTL 过期（默认 6h，`monotonic` 防时间跳变，访问刷新戳）+ 容量上限（默认 2000，
+     最旧优先淘汰）+ 活跃保护（`mark_active()`上下文管理器，organize/batch 期间跳过回收，
+     保证异常路径也解除标记）。清理只在写入时触发，不引入后台定时线程（v0.1.17）。
+   - 验证：`verify_task_store.py` **47/47 PASS**（含异常路径解除活跃保护、8 线程并发、源码扫描防漂移）
+     + `smoke_tasks.py` 真 uvicorn 端到端冒烟；全量 10 个验证脚本通过。
+
+20. **【已知未做】SSE 客户端断开后生成器与后台线程均不回收**
+   - 现象：`api_scrape` / `api_organize` / `api_batch` 三处SSE 生成器都是
+     `while True: item = q.get()`（**无超时**）。客户端中途断开后，生成器永久卡在 `q.get()`，
+     而后台 daemon 线程仍会跑完整个刮削流程并持续往队列堆积（已无人消费）。
+   - 为何本次不做：彻底修复需同时做三件事 —— ①生成器异步化 ②端点注入 `Request` 才能调
+     `await request.is_disconnected()`（当前端点收的是 Pydantic 模型，`req` 并非 Request，
+     直接用会 `NameError`）③增加心跳事件（**心跳会插入 SSE 事件序列**，影响前端解析与
+     `verify_batch_e2e` 的序列断言）。风险高于同批改动，且现有脚本**无法模拟「客户端中途断开」**
+     （需真实 HTTP 断流），无测试守护下改SSE 核心路径违背「小步快跑/不堆积未验证代码」。
+   - 处置：留待独立一轮，先设计并补上断流测试再实施（v0.1.17 记录）。
 
 ### 启动炸弹排查（沙箱 Python 3.12 + uvicorn 实跑验证，确认均无问题）
 

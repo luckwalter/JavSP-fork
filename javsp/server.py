@@ -12,7 +12,7 @@ import threading
 import hashlib
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -28,11 +28,14 @@ from javsp.core import (
     scrape_movie, organize_movie, scan_library,
 )
 from javsp.datatype import Movie
+from javsp.task_store import TaskStore
 
 logger = logging.getLogger('javsp.server')
 
 # 运行内存中的任务缓存: guid -> Movie
-TASKS: Dict[str, Movie] = {}
+# 用 TaskStore 封装以获得 TTL 过期 + 容量上限 + 活跃任务保护(避免长跑内存无界增长);
+# 它是 dict 兼容的, 下方所有 TASKS[...] / .get() / in / .values() 用法均无需改动。
+TASKS = TaskStore()
 
 # 版本号: 单一版本源 = pyproject.toml(实读; 不再用已安装元数据优先, 避免 editable install 快照滞后导致版本漂移)
 from javsp.version import get_version
@@ -218,7 +221,9 @@ def api_organize(req: OrganizeRequest):
         def run():
             try:
                 q.put({'type': 'stage', 'stage': 'organizing'})
-                result = organize_movie(movie, progress_cb=progress_cb)
+                # 标记活跃:整理期间持有 Movie,不能被 TTL/容量回收(否则落盘到一半源对象被删)
+                with TASKS.mark_active(req.guid):
+                    result = organize_movie(movie, progress_cb=progress_cb)
                 q.put({'type': 'result', 'result': result})
             except Exception as e:
                 logger.exception(e)
@@ -249,41 +254,43 @@ def api_batch(req: BatchRequest):
 
         def run():
             success = fail = 0
-            for idx, m in enumerate(movies, 1):
-                avid = m.dvdid or m.cid
-                q.put({'type': 'movie_start', 'index': idx, 'total': total,
-                       'guid': m.guid, 'avid': avid})
+            # 整批处理期间所有影片都标记活跃:批量可能跑很久,期间不能被回收
+            with TASKS.mark_active(*[m.guid for m in movies]):
+                for idx, m in enumerate(movies, 1):
+                    avid = m.dvdid or m.cid
+                    q.put({'type': 'movie_start', 'index': idx, 'total': total,
+                           'guid': m.guid, 'avid': avid})
 
-                def progress_cb(name, status, _m=m):
-                    q.put({'type': 'progress', 'index': idx, 'guid': _m.guid,
-                           'crawler': name, 'status': status})
+                    def progress_cb(name, status, _m=m):
+                        q.put({'type': 'progress', 'index': idx, 'guid': _m.guid,
+                               'crawler': name, 'status': status})
 
-                try:
-                    ok = _scrape_into(m, progress_cb)
-                except Exception as e:
-                    logger.exception(e)
-                    ok = False
-                if ok and req.organize:
                     try:
-                        organize_movie(m, progress_cb=progress_cb)
-                        organized = True
+                        ok = _scrape_into(m, progress_cb)
                     except Exception as e:
                         logger.exception(e)
+                        ok = False
+                    if ok and req.organize:
+                        try:
+                            organize_movie(m, progress_cb=progress_cb)
+                            organized = True
+                        except Exception as e:
+                            logger.exception(e)
+                            organized = False
+                    else:
                         organized = False
-                else:
-                    organized = False
-                if ok:
-                    success += 1
-                    q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
-                           'ok': True, 'organized': organized,
-                           'title': (m.info.title if m.info else None),
-                           'sources': getattr(m, 'sources', None)})
-                else:
-                    fail += 1
-                    q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
-                           'ok': False, 'organized': False,
-                           'sources': getattr(m, 'sources', None)})
-            q.put({'type': 'all_done', 'success': success, 'fail': fail, 'total': total})
+                    if ok:
+                        success += 1
+                        q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
+                               'ok': True, 'organized': organized,
+                               'title': (m.info.title if m.info else None),
+                               'sources': getattr(m, 'sources', None)})
+                    else:
+                        fail += 1
+                        q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
+                               'ok': False, 'organized': False,
+                               'sources': getattr(m, 'sources', None)})
+                q.put({'type': 'all_done', 'success': success, 'fail': fail, 'total': total})
             q.put(None)
 
         threading.Thread(target=run, daemon=True).start()
