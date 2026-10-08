@@ -36,6 +36,9 @@ def parse_data(movie: MovieInfo):
     if page_title and page_title[0].startswith('404 Page Not Found!'):
         raise MovieNotFoundError(__name__, movie.dvdid)
 
+    # 废站/壳页/墙页不含详情结构时直接判未找到, 避免 xpath [0] 越界
+    if not html.xpath("//div[@class='container']"):
+        raise MovieNotFoundError(__name__, movie.dvdid)
     container = html.xpath("//div[@class='container']")[0]
     title = container.xpath("h3/text()")[0]
     cover = container.xpath("//a[@class='bigImage']/img/@src")[0]

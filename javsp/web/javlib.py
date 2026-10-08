@@ -71,7 +71,10 @@ def parse_data(movie: MovieInfo):
         # 通常第一部影片就是我们要找的，但是以免万一还是遍历所有搜索结果
         pre_choose = []
         for tag in video_tags:
-            tag_dvdid = tag.xpath("div[@class='id']/text()")[0]
+            tag_dvdid = tag.xpath("div[@class='id']/text()")
+            if not tag_dvdid:
+                continue
+            tag_dvdid = tag_dvdid[0]
             if tag_dvdid.upper() == movie.dvdid.upper():
                 pre_choose.append(tag)
         pre_choose_urls = [i.get('href') for i in pre_choose]
@@ -97,6 +100,9 @@ def parse_data(movie: MovieInfo):
             raise MovieDuplicateError(__name__, movie.dvdid, match_count, pre_choose_urls)
         # 重新抓取网页
         html = request.get_html(new_url)
+    # 废站/壳页/墙页不含详情结构时直接判未找到, 避免 xpath [0] 越界
+    if not html.xpath("/html/body/div/div[@id='rightcolumn']"):
+        raise MovieNotFoundError(__name__, movie.dvdid)
     container = html.xpath("/html/body/div/div[@id='rightcolumn']")[0]
     title_tag = container.xpath("div/h3/a/text()")
     title = title_tag[0]

@@ -918,6 +918,26 @@ v0.1.20 为修「番号正则注入」把 `re.sub(r'[_-]','[_-]*',avid)` 改成
 3. 验证脚本里写了 `check('...', os.path.isdir(x) or not os.path.exists(x))` 这种
    **恒真断言**（永真），发现后改为真实判定。
 
+## v0.1.28 废站优雅降级 —— javbus/javlib 壳页不再 IndexError 崩溃
+
+### 现象与根因
+
+v0.1.27 部署后持续实测多源抓取，结合 squid 代理临时故障恢复后的完整复测，澄清了「多站点能否恢复」的真相：
+
+1. **三个镜像站在当前 NAS 出口（squid 机房 IP）下已全部变质**：`javlibrary.net` 偶发返回壳页/首页、`javbus.life` 已是 `noindex` 空壳、`javdb38.com` 变成垃圾站（`HeadlineLogic News Portal`），`javdb.com` 主站则被 Cloudflare 拦截（`403 Just a moment...`，cloudscraper 无法过新版挑战）。
+2. **根因是镜像站本身废了，不是「反爬墙挡一下」**：纯 HTTP 跟 JWT/cookie 挑战、甚至上无头浏览器都救不了——浏览器也走同一个 squid 出口、面对的仍是废站。多源恢复在当前网络环境（机房 IP + 变质镜像）下不可行。
+3. **唯一稳定可取数的源是 jav321**（多组真实番号实测均返回真实标题 + 封面）。
+
+### 改动
+
+- `javsp/web/javbus.py`：`parse_data` 解析前检测 `//div[@class='container']`，壳页/墙页/垃圾站直接抛 `MovieNotFoundError`（被 `core` 的 `except MovieNotFoundError` 容错干净跳过，不再因 `xpath(...) [0]` 越界抛 `IndexError` 重试刷错）。
+- `javsp/web/javlib.py`：① 解析前检测 `/html/body/div/div[@id='rightcolumn']`，不存在抛 `MovieNotFoundError`；② 搜索结果遍历中 `tag.xpath("div[@class='id']/text()")` 改安全取法（缺值时 `continue`），避免 `[0]` 越界。
+- 注：`javdb.py` 对废站已返回 `MovieNotFoundError`（本身优雅）；三废站（javlib/javbus/javdb）现均干净跳过，`jav321` 单源稳定运行。
+
+### 验证
+
+- 本地语法校验通过；部署后容器内 `parse_data` 实测确认 javlib/javbus 抛 `MovieNotFoundError` 而非 `IndexError`，jav321 仍可取数（部署后补验证记录）。
+
 ## v0.1.27 多站点抓取修复 —— 翻转「有代理走主站」逻辑 + javdb 单站放宽 TLS
 
 ### 现象与根因
