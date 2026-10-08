@@ -67,7 +67,7 @@ def tls_verify():
 # 处理网络请求的类，它带有默认的属性，但是也可以在各个抓取器模块里进行进行定制
 class Request():
     """作为网络请求出口并支持各个模块定制功能"""
-    def __init__(self, use_scraper=False) -> None:
+    def __init__(self, use_scraper=False, verify=None) -> None:
         # 必须使用copy()，否则各个模块对headers的修改都将会指向本模块中定义的headers变量，导致只有最后一个对headers的修改生效
         self.headers = headers.copy()
         self.cookies = {}
@@ -76,7 +76,12 @@ class Request():
         self.timeout = Cfg().network.timeout.total_seconds()
         # 统一在此处注入 verify, 而不是让 40+ 个调用点各自记得传 —— 漏一个就等于
         # 该站点在 MITM 代理下静默失效。用 partial 绑定比逐处改更不易漏。
-        _verify = tls_verify()
+        if verify is None:
+            _verify = tls_verify()
+        else:
+            # 调用方显式指定 verify (如 javdb 的源站证书链不完整), 绕开全局 TLS 策略仅放宽该站
+            logger.warning(f'Request 实例被显式指定 verify={verify}, 已绕开全局 TLS 校验策略(仅限受控场景)')
+            _verify = verify
         _get = partial(requests.get, verify=_verify)
         _post = partial(requests.post, verify=_verify)
         _head = partial(requests.head, verify=_verify)

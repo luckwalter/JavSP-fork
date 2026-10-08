@@ -918,6 +918,38 @@ v0.1.20 为修「番号正则注入」把 `re.sub(r'[_-]','[_-]*',avid)` 改成
 3. 验证脚本里写了 `check('...', os.path.isdir(x) or not os.path.exists(x))` 这种
    **恒真断言**（永真），发现后改为真实判定。
 
+## v0.1.27 多站点抓取修复 —— 翻转「有代理走主站」逻辑 + javdb 单站放宽 TLS
+
+### 现象与根因
+
+v0.1.26 修好「代理没配上」后，实测发现 javbus/javdb/javlib 三个站仍抓不到，但 jav321 稳定可用。
+逐站点代码级实测（带 `-c` 真实配置）澄清了之前「mgstage/prestige 要日本 IP」等**误判**：
+
+1. **javbus / javdb 逻辑反了**：原代码 `if proxy_server is not None: base_url = 主站` —— 一配代理就走
+   `javbus.com` / `javdb.com` 主站（被 Cloudflare driver-verify / SSL 拦），而**可用镜像反而被闲置**。
+   应改为「有代理走镜像、无代理走主站」。
+2. **javdb38 镜像证书链不完整**：源站只下发叶证（Let's Encrypt YE1）、缺中间证书，certifi 严格校验必
+   报 `CERTIFICATE_VERIFY_FAILED`（certifi 已最新仍 FAIL，证实非信任库旧）。属源站自身问题，非代理 MITM，
+   故在 `javdb.py` 内对该 `Request` 实例显式 `verify=False` 单站放宽，不全局关闭校验。
+3. **javlib 镜像 `javlibrary.org` 失效**：实测 `javlibrary.net` 证书默认即 200，仅镜像地址过期。
+
+### 改动
+
+- `javsp/web/base.py`：`Request.__init__` 增加 `verify=None` 形参（默认仍走 `tls_verify()` 全局策略），
+  允许单站显式放宽校验。
+- `javsp/web/javdb.py`：① `request = Request(use_scraper=True, verify=False)`；② `base_url` 翻转
+  （有代理→`proxy_free[javdb]`，无代理→主站）。
+- `javsp/web/javbus.py`：`base_url` 翻转（有代理→`proxy_free[javbus]`，无代理→主站）。
+- `config.yml`：`proxy_free` 默认值更新为实测可用镜像 —— `javbus: javbus.email`、`javdb: javdb38.com`、
+  `javlib: javlibrary.net`。
+- 部署脚本同步把 NAS 持久化配置里的 `proxy_free` 三处也改为上述镜像（持久化配置不会被模板覆盖）。
+
+### 验证
+
+- 部署后容器内代码级解析实测 `ABP-123`/`SSIS-456`/`MIDE-800`：jav321 稳定；javbus/javdb/javlib 走镜像后
+  应可命中（javbus 若仍撞 Cloudflare 则暂放弃，不影响 javdb/javlib/jav321 的多站目标）。
+- 全 16 个回归脚本仍应全绿（本次仅动爬虫逻辑，不影响既有能力）。
+
 ## v0.1.26 配置读写不同源 —— 「设置保存了却没生效」「站点只有 1 个能抓到」的共同根因
 
 ### 现象与根因

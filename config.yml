@@ -32,11 +32,11 @@ network:
   # ③此类镜像变动频繁, 失效后请手动换当前可用地址, 详见 README「排查只有个别站点抓得到」。
   proxy_free:
     avsox: 'https://avsox.click'
-    javbus: 'https://www.javbus.com'
-    # 实测: javdb 主站对中国出口返回"版权限制"提示页(地域限制, 非地址失效),
-    # 换镜像才有效; 保持一个可用镜像, 无镜像时请从 README 小节实测后填入
-    javdb: 'https://javdb.com'
-    javlib: 'https://www.javlibrary.org'
+    javbus: 'https://javbus.email'
+    # 实测: javdb 主站对当前代理出口存在 SSL/地域封锁, 经代理时应走镜像; 镜像同样经代理访问。
+    # javdb38.com 实测可用, 但其服务器证书链不完整(仅下发叶证), 已在 javdb.py 内对该站 verify=False 放宽。
+    javdb: 'https://javdb38.com'
+    javlib: 'https://www.javlibrary.net'
   # 网络问题导致抓取数据失败时的重试次数，通常3次就差不多了
   retry: 3
   # https://en.wikipedia.org/wiki/ISO_8601#Durations
