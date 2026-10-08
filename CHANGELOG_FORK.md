@@ -936,7 +936,11 @@ v0.1.27 部署后持续实测多源抓取，结合 squid 代理临时故障恢�
 
 ### 验证
 
-- 本地语法校验通过；部署后容器内 `parse_data` 实测确认 javlib/javbus 抛 `MovieNotFoundError` 而非 `IndexError`，jav321 仍可取数（部署后补验证记录）。
+- 本地语法校验通过；部署 `javsp-fork:0.1.28` 后容器内多源 `parse_data` 实测（真实番号 IPX-001）：
+  - `jav321`：OK，返回真实标题（如「女子校生便所交際…」）+ 封面，唯一稳定可取数据源。
+  - `javlib` / `javbus` / `javdb`：均抛 `MovieNotFoundError`（壳页/墙页/垃圾站被解析前结构检测拦截），被 `core` 的 `except MovieNotFoundError` 容错干净跳过，**不再 `xpath [0]` 越界抛 `IndexError` 重试刷错**。
+- 注：三废站在当前 NAS 出口（squid 机房 IP + 变质镜像）下均无法取数，属网络环境限制；代码层面已保证批量刮削不被废站拖崩，`jav321` 单源稳定。
+- 关联 commit：`8db45ec`
 
 ## v0.1.27 多站点抓取修复 —— 翻转「有代理走主站」逻辑 + javdb 单站放宽 TLS
 
