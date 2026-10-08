@@ -53,8 +53,19 @@ crawler:
     #   javdbapi   —— javdb 手机 App 私有 API(纯 JSON), 绕开 Cloudflare
     #   javdatabase—— javdatabase.com 详情页(部分番号该站未收录, 会优雅跳过)
     #   javmenu    —— 原指向死站 mrzyx.xyz, v0.2.1 已就地替换为 javmenu.com
-    normal: [airav, avsox, javbus, javdb, javlib, jav321, mgstage, prestige,
-             javdbapi, javdatabase, javmenu]
+    # 用块列表(每行一个)而非行内数组: 行内数组一旦换行, 只支持单行解析的脚本会报错。
+    normal:
+        - airav
+        - avsox
+        - javbus
+        - javdb
+        - javlib
+        - jav321
+        - mgstage
+        - prestige
+        - javdbapi
+        - javdatabase
+        - javmenu
     fc2: [fc2, avsox, javdb, javmenu, fc2ppvdb]
     cid: [fanza]
     getchu: [dl_getchu]

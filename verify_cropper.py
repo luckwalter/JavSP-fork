@@ -37,7 +37,7 @@ def find_node():
     return shutil.which('node') or 'node'
 
 
-PROJ = "C:/Users/luckw/WorkBuddy/2026-10-06-17-16-37/JavSP"
+PROJ = os.path.dirname(os.path.abspath(__file__))
 NODE = find_node()
 sys.path.insert(0, PROJ)
 os.chdir(PROJ)          # Cfg 需要能找到 config.yml

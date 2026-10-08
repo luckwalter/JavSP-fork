@@ -298,6 +298,101 @@ def test_passive_failure_can_trip():
     check('已被跳过', health.is_tripped('javx') is True, '')
 
 
+def test_code_mismatch_never_trips():
+    print('\n===== 「番号不适用」必须视为源正常(否则误熔断) =====')
+    # 实测事故: 探活拿样本番号 IPX-001 去问 FC2/GETCHU/gyutto 这类只收录特定番号段的
+    # 站点, 它们抛 `Invalid ... number`。这跟"未收录"是一回事 —— 站点活着, 只是没这片。
+    # 若按通用 error 计进熔断, 两轮探活就会把这一批好源全部跳过(fc2/fc2ppvdb/
+    # dl_getchu/gyutto 实测各失败 1 次, 再探一轮即被误杀)。
+    for msg in ('Invalid GETCHU number: IPX-001',
+                'Invalid FC2 number: IPX-001',
+                'Invalid gyutto number: IPX-001'):
+        got = health._classify(ValueError(msg))
+        check(f'{msg[:26]} -> code_mismatch', got == 'code_mismatch', got)
+    check('不在可熔断状态集合内', 'code_mismatch' not in health._TRIP_STATUSES, '')
+    check('归入"源没问题"集合', 'code_mismatch' in health._HEALTHY_STATUSES, '')
+    check('有中文文案', '番号' in health.STATUS_TEXT.get('code_mismatch', ''),
+          health.STATUS_TEXT.get('code_mismatch'))
+
+    health.reset()
+    for _ in range(3):
+        health.note_scrape_outcome('fc2', 'code_mismatch')
+    with health._lock:
+        r = health._get('fc2')
+    check('连报 3 次也不会熔断', r['breaker'] == health.STATE_CLOSED, r['breaker'])
+    check('且不累计失败计数', r['consecutive_failures'] == 0, str(r['consecutive_failures']))
+    check('不会被刮削跳过', health.is_tripped('fc2') is False, '')
+    # 真正的内部错误仍要能熔断, 不能因为加了新分类就放宽
+    health.note_scrape_outcome('fc2', 'error')
+    health.note_scrape_outcome('fc2', 'error')
+    with health._lock:
+        check('真实内部错误照常熔断', health._get('fc2')['breaker'] == health.STATE_OPEN,
+              health._get('fc2')['breaker'])
+
+
+def test_probe_samples_fit_source():
+    print('\n===== 探活样本必须符合各源番号格式 =====')
+    # 用通用番号 IPX-001 去问只收录特定番号段的站点, 它们会抛 `Invalid XX number`
+    # —— 站点其实是活的, 却会被记成失败。样本必须按源给。
+    for src, prefix in (('fc2', 'FC2-'), ('fc2ppvdb', 'FC2-'),
+                        ('dl_getchu', 'GETCHU-'), ('gyutto', 'GYUTTO-')):
+        s = health._sample_for(src)
+        check(f'{src} 样本以 {prefix} 开头', s.upper().startswith(prefix), s)
+    check('fanza 用 cid 形式', health._sample_for('fanza') == 'ipx00001',
+          health._sample_for('fanza'))
+    check('其余源仍用通用样本', health._sample_for('javdb') == health.DEFAULT_SAMPLE,
+          health._sample_for('javdb'))
+
+
+def test_outage_guard():
+    print('\n===== 出口整体故障: 不许把好源逐个熔断 =====')
+    # 实测场景: 容器重启后 squid 失效, 15 个源同一时刻全部 TLS 失败, 10 个被熔断 ——
+    # 可其中 jav321/javdbapi/javmenu 几分钟前还是"正常"。站点各不相同却同时全挂,
+    # 挂的是本机出口, 不是站点。逐个熔断等于"一次抖动全站瘫痪"。
+    health.reset()
+    names = ['o%d' % i for i in range(6)]
+    for n in names:
+        health.note_scrape_outcome(n, 'timeout')
+        health.note_scrape_outcome(n, 'timeout')
+    results = []
+    for n in names:
+        with health._lock:
+            r = dict(health._get(n))
+        r['source'], r['status'] = n, 'timeout'
+        results.append(r)
+    check('前提: 已各自熔断', all(r['breaker'] == health.STATE_OPEN for r in results),
+          str([r['breaker'] for r in results]))
+    health._guard_against_outage(results)
+    check('整体故障后全部解除熔断',
+          all(r['breaker'] == health.STATE_CLOSED for r in results),
+          str([r['breaker'] for r in results]))
+    check('失败计数被清零', all(r['consecutive_failures'] == 0 for r in results), '')
+    check('状态改判为 outage', all(r['status'] == 'outage' for r in results), '')
+    check('outage 不在可熔断集合', 'outage' not in health._TRIP_STATUSES, '')
+    check('outage 有中文文案', '出口' in health.STATUS_TEXT.get('outage', ''),
+          health.STATUS_TEXT.get('outage'))
+
+    # 反向: 只有少数源失败时必须照常熔断, 不能因为加了保护就放松
+    health.reset()
+    mixed = []
+    for i, n in enumerate(names):
+        with health._lock:
+            r = dict(health._get(n))
+        r['source'] = n
+        if i < 2:
+            health.note_scrape_outcome(n, 'timeout')
+            health.note_scrape_outcome(n, 'timeout')
+            with health._lock:
+                r = dict(health._get(n))
+            r['source'], r['status'] = n, 'timeout'
+        else:
+            r['status'] = 'ok'
+        mixed.append(r)
+    health._guard_against_outage(mixed)
+    still = [r['source'] for r in mixed if r['breaker'] == health.STATE_OPEN]
+    check('少数失败仍照常熔断(不放松)', len(still) == 2, str(still))
+
+
 def test_passive_success_recovers():
     print('\n===== 现场成功应恢复熔断的源 =====')
     health.reset()
@@ -481,6 +576,9 @@ if __name__ == '__main__':
     test_site_blocked_detected()
     test_passive_observation()
     test_passive_failure_can_trip()
+    test_code_mismatch_never_trips()
+    test_probe_samples_fit_source()
+    test_outage_guard()
     test_passive_success_recovers()
     test_covers_all_sources()
     test_overview_sorting_and_cooldown_decay()

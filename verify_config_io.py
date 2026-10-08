@@ -22,7 +22,7 @@ import shutil
 import tempfile
 import subprocess
 
-PROJ = "C:/Users/luckw/WorkBuddy/2026-10-06-17-16-37/JavSP"
+PROJ = os.path.dirname(os.path.abspath(__file__))
 
 
 def find_node():
@@ -194,6 +194,53 @@ try:
     check('T8 多字段改动后注释仍在', comment_count(p) == base_comments,
           f'{comment_count(p)}/{base_comments}')
 
+    # ---------------- T8b: 跨行 flow 数组（线上事故根因） ----------------
+    # 用户挂载的 config.yml 里 crawler.selection.normal 写成**跨两行**的 flow 数组:
+    #     normal: [airav, avsox, ..., prestige,
+    #              javdbapi, javdatabase, javmenu]
+    # 这在 YAML 里合法, 但替换时若只改首行, 第二行就成了孤立标量 -> 整份配置解析失败,
+    # 表现为保存时提示「新配置未能加载, 已自动回滚」。故必须连续行一起吞掉。
+    wrapped = (
+        '# 顶部注释\n'
+        'crawler:\n'
+        '  # 列表上方的说明注释\n'
+        '  selection:\n'
+        '    normal: [airav, avsox, javbus, javdb, javlib, jav321, mgstage, prestige,\n'
+        '             javdbapi, javdatabase, javmenu]\n'
+        '    fc2: [fc2, avsox]\n'
+        '  hardworking: true\n'
+    )
+    p2 = os.path.join(tmpdir, 'wrapped.yml')
+    with open(p2, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(wrapped)
+    write_config_preserving_comments(
+        p2, {('crawler', 'selection', 'normal'): ['airav', 'javdbapi']})
+    raw2 = open(p2, encoding='utf-8', newline='').read()
+    try:
+        d2 = yaml.safe_load(raw2)
+        ok2, err2 = True, ''
+    except Exception as e:
+        d2, ok2, err2 = None, False, str(e)[:200]
+    check('T8b 跨行 flow 数组替换后仍是合法 YAML', ok2, err2)
+    check('T8b 新值可被读回', bool(d2) and d2['crawler']['selection']['normal'] == ['airav', 'javdbapi'],
+          str(d2 and d2['crawler']['selection']))
+    check('T8b 相邻字段未被波及', bool(d2) and d2['crawler']['selection']['fc2'] == ['fc2', 'avsox']
+          and d2['crawler']['hardworking'] is True)
+    check('T8b 续行残留已清除', 'javmenu]' not in raw2,
+          '残留续行会让 YAML 报 expected <block end>')
+    check('T8b 注释仍在', comment_count(p2) == 2, f'{comment_count(p2)}/2')
+
+    # 单行 flow 不能误伤下一行(回归防护: 吞续行的逻辑不能吃过头)
+    single = 'crawler:\n  selection:\n    normal: [airav, avsox]\n    fc2: [fc2]\n'
+    p3 = os.path.join(tmpdir, 'single.yml')
+    with open(p3, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(single)
+    write_config_preserving_comments(p3, {('crawler', 'selection', 'normal'): ['javdbapi']})
+    d3 = yaml.safe_load(open(p3, encoding='utf-8', newline='').read())
+    check('T8b 单行 flow 不误吞下一行',
+          d3['crawler']['selection']['normal'] == ['javdbapi']
+          and d3['crawler']['selection']['fc2'] == ['fc2'], str(d3))
+
     # ---------------- T9: 走真实 /api/config PUT 的端到端 ----------------
     # 该用例会真的改写仓库 config.yml，故先备份、用完立即按字节还原
     backup = open(SRC, 'rb').read()
@@ -231,37 +278,26 @@ try:
             f.write(backup)
     check('T9 用例结束后 config.yml 已按字节还原', open(SRC, 'rb').read() == original)
 
-    # ---------------- T10: 前端时长解析函数（直接从 App.vue 源码提取） ----------------
-    vue = open(os.path.join(PROJ, 'frontend', 'src', 'App.vue'), encoding='utf-8').read()
-    m = re.search(r'function parseDurationToSec.*?\n\}', vue, re.S)
-    check('T10 能从 App.vue 提取到时长解析函数', m is not None)
-    if m:
-        js_case = r"""
-const out = [];
-function t(name, cond, extra) { out.push({ name, cond: !!cond, extra: extra || '' }); }
-const p = new Function(FN + '; return parseDurationToSec;')();
-t('T10 PT10S -> 10 秒', p('PT10S') === 10, String(p('PT10S')));
-t('T10 PT1M30S -> 90 秒', p('PT1M30S') === 90, String(p('PT1M30S')));
-t('T10 PT2H -> 7200 秒', p('PT2H') === 7200, String(p('PT2H')));
-t('T10 传入数字 -> 原样返回', p(15) === 15, String(p(15)));
-t('T10 空串 -> null(保留界面原值)', p('') === null, String(p('')));
-t('T10 null -> null', p(null) === null, String(p(null)));
-t('T10 非法串 -> null', p('abc') === null, String(p('abc')));
-console.log(JSON.stringify(out));
-"""
-        runner = os.path.join(tempfile.gettempdir(), '_javsp_dur.js')
-        with open(runner, 'w', encoding='utf-8') as f:
-            f.write('const FN = ' + json.dumps(m.group(0)) + ';\n' + js_case)
-        r = subprocess.run([NODE, runner], capture_output=True, text=True, timeout=120)
-        os.remove(runner)
-        if r.returncode != 0:
-            check('T10 前端用例执行成功', False, (r.stderr or r.stdout)[:300])
-        else:
-            try:
-                for c in json.loads(r.stdout.strip().splitlines()[-1]):
-                    check(c['name'], c['cond'], c['extra'])
-            except Exception as e:
-                check('T10 前端用例结果可解析', False, f'{e} | {r.stdout[:200]}')
+    # ---------------- T10: 时长字段的前端契约 ----------------
+    # v0.2.2 界面重构: 设置页的 network.timeout 改为**直接输入 ISO8601 字符串**(如 PT10S),
+    # 由后端 pydantic 解析, 前端不再需要 parseDurationToSec 做秒↔ISO8601 转换 ——
+    # 那个函数连同"秒数输入框"一起移除了。
+    # 这里改为校验**新契约**: 前端不得把该字段当数字处理(否则会丢格式导致保存失败)。
+    sv = ''
+    p_sv = os.path.join(PROJ, 'frontend', 'src', 'views', 'SettingsView.vue')
+    if os.path.exists(p_sv):
+        sv = open(p_sv, encoding='utf-8').read()
+    check('T10 设置页存在', bool(sv))
+    if sv:
+        check('T10 超时字段仍绑定 network.timeout',
+              'network.timeout' in sv, '')
+        check('T10 超时字段未使用 v-model.number(会丢 ISO8601 格式)',
+              'v-model.number="cfg.network.timeout"' not in sv,
+              '用了 .number 会把 PT10S 转成 NaN')
+        check('T10 提示了 ISO8601 格式', 'PT10S' in sv, '')
+    check('T10 前端不再残留 parseDurationToSec(应已随重构移除)',
+          'function parseDurationToSec' not in sv,
+          '若仍存在需确认是否还有调用方')
 finally:
     shutil.rmtree(tmpdir, ignore_errors=True)
     # 确保仓库里的 config.yml 从未被动过

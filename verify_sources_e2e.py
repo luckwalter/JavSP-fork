@@ -23,7 +23,7 @@ import shutil
 import tempfile
 import subprocess
 
-PROJ = "C:/Users/luckw/WorkBuddy/2026-10-06-17-16-37/JavSP"
+PROJ = os.path.dirname(os.path.abspath(__file__))
 
 
 def find_node():

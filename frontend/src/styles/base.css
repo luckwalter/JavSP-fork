@@ -1,0 +1,433 @@
+/* ============================================================================
+   JavSP WebUI 全局基线样式
+   消除散落的内联样式, 统一排版与可访问性(焦点可见、触达面积达标)。
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans, system-ui, -apple-system, 'Segoe UI', sans-serif);
+  font-size: var(--font-base);
+  line-height: var(--line-height);
+  color: var(--color-text-primary);
+  background: var(--color-bg-page);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+p { margin: 0; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+
+/* ---------- 可访问性: 键盘用户必须看得到焦点位置 ---------- */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* 仅供屏幕阅读器的文本 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- 应用骨架 ---------- */
+.app-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;   /* 关键: 允许子元素收缩, 防表格撑破布局 */
+}
+
+.app-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6);
+}
+
+.content-inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+
+/* ---------- 区块 ---------- */
+.page-head {
+  margin-bottom: var(--space-5);
+}
+
+.page-title {
+  font-size: var(--font-xl);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.page-desc {
+  margin-top: var(--space-1);
+  font-size: var(--font-sm);
+  color: var(--color-text-secondary);
+}
+
+.section {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  margin-bottom: var(--space-4);
+}
+
+.section-title {
+  font-size: var(--font-md);
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.section-hint {
+  font-size: var(--font-sm);
+  color: var(--color-text-secondary);
+  margin-top: calc(var(--space-2) * -1);
+  margin-bottom: var(--space-3);
+}
+
+/* ---------- 按钮: 触达面积不小于 32px(约 44px 含内边距, 兼顾桌面与触屏) ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-4);
+  font-size: var(--font-base);
+  font-family: inherit;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  border-color: var(--color-text-tertiary);
+}
+
+.btn:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-inverse);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.btn--success {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: var(--color-text-inverse);
+}
+
+.btn--success:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+/* 破坏性操作: 视觉上必须与安全操作明显区分(不可只靠文案区分) */
+.btn--danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: var(--color-text-inverse);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: var(--color-danger-hover);
+  border-color: var(--color-danger-hover);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-secondary);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+
+.btn--sm {
+  min-height: 26px;
+  padding: 0 var(--space-2);
+  font-size: var(--font-sm);
+}
+
+.btn--block {
+  width: 100%;
+}
+
+/* ---------- 表单 ---------- */
+.field { margin-bottom: var(--space-4); }
+
+.field-label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--font-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.field-hint {
+  margin-top: var(--space-1);
+  font-size: var(--font-xs);
+  color: var(--color-text-tertiary);
+}
+
+.input {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 var(--space-3);
+  font-size: var(--font-base);
+  font-family: inherit;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition-fast);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+}
+
+.input--error {
+  border-color: var(--color-danger);
+}
+
+.input--error:focus {
+  box-shadow: 0 0 0 3px rgba(212, 61, 61, 0.16);
+}
+
+/* ---------- 状态标记 ---------- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  font-size: var(--font-xs);
+  font-weight: 500;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.pill--success { background: var(--color-success-soft); color: var(--color-success); }
+.pill--warning { background: var(--color-warning-soft); color: var(--color-warning); }
+.pill--danger  { background: var(--color-danger-soft);  color: var(--color-danger); }
+.pill--info    { background: var(--color-info-soft);    color: var(--color-info); }
+.pill--muted   { background: var(--color-bg-subtle);    color: var(--color-text-secondary); }
+
+/* 状态前的圆点: 纯CSS 绘制, 不依赖字体图标 */
+.pill--dot::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ---------- 提示条 ---------- */
+.notice {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-base);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+}
+
+.notice--warning {
+  background: var(--color-warning-soft);
+  border-color: #f0d9a8;
+  color: #7a4d06;
+}
+
+.notice--danger {
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger-border);
+  color: #96201f;
+}
+
+.notice--info {
+  background: var(--color-info-soft);
+  border-color: #c9d6e4;
+  color: #35506d;
+}
+
+/* ---------- 表格 ---------- */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-base);
+}
+
+.table th {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-align: left;
+  white-space: nowrap;
+  background: var(--color-bg-subtle);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-light);
+  vertical-align: middle;
+}
+
+.table tbody tr:last-child td { border-bottom: none; }
+.table tbody tr:hover { background: var(--color-bg-subtle); }
+
+/* ---------- 统计块 ---------- */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-3);
+}
+
+.stat {
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-md);
+}
+
+.stat-label {
+  font-size: var(--font-xs);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+.stat-value {
+  font-size: var(--font-2xl);
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--color-text-primary);
+}
+
+.stat-unit {
+  font-size: var(--font-sm);
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  margin-left: 2px;
+}
+
+/* ---------- 工具条 ---------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.toolbar-spacer { flex: 1; }
+
+/* ---------- 空状态 ---------- */
+.empty {
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+  color: var(--color-text-tertiary);
+}
+
+.empty-title {
+  font-size: var(--font-md);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-2);
+}
+
+/* ---------- 加载态 ---------- */
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-border-medium);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------- 进度条 ---------- */
+.progress {
+  height: 4px;
+  background: var(--color-bg-hover);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: var(--radius-full);
+  transition: width var(--transition-base);
+}
+
+/* ---------- 响应式: 窄屏收起侧栏 ---------- */
+@media (max-width: 860px) {
+  .app-shell { flex-direction: column; }
+  .app-content { padding: var(--space-4); }
+}

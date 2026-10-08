@@ -47,8 +47,14 @@ def parse_data(movie: MovieInfo):
     html = resp2html(r, base_encode)
     container = html.xpath("//dl[@class='BasicInfo clearfix']")
 
+    # 先给默认值: 页面缺少某一项时(有些作品没有"サークル"/"ジャンル"), 循环里就不会
+    # 赋值, 末尾 `movie.producer = producer` 会抛 UnboundLocalError —— 那是**解析代码的
+    # 缺陷**, 却会被渠道监控记成"内部错误"并累计熔断(探活真正打进该站后才暴露出来)。
+    producer, genre, publish_date = '', [], ''
     for row in container:
         key = row.xpath(".//dt/text()")
+        if not key:
+            continue                      # 没有 dt 的行跳过, 避免 key[0] 越界
         if key[0] == "サークル":
             producer = ''.join(row.xpath(".//dd/a/text()"))
         elif key[0] == "ジャンル":

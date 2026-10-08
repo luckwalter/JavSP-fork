@@ -88,6 +88,8 @@ STATUS_TEXT = {
     'not_found': '可达但未收录(不熔断)',
     'invalid_response': '可达但内容异常(不熔断)',
     'duplicate': '可达但结果重复(不熔断)',
+    'code_mismatch': '番号不适用(不熔断)',
+    'outage': '出口整体故障(不熔断)',
     'timeout': '超时',
     'dns_error': 'DNS 解析失败',
     'tls_error': 'TLS/证书校验失败',
@@ -110,15 +112,22 @@ _TRIP_STATUSES = frozenset({
     'blocked', 'credential_error', 'error', 'unknown',
 })
 # 可接受的"源本身没问题"状态: 只更新健康档案, 不改熔断计数
-_HEALTHY_STATUSES = {'ok', 'not_found', 'invalid_response', 'duplicate'}
+# code_mismatch 见 _classify 的说明: 它说明站点活着, 只是探活样本番号不属于它
+_HEALTHY_STATUSES = {'ok', 'not_found', 'invalid_response', 'duplicate', 'code_mismatch',
+                     'outage'}
 
 # 展示优先级: 数字越小越需要用户关注(前端按此排序, 避免问题源被淹没)
 _STATUS_SEVERITY = {
     'blocked': 0, 'credential_error': 1, 'error': 2, 'tls_error': 3,
     'http_error': 4, 'network_error': 5, 'dns_error': 6, 'timeout': 7,
-    'invalid_response': 8, 'duplicate': 9, 'not_found': 10, 'canceled': 11,
+    'invalid_response': 8, 'duplicate': 9, 'not_found': 10, 'code_mismatch': 10,
+    'outage': 10, 'canceled': 11,
     'unknown': 12, 'unchecked': 13, 'ok': 99,
 }
+
+# 出口整体故障的判定门槛(见 _guard_against_outage): 至少探了这么多源, 且失败占比达到此值
+OUTAGE_MIN_SOURCES = 5
+OUTAGE_FAIL_RATIO = 0.7
 
 STATE_CLOSED, STATE_OPEN, STATE_HALF_OPEN = 'closed', 'open', 'half_open'
 
@@ -154,8 +163,20 @@ def _sanitize(text, limit: int = 180) -> str:
     return s[:limit]
 
 
+# 番号不适用: 各爬虫对"番号根本不属于本站"的报错形如 `Invalid GETCHU number: IPX-001`
+# (dl_getchu / fc2 / fc2ppvdb / gyutto)。探活用的是固定样本番号 IPX-001, 拿它去问
+# FC2、GETCHU 这类只收录特定番号段的站点, 必然命中这条 —— 但站点本身是活的。
+# 若按通用异常归成 error, 两轮探活就会把这一批好源**全部误熔断**(实测中招:
+# fc2 / fc2ppvdb / dl_getchu / gyutto 各失败 1 次, 再探一轮即被跳过)。
+_CODE_MISMATCH_RE = re.compile(r'Invalid\s+\w+\s+number', re.I)
+
+
 def _classify(exc) -> str:
     """把异常映射到状态分类(对齐 JavBoss availabilityErrorStatus 的思路)"""
+    # 番号不适用: 必须最先判 —— 它是 ValueError, 会掉进末尾的通用 'error' 分支,
+    # 从而被计进熔断(性质上它和 not_found 一样, 都是"源没问题")。
+    if _CODE_MISMATCH_RE.search(str(exc)):
+        return 'code_mismatch'
     # 先判业务异常: 它们是明确的"源的问题", 不该被 requests 通用分支吞掉
     if isinstance(exc, MovieNotFoundError):
         return 'not_found'
@@ -192,9 +213,22 @@ def _classify(exc) -> str:
     return 'error'
 
 
+# 各源"问得动"的样本查询串。探活判据是**真的解析出有效标题**, 所以样本必须落在
+# 该站的收录范围内 —— 拿通用番号 IPX-001 去问 FC2 / GETCHU / gyutto 这类只收录特定
+# 番号段的站点, 它们会直接抛 `Invalid XX number`: 那是"问错了对象", 不是站点故障。
+# (实测: 用 IPX-001 探活时 fc2 / fc2ppvdb / dl_getchu / gyutto 全部报这类错)
+_SAMPLE_BY_SOURCE = {
+    'fc2': 'FC2-1234567',
+    'fc2ppvdb': 'FC2-1234567',
+    'dl_getchu': 'GETCHU-12345',
+    'gyutto': 'GYUTTO-12345',
+    'fanza': 'ipx00001',        # FANZA 按 cid 查询, 形如 ssis00123(品番小写去横线)
+}
+
+
 def _sample_for(source: str) -> str:
     """挑一个该源必然支持的样本查询串"""
-    return DEFAULT_SAMPLE
+    return _SAMPLE_BY_SOURCE.get(source, DEFAULT_SAMPLE)
 
 
 def _new_record(source: str) -> dict:
@@ -444,6 +478,11 @@ def probe(source: str, timeout: float = PROBE_TIMEOUT) -> dict:
     try:
         mod = __import__('javsp.web.' + source, fromlist=['parse_data'])
         movie = MovieInfo(sample)
+        # FANZA 不按番号查询, 走 cid(形如 ipx00001)。只设 dvdid 的话它拿空 cid 去拼
+        # 详情页 URL, 拿到的是非详情页 -> xpath 取不到标题 -> IndexError, 会被误判成
+        # "内部错误"并计入熔断(实测 fanza 就是这么被扣上内部错误的)。
+        if source == 'fanza':
+            movie.cid = sample
         mod.parse_data(movie)
         # 不能只看"没抛异常": 很多死站返回 200 + 壳页/跳转页, 传输层毫无异常。
         # 判定标准必须是**真的解析出了有效标题**, 且标题不能就是番号本身。
@@ -494,9 +533,51 @@ def probe_all(sources: Optional[List[str]] = None, timeout: float = PROBE_TIMEOU
         t.start()
     for t in threads:
         t.join()
+    _guard_against_outage(results)
     order = {r['source']: r['severity'] for r in overview()}
     results.sort(key=lambda r: (order.get(r['source'], 50), r['source']))
     return results
+
+
+def _guard_against_outage(results: List[dict]) -> None:
+    """出口整体故障保护: 多数源同时失败时, 不要把它们逐个熔断
+
+    判据: 本轮探活里 ≥70% 的源都失败、且至少探了 5 个 —— 站点各不相同却同时全挂,
+    挂的只能是本机出口(代理/网关/网卡), 不是这些站点。若照常逐个计进熔断,
+    **一次网络抖动就会把所有好源一起跳过**, 等网络恢复了用户还得等冷却期。
+
+    实测触发场景: 容器重启后 squid 代理失效, 15 个启用源同一时刻全部 TLS 握手失败,
+    10 个被熔断(其中 jav321 / javdbapi / javmenu 数分钟前还是"正常")。
+
+    注意只豁免**通道级故障**, "未收录/番号不适用"本就不熔断, 不在此列。
+    """
+    if len(results) < OUTAGE_MIN_SOURCES:
+        return
+    failed = [r for r in results if r.get('status') in _TRIP_STATUSES]
+    if not failed or len(failed) < len(results) * OUTAGE_FAIL_RATIO:
+        return
+    names = []
+    for r in failed:
+        src = r['source']
+        with _lock:
+            rec = _records.get(src)
+            if not rec:
+                continue
+            reason = rec.get('reason', '')
+            rec['status'] = 'outage'
+            rec['reason'] = f'{reason}（判定为出口整体故障, 不计入熔断）'.strip('（）')
+            rec['consecutive_failures'] = 0
+            rec['breaker'] = STATE_CLOSED
+            rec['cooldown_remaining'] = 0.0
+        # 同步本次返回的展示字段, 避免界面仍按"熔断"渲染
+        r.update({'status': 'outage', 'status_text': STATUS_TEXT['outage'],
+                  'breaker': STATE_CLOSED, 'consecutive_failures': 0,
+                  'cooldown_remaining': 0.0,
+                  'breaker_text': '暂不参与判定'})
+        names.append(src)
+    if names:
+        logger.warning(f'出口整体故障: {len(names)}/{len(results)} 个源同时失败, '
+                       f'已豁免熔断 -> {", ".join(names)}')
 
 
 def probe_all_background() -> List[dict]:

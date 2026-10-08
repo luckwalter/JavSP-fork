@@ -1,0 +1,96 @@
+/* ============================================================================
+   JavSP WebUI 设计令牌 (Design Tokens)
+   ----------------------------------------------------------------------------
+   单一数据源: 所有颜色/间距/字号/圆角/层级都从这里取值。
+   好处: 换主题只改变量; 消除散落各处的内联样式; 多人协作时视觉不再漂移。
+   命名规则: --<类别>-<语义>-<层级>, 例如 --color-danger / --space-4
+   ========================================================================== */
+
+:root {
+  /* ---------- 色彩: 中性色阶 ---------- */
+  --color-bg-page:#f7f7f8;
+  --color-bg-surface: #ffffff;
+  --color-bg-subtle: #f2f3f5;
+  --color-bg-hover:   #eceef1;
+
+  --color-text-primary:   #1f2329;
+  --color-text-secondary: #5f6570;
+  --color-text-tertiary:  #9aa0aa;
+  --color-text-inverse:   #ffffff;
+
+  --color-border-light:  #e6e8eb;
+  --color-border-medium: #d4d7dd;
+
+  /* ---------- 色彩: 语义色 ----------
+     关键约束: 「危险」只用于破坏性操作, 绝不用来装饰。 */
+  --color-primary:      #2f6fd0;
+  --color-primary-hover:#2860ba;
+  --color-primary-soft: #eaf1fc;
+
+  --color-success:      #2e9e63;
+  --color-success-soft: #e8f6ee;
+  --color-warning:      #c98a12;
+  --color-warning-soft: #fdf4e3;
+  --color-danger:       #d43d3d;
+  --color-danger-hover: #bc3333;
+  --color-danger-soft:  #fdecec;
+  --color-danger-border:#f2b8b8;
+  --color-info:         #5b7fa8;
+  --color-info-soft:    #eef2f7;
+
+  /* ---------- 间距: 4px 基准 ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ---------- 字号: 13px 为正文基准 ---------- */
+  --font-xs: 11px;   /* 标签/角标 */
+  --font-sm: 12px;   /* 辅助文字 */
+  --font-base: 13px; /* 正文 */
+  --font-md: 14px;   /* 强调正文 */
+  --font-lg: 16px;   /* 区块标题 */
+  --font-xl: 20px;   /* 页面标题 */
+  --font-2xl: 26px;  /* 统计数字 */
+
+  --line-height: 1.6;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* ---------- 圆角 ---------- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* ---------- 层级: 只用3 层, 不堆叠阴影 ---------- */
+  --z-sticky: 10;
+  --z-overlay: 100;
+  --z-toast: 200;
+
+  /* ---------- 布局尺寸 ---------- */
+  --nav-width: 196px;
+  --statusbar-height: 40px;
+  --content-max: 1240px;
+
+  /* ---------- 动效 ---------- */
+  --transition-fast: 120ms ease;
+  --transition-base: 180ms ease;
+
+  --focus-ring: 0 0 0 3px rgba(47, 111, 208, 0.18);
+}
+
+/* 尊重系统「减少动态效果」偏好 —— 前庭敏感用户不应被动画干扰 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

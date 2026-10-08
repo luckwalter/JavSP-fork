@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import importlib
 
-PROJ = "C:/Users/luckw/WorkBuddy/2026-10-06-17-16-37/JavSP"
+PROJ = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJ)
 os.chdir(PROJ)
 

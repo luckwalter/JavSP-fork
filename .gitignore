@@ -135,6 +135,10 @@ ver_hook.py
 .idea
 .vscode
 
+# 登录会话落盘文件(运行时生成, 含会话令牌哈希; 绝不能入库)
+.sessions.json
+.sessions.json.tmp
+
 # 验证脚本用的真实页面样本(由 nas_fetch_samples_drive.py 从第三方站点抓取)
 # 不入库: 属外部内容(含站点广告/追踪脚本), 且体积不小; 缺失时 verify_newsrcs_real.py 会明确指引获取
 samples/

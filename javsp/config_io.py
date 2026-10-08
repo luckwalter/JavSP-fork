@@ -156,6 +156,50 @@ def _block_end(lines, start, parent_indent):
     return j
 
 
+def _flow_end(lines, i):
+    """若第 i 行的值是**跨行**的 flow 集合([...] / {...})，返回其续行结束下标（不含）
+
+    YAML 允许 flow 集合跨行书写，例如：
+
+        normal: [airav, avsox, javbus,
+                 javdbapi, javmenu]
+
+    这在语法上完全合法，但 `_render()` 对任何取值都只产出**单行**。若只替换首行，
+    第二行就会变成孤立的标量残留，整个文件随即解析失败 —— 实测报错正是
+    `expected <block end>, but found '<scalar>'`。所以替换 leaf 时必须把续行一并吞掉。
+
+    括号深度按字符统计，并跳过引号内的字符（避免把 `'a[b'` 这类字面量误算成括号）。
+    """
+    content, _ = _split_eol(lines[i])
+    rest = content.split(':', 1)[1] if ':' in content else ''
+    depth = _bracket_depth(rest)
+    if depth <= 0:
+        return i + 1                      # 值在首行就已闭合, 无续行
+    j = i
+    while depth > 0 and j + 1 < len(lines):
+        j += 1
+        c, _ = _split_eol(lines[j])
+        depth += _bracket_depth(_strip_comment(c))
+    return j + 1
+
+
+def _bracket_depth(text):
+    """统计 flow 括号的净深度（开 - 闭），忽略引号内的字符"""
+    depth = 0
+    quote = None
+    for ch in text:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch in '[{':
+            depth += 1
+        elif ch in ']}':
+            depth -= 1
+    return depth
+
+
 def render_changes(changes):
     """把变更渲染成便于展示的文本（调试/日志用）"""
     return ['%s: %s' % ('.'.join(p), _render(v)) for p, v in sorted(changes.items())]
@@ -206,6 +250,10 @@ def write_config_preserving_comments(cfg_path, changes):
             # （如 `engine: null` 写成 `engine: {name: slimeface}`，或反过来收敛为 null）。
             # 注意：块内部更深缩进的注释会一并被吞掉，这是「替换整块」语义的固有代价。
             end = _block_end(lines, i, indent)
+            to_delete.update(range(i + 1, end))
+        else:
+            # leaf 也未必只有一行: flow 集合允许跨行书写, 只换首行会留下孤立续行。
+            end = _flow_end(lines, i)
             to_delete.update(range(i + 1, end))
         to_replace[i] = new_line + eol
 

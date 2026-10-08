@@ -20,7 +20,7 @@ import json
 import shutil
 import tempfile
 
-PROJ = "C:/Users/luckw/WorkBuddy/2026-10-06-17-16-37/JavSP"
+PROJ = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJ)
 os.chdir(PROJ)          # Cfg 需能找到 config.yml；此目录同时充当「服务进程 CWD」的模拟对象
 

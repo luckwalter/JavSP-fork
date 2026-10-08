@@ -29,7 +29,7 @@ SNIPPET = (
     "print('  read_proxy() =', repr(read_proxy()))\n"
 )
 
-REPO = r'C:\Users\luckw\WorkBuddy\2026-10-06-17-16-37\JavSP'
+REPO = os.path.dirname(os.path.abspath(__file__))
 
 
 def main():

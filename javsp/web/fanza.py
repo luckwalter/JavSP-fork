@@ -69,6 +69,10 @@ def resp2html_wrapper(resp):
 
 def parse_data(movie: MovieInfo):
     """解析指定番号的影片数据"""
+    # 没有 cid 时不要硬往下走: 空 cid 拼出的 URL 拿到的是非详情页, 后面 xpath 取标题
+    # 会抛 IndexError, 被渠道监控误判成"内部错误"(会累计熔断) —— 实际只是查了个寂寞。
+    if not (getattr(movie, 'cid', '') or '').strip():
+        raise MovieNotFoundError(__name__, getattr(movie, 'dvdid', '') or '(空 cid)')
     default_url = f'{base_url}/digital/videoa/-/detail/=/cid={movie.cid}/'
     r0 = request.get(default_url, delay_raise=True)
     if r0.status_code == 404:
@@ -93,6 +97,11 @@ def parse_data(movie: MovieInfo):
                     raise
     else:
         html = resp2html_wrapper(r0)
+        # cid 无效时 DMM 并不返回 404, 而是 200 的"无此商品"页 —— 直接进解析会在
+        # `xpath(...)[0]` 处抛 IndexError, 被记成"内部错误"并累计熔断。
+        # 先用标题是否存在把这种情况拦成"未收录"(源本身没问题)。
+        if not html.xpath("//div[@class='hreview']/h1/text()"):
+            raise MovieNotFoundError(__name__, movie.cid)
         parse_videoa_page(movie, html)
         movie.url = default_url
 

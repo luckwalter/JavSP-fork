@@ -14,8 +14,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -30,6 +30,7 @@ from javsp.core import (
 )
 from javsp.datatype import Movie
 from javsp.task_store import TaskStore
+from javsp import auth
 from javsp.web import health as channel_health
 
 logger = logging.getLogger('javsp.server')
@@ -117,6 +118,42 @@ if _allowed_hosts != ['*']:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
+# 会话文件跟随**实际生效的配置文件**所在目录: 那个位置通常是挂载出来的持久卷,
+# 容器重启/重建后仍在, 已登录的浏览器才不会被"重启即登出"踢下线。
+try:
+    auth.set_state_dir(os.path.dirname(_config_file_path()))
+except Exception as e:      # noqa: BLE001
+    logger.warning(f'会话目录设置失败(将回退到默认位置): {e}')
+
+
+# --------------------- 登录认证 ---------------------
+# 白名单: 免登录访问。health 必须放行, 否则 Docker HEALTHCHECK / 反向代理探针 / NAS
+# 状态检查全部会失败(它们不会带会话 Cookie)。认证接口本身也需免登录, 否则没法登录。
+_AUTH_WHITELIST = {'/api/health', '/api/auth/login', '/api/auth/status'}
+
+
+@app.middleware('http')
+async def auth_middleware(request: Request, call_next):
+    """全局会话校验: 未登录的 API 请求一律 401
+
+    **默认关闭** —— 只有设置了 JAVSP_AUTH_PASSWORD 才启用, 保证既有部署升级后
+    不会被突然锁在门外(向后兼容)。
+    采用中间件而非逐接口 Depends: 后者容易漏挂某个接口而变成安全漏洞,
+    中间件是"默认拒绝", 新增接口自动受保护。
+    """
+    if not auth.is_enabled():
+        return await call_next(request)
+    path = request.url.path
+    if path in _AUTH_WHITELIST or not path.startswith('/api/'):
+        # 静态资源(前端页面)也不拦, 否则浏览器拿不到登录页本身
+        return await call_next(request)
+    if not auth.verify_token(request.cookies.get(auth.SESSION_COOKIE)):
+        return JSONResponse(
+            {'detail': '未登录或会话已过期', 'code': 'unauthorized'},
+            status_code=401)
+    return await call_next(request)
+
+
 # ----------------------------- 请求模型 -----------------------------
 class ScanRequest(BaseModel):
     path: str
@@ -177,6 +214,46 @@ def _config_file_path() -> str:
 @app.get('/api/health')
 def api_health():
     return {'status': 'ok', 'version': __version__}
+
+
+# --------------------- 登录认证 ---------------------
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    remember: bool = False
+
+
+@app.get('/api/auth/status')
+def api_auth_status():
+    """前端启动时先问这个: 需不需要显示登录页"""
+    return auth.auth_status()
+
+
+@app.post('/api/auth/login')
+def api_auth_login(req: LoginRequest, response: Response):
+    """登录。成功后下发会话 Cookie(HttpOnly, 前端 JS 读不到)"""
+    result = auth.login(req.username, req.password, remember=req.remember)
+    if not result['ok']:
+        code = 423 if auth.lockout_remaining() > 0 else 401
+        raise HTTPException(status_code=code, detail=result['message'])
+    if result['token']:
+        max_age = int(os.getenv('JAVSP_AUTH_TTL_HOURS', str(auth.DEFAULT_TTL_HOURS))) * 3600
+        response.set_cookie(
+            auth.SESSION_COOKIE, result['token'],
+            max_age=max_age if req.remember else None,
+            httponly=True,          # JS 读不到 -> XSS 也偷不走会话
+            samesite='lax',         # 防 CSRF
+            path='/',
+        )
+    return {'ok': True, 'enabled': auth.is_enabled()}
+
+
+@app.post('/api/auth/logout')
+def api_auth_logout(request: Request, response: Response):
+    auth.logout(request.cookies.get(auth.SESSION_COOKIE))
+    response.delete_cookie(auth.SESSION_COOKIE, path='/')
+    return {'ok': True}
 
 
 # --------------------- 渠道健康监控(熔断) ---------------------

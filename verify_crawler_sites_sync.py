@@ -38,15 +38,33 @@ def get_enum_ids():
 
 
 def get_frontend_ids():
-    """从 App.vue 真实源码解析 crawlerSites 数组(排除注释行)"""
-    with open(APP_VUE, encoding='utf-8') as f:
-        src = f.read()
-    m = re.search(r'const crawlerSites\s*=\s*\[(.*?)\]', src, re.S)
-    if not m:
-        raise AssertionError('未能在 App.vue 中定位 crawlerSites')
-    body = '\n'.join(line for line in m.group(1).splitlines()
-                     if not line.strip().startswith('//'))
-    return set(re.findall(r'[\'"]([\w]+)[\'"]', body))
+    """从前端源码解析渠道清单(界面重构后改为 SettingsView.vue 的 ALL_SITES 常量)
+
+    v0.2.2 起界面重构: 设置页不再用 App.vue 的 crawlerSites 数组, 改为
+    SettingsView.vue 里的 `const ALL_SITES = [...]`。这里同时兼容两种写法,
+    以免新旧结构并存时漏检。
+    """
+    ids = set()
+    for rel in ('frontend/src/App.vue', 'frontend/src/views/SettingsView.vue'):
+        path = os.path.join(HERE, *rel.split('/'))
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        # 新写法: const ALL_SITES = [ 'a', 'b' ]
+        for var in ('crawlerSites', 'ALL_SITES'):
+            m = re.search(rf'const {var}\s*=\s*\[(.*?)\]', src, re.S)
+            if not m:
+                continue
+            body = '\n'.join(line for line in m.group(1).splitlines()
+                             if not line.strip().startswith('//'))
+            # ALL_SITES 里是 'name', '可读说明' 形式(第二项是给人看的标签),
+            # 只取第一项 —— 否则会把说明文字当成渠道名。
+            for item in re.findall(r"['\"]([\w]+)['\"]\s*(?:,|$)", body, re.M):
+                ids.add(item)
+    if not ids:
+        raise AssertionError('未能在前端源码中定位渠道清单(crawlerSites 或 ALL_SITES)')
+    return ids
 
 
 def main():
