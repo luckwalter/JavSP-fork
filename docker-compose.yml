@@ -36,4 +36,9 @@ services:
     command: ["-c", "/etc/javsp/config.yml"]
     # 可选：对齐 NAS 媒体文件的属主 uid:gid，避免 Jellyfin 回写 NFO/封面时因属主为 root 而受限
     # user: "1000:1000"
+    # 可选：出口需要代理才能访问刮削站点时，在此覆盖 network.proxy_server。
+    # 注意分隔符是【点号 .】，不是双下划线 —— 写 JAVSP_NETWORK__PROXY_SERVER 会被静默忽略
+    #（不报错、不生效），详见 README「安全说明」处的说明。
+    # environment:
+    #   - JAVSP_NETWORK.PROXY_SERVER=http://<你的代理地址>:3128
     restart: unless-stopped

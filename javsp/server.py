@@ -30,6 +30,7 @@ from javsp.core import (
 )
 from javsp.datatype import Movie
 from javsp.task_store import TaskStore
+from javsp.web import health as channel_health
 
 logger = logging.getLogger('javsp.server')
 
@@ -92,8 +93,15 @@ async def lifespan(app: FastAPI):
     import_crawlers()
     load_alias_map()
     logger.info('JavSP WebUI 服务已初始化')
+    # 启动渠道自动探活(熔断监控)。故意放在 yield 之前但**不阻塞**: 探活以 daemon
+    # 线程 + 初始延迟运行, 这样服务能立刻可用, 而首个探活结果约在 PROBE 周期内就绪。
+    # 失败只记录日志, 绝不阻止服务启动 —— 监控是辅助能力, 不能成为启动依赖。
+    try:
+        channel_health.start_auto_probe()
+    except Exception as e:      # noqa: BLE001
+        logger.warning(f'渠道自动探活启动失败(不影响刮削): {channel_health._sanitize(str(e))}')
     yield
-    # 关闭时无特殊处理
+    channel_health.stop_auto_probe()
 
 
 app = FastAPI(title='JavSP WebUI', version=__version__, lifespan=lifespan)
@@ -169,6 +177,61 @@ def _config_file_path() -> str:
 @app.get('/api/health')
 def api_health():
     return {'status': 'ok', 'version': __version__}
+
+
+# --------------------- 渠道健康监控(熔断) ---------------------
+
+def _sources_with_health(m) -> dict:
+    """把刮削结果里的各站点摘要并入渠道健康/熔断状态
+
+    前端因此能在同一张表里同时看到「这个源抓到了什么字段」与「这个源是否被熔断跳过」,
+    无需再发一次请求。健康信息是**附加**的: 即使监控未运行也照常返回原摘要。
+    """
+    src = getattr(m, 'sources', None)
+    try:
+        return channel_health.merge_into_scrape_sources(src)
+    except Exception as e:      # noqa: BLE001 监控是辅助能力, 失败时退化为原始摘要
+        logger.warning(f'渠道健康合并失败(返回原始摘要): {channel_health._sanitize(str(e))}')
+        return src
+
+
+@app.get('/api/channels')
+def api_channels():
+    """各刮削渠道的健康档案 + 熔断状态
+
+    覆盖**全部**已注册源(不只是已启用的), 便于用户看出还有哪些源是可开但没开的。
+    附带总体摘要, 前端可一眼看出"有几个源坏了"。
+    """
+    rows = channel_health.overview(include_inactive=True)
+    active = [r for r in rows if r['active']]
+    return {
+        'sources': rows,
+        'summary': {
+            'total': len(rows),
+            'active': len(active),
+            'ok': sum(1 for r in active if r['status'] == 'ok'),
+            'tripped': sum(1 for r in active if r['breaker'] == 'open'),
+            'unchecked': sum(1 for r in active if r['status'] == 'unchecked'),
+            'skipped_names': [r['source'] for r in active
+                              if r['breaker'] == 'open'],
+        },
+        'probe_interval': channel_health.PROBE_INTERVAL,
+        'threshold': channel_health.FAILURE_THRESHOLD,
+    }
+
+
+@app.post('/api/channels/check')
+def api_channels_check(sources: Optional[List[str]] = None):
+    """立即对指定渠道(或全部启用渠道)做一次主动探活
+
+    正常情况下无需手动调用 —— 后台已按 PROBE_INTERVAL 自动探活。此接口用于
+    "刚改完代理/镜像配置, 想立刻确认是否生效"的场景。
+    """
+    try:
+        rows = channel_health.probe_all(sources or None)
+    except Exception as e:      # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f'探活失败: {channel_health._sanitize(str(e))}')
+    return {'sources': rows, 'summary': channel_health.summary_for_log()}
 
 
 @app.get('/api/browse')
@@ -287,7 +350,7 @@ def api_scrape(req: ScrapeRequest):
                     if movie is None:
                         assign_guid(m)
                         TASKS[m.guid] = m
-                    q.put({'type': 'result', 'guid': m.guid, 'info': movie_info_dict(m.info), 'sources': getattr(m, 'sources', None)})
+                    q.put({'type': 'result', 'guid': m.guid, 'info': movie_info_dict(m.info), 'sources': _sources_with_health(m)})
             except Exception as e:
                 logger.exception(e)
                 q.put({'type': 'error', 'msg': str(e)})
@@ -385,12 +448,12 @@ def api_batch(req: BatchRequest):
                         q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
                                'ok': True, 'organized': organized,
                                'title': (m.info.title if m.info else None),
-                               'sources': getattr(m, 'sources', None)})
+                               'sources': _sources_with_health(m)})
                     else:
                         fail += 1
                         q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
                                'ok': False, 'organized': False,
-                               'sources': getattr(m, 'sources', None)})
+                               'sources': _sources_with_health(m)})
                 q.put({'type': 'all_done', 'success': success, 'fail': fail, 'total': total})
             q.put(None)
 

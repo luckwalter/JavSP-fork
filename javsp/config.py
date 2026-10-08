@@ -33,6 +33,10 @@ class CrawlerID(str, Enum):
     javdb = 'javdb'
     javlib = 'javlib'
     javmenu = 'javmenu'
+    # v0.2.1 新增: JavBoss 研究移植的三源(在 NAS 受限出口下实测可达, 补位已废/被墙的老源)
+    javdbapi = 'javdbapi'      # javdb 手机 App 私有 API(纯 JSON, 绕开 Cloudflare)
+    javdatabase = 'javdatabase'  # javdatabase.com 详情页
+    # 注: javmenu 未新增枚举 —— 该名字原本就指向死站 mrzyx.xyz, v0.2.1 已就地替换为 javmenu.com
     mgstage = 'mgstage'
     njav = 'njav'
     prestige = 'prestige'
@@ -233,6 +237,11 @@ def get_config_source():
     if args.config is None:
         args.config = resource_path('config.yml')
     sources.append(FileSource(file=args.config))
+    # ⚠️ EnvSource 的嵌套层级分隔符是 confz 的默认值 '.', 本项目**刻意未改**。
+    # 因此嵌套环境变量必须写点号: JAVSP_NETWORK.PROXY_SERVER / JAVSP_TRANSLATOR.ENGINE.API_KEY
+    # 写成双下划线(JAVSP_NETWORK__PROXY_SERVER)会被**静默忽略** —— 不抛异常、不生效, 读出来是 None,
+    # 极易误判成「配了却没效果」(实测踩过: NAS 上因此以为代理已配, 实则全程直连导致三个源全挂)。
+    # 仓库内 verify_env_nested_separator.py 对此有断言守护; README/compose 亦已注明。
     sources.append(EnvSource(prefix='JAVSP_', allow_all=True))
     sources.append(CLArgSource(prefix='o'))
     return sources

@@ -1334,6 +1334,48 @@ proxies ⇒ 永远走**直连**探测，而实际抓取走代理。实测后果�
   `/api/batch` 全链路（扫描 → 批量刮削 → 整理落盘）已由 `verify_batch_e2e.py` 用**合成片源 + mock 爬虫/下载**跑通（11/11 PASS），并借此发现并修复了 Issue #7。
   剩余待验部分只剩**真实联网抓取**（沙箱无真实片源/站点访问），需在本机有真实片源时实跑确认。
 
+### v0.2.1（2026-10-08）— 渠道移植 + 渠道监控与熔断面板（大变更）
+
+**背景**：v0.1.28 实证受限出口下 `javlibrary`/`javbus` 已废、`javdb` 网站被 Cloudflare 拦截，
+仅 `jav321` 可取数。研究 JavBoss（github.com/Solr159/JavBoss）刮削层后移植可用渠道，并引入渠道健康监控。
+
+**新增渠道（NAS 经 squid 实测可达，e2e 成功 11 部 / 非预期异常 0 处）**
+- `javdbapi` — javdb 手机 App 私有 API（`jdforrepam.com`），纯 JSON 绕开 Cloudflare。
+  来源：JavBoss `internal/jav/javdbapi`（MIT），文件头保留署名。
+- `javdatabase` — javdatabase.com 详情页。移植自 JavBoss `internal/jav/javdatabase`。
+- `javmenu` — **原实现抓取死站 `mrzyx.xyz`（自 v0.1.28 起恒空过），整体重写为 `javmenu.com`**。
+  模块名与 `CrawlerID.javmenu` 保持不变，属同名替换，无需改动任何注册逻辑。
+- `minnanoav` 经实测**判定不适用**：6 个 movie-by-code 候选路径全部 404、搜索页被 Cloudflare 拦截，
+  且其接口本就只有女优查询，与 `parse_data(movie)` 不匹配，故不强行适配。
+
+**新增：渠道监控与熔断（`javsp/web/health.py`，移植自 JavBoss `availability.go`）**
+- WebUI 新增「渠道监控」页，覆盖**全部 21 个已注册渠道**（含未启用的），展示状态/耗时/命中率/
+  失败原因/剩余冷却，并支持手动探活。
+- **熔断器**：连续失败 2 次才熔断（不取 1，避免网络抖动误杀好源），冷却 10s→20s→…→上限 5 分钟，
+  到点进入半开试探，成功恢复 / 失败重新熔断。实测死源刮削 **5.80s → 1.00s**。
+- 仅对通道级故障（网络/DNS/TLS/超时/HTTP/被拦）熔断；**`未收录`、`内容异常`、`结果重复`
+  绝不熔断** —— 这些说明源本身是好的。
+- 判定走真实 `parse_data` 且要求解析出有效标题（很多死站返回 200 + 壳页，只看传输层会误判）。
+- 每次刮削的成败自动汇入健康档案（零额外请求），刮削结果表同步显示「已跳过 / 试探中 / 状态」。
+- API：`GET /api/channels`、`POST /api/channels/check`。
+
+**修复**
+- **熔断阈值形同虚设**：首次失败即熔断（`breaker != OPEN or ...` 短路致阈值判断被绕过）。
+- **熔断无法恢复的死锁**：`success` 未纳入恢复分支，熔断中的源即使半开试探成功也永远回不来。
+- 成功路径不记录 `elapsed_ms`，致前端「耗时」列对正常源恒为 0。
+- 脱敏漏洞：requests 常见的无 scheme URL（`//path?token=xxx`）逃过脱敏正则，token 可能进日志。
+- **设置页无法勾选新源**：`App.vue` 的 `crawlerSites` 是 `CrawlerID` 的手工副本，漏了新注册渠道；
+  已补齐并新增 `verify_crawler_sites_sync.py` 守护此类漂移。
+- **README 错误说明**：原写「环境变量嵌套层级用双下划线」是错的 —— confz 2.x 的
+  `nested_separator` 默认是 `.`，双下划线会被**静默忽略**（不报错、不生效），已改点号并加警示。
+
+**其他**
+- `samples/`（真实第三方页面样本）加入 `.gitignore`，不入库。
+
+**验证**：`verify_health`(104) / `verify_health_integration`(22) / `verify_channels_api`(38) /
+`verify_sanitize`(11) / `verify_newsrcs_real`(39) / `verify_newsrcs_registration`(21) 等全绿；
+NAS 容器内经 squid 实测确认新三源正常、javbus 被熔断并跳过、javlib 未收录未被误熔断。
+
 ---
 
 ## 提交基线说明

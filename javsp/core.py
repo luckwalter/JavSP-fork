@@ -29,6 +29,7 @@ from javsp.datatype import Movie, MovieInfo
 from javsp.web.base import download
 from javsp.web.exceptions import *
 from javsp.web.translate import translate_movie_info
+from javsp.web import health
 from javsp.config import Cfg, CrawlerID, UseJavDBCover
 from javsp.cropper import get_cropper
 from javsp.avid import guess_av_type, get_id
@@ -104,8 +105,21 @@ def _summarize_sources(all_info: Dict[str, MovieInfo]) -> dict:
 
 
 # progress_cb: 可选回调, 签名为 (crawler_name: str, status: str) -> None
-#   status 取值: start / success / not_found / duplicate / blocked / error
+#   status 取值: start / success / not_found / duplicate / blocked / error / skipped
 ProgressCb = Optional[Callable[[str, str], None]]
+
+
+def _notify(cb: ProgressCb, name: str, status: str) -> None:
+    """推进度回调并把结果汇入渠道健康档案(被动观测, 零额外请求)
+
+    注意: `name` 来自提交任务时传入的**完整模块路径**(如 'javsp.web.airav'), 而健康档案
+    以**短名**为键(与 CrawlerID 一致)。必须先归一化, 否则档案会分裂成 'airav' 与
+    'javsp.web.airav' 两份 —— 熔断状态写进了没被读取的那份, 等于失效。
+    """
+    if callable(cb):
+        cb(name, status)
+    short = name.split('.')[-1] if name.startswith('javsp.web.') else name
+    health.note_scrape_outcome(short, status)
 
 
 # 爬虫是IO密集型任务，可以通过多线程提升效率
@@ -115,8 +129,7 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
         """对抓取器函数进行包装，便于更新提示信息和自动重试"""
         crawler_name = crawler_name or threading.current_thread().name
         task_info = f'Crawler: {crawler_name}: {info.dvdid}'
-        if callable(progress_cb):
-            progress_cb(crawler_name, 'start')
+        _notify(progress_cb, crawler_name, 'start')
         for cnt in range(retry):
             try:
                 parser(info)
@@ -125,23 +138,19 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
                 setattr(info, 'success', True)
                 if isinstance(tqdm_bar, tqdm):
                     tqdm_bar.set_description(f'{crawler_name}: 抓取完成')
-                if callable(progress_cb):
-                    progress_cb(crawler_name, 'success')
+                _notify(progress_cb, crawler_name, 'success')
                 break
             except MovieNotFoundError as e:
                 logger.debug(e)
-                if callable(progress_cb):
-                    progress_cb(crawler_name, 'not_found')
+                _notify(progress_cb, crawler_name, 'not_found')
                 break
             except MovieDuplicateError as e:
                 logger.exception(e)
-                if callable(progress_cb):
-                    progress_cb(crawler_name, 'duplicate')
+                _notify(progress_cb, crawler_name, 'duplicate')
                 break
             except (SiteBlocked, SitePermissionError, CredentialError) as e:
                 logger.error(e)
-                if callable(progress_cb):
-                    progress_cb(crawler_name, 'blocked')
+                _notify(progress_cb, crawler_name, 'blocked')
                 break
             except requests.exceptions.RequestException as e:
                 logger.debug(f'{crawler_name}: 网络错误，正在重试 ({cnt+1}/{retry}): \n{repr(e)}')
@@ -150,10 +159,14 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
                 # 指数退避, 避免连续重试同一站点触发风控(封顶 8s)
                 if cnt < retry - 1:
                     time.sleep(min(2 ** cnt, 8))
+                else:
+                    # 重试耗尽才算这次刮削失败。原实现此处不上报, 熔断器因此永远看不到
+                    # 网络故障(只见 start/成功), 死源无法被识别 —— 只上报最终结果,
+                    # 不改变原有重试次数与退避行为。
+                    _notify(progress_cb, crawler_name, 'network_error')
             except Exception as e:
                 logger.exception(e)
-                if callable(progress_cb):
-                    progress_cb(crawler_name, 'error')
+                _notify(progress_cb, crawler_name, 'error')
 
     # 根据影片的数据源获取对应的抓取器
     crawler_mods: List[CrawlerID] = Cfg().crawler.selection[movie.data_src]
@@ -166,6 +179,18 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
             i.dvdid = None
         for i in Cfg().crawler.selection.normal:
             all_info[i.value] = MovieInfo(movie.dvdid)
+    # 熔断: 跳过已判定不可用的源。若不跳过, 每个死源都要白跑
+    # retry(3) x timeout(10s) 的重试 —— 一部影片最多浪费几十秒, 而结果必然是失败。
+    # 被跳过的源仍保留在 all_info 中(值为空), 这样前端 sources 里能显示"已跳过"而非消失,
+    # 用户才能明白"这个源被熔断了"而不是"程序漏了这个源"。
+    tripped = [name for name in list(all_info) if health.is_tripped(name)]
+    if tripped:
+        logger.info(f'熔断跳过 {len(tripped)} 个渠道: {", ".join(tripped)}')
+        # 只发回调、不走 health.note_scrape_outcome: 这些源并未真正发起请求,
+        # 计入"现场观测样本"会虚增样本数并可能把熔断源的失败计数继续推高。
+        if callable(progress_cb):
+            for name in tripped:
+                progress_cb(f'javsp.web.{name}', 'skipped')
     # 并发上限: 通过线程池控制, 避免瞬时全开爬虫打爆出口/代理/触发反爬
     max_workers = Cfg().crawler.max_concurrency
     # 单爬虫最坏耗时 = retry * 单次请求超时 + 重试退避; 并发下总耗时还要乘以「波数」
@@ -184,6 +209,10 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
     try:
         for mod_partial, info in all_info.items():
             mod = f"javsp.web.{mod_partial}"
+            # 熔断: 该源已判定不可用, 直接跳过(不提交任务)。info 仍留在 all_info 中,
+            # 由 _summarize_sources 渲染成"已跳过", 前端据此显示熔断标签。
+            if mod_partial in tripped:
+                continue
             # 健壮性: 抓取器未被成功导入(依赖缺失等被 import_crawlers 跳过)时直接跳过, 避免 KeyError 拖垮整次刮削
             if mod not in sys.modules:
                 logger.warning(f'抓取器 {mod} 未加载, 跳过该站点')

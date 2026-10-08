@@ -72,6 +72,24 @@ export async function getConfigRuntime() {
   return r.json()
 }
 
+// 各刮削渠道的健康档案与熔断状态（覆盖全部已注册源，含未启用的）
+export async function getChannels() {
+  const r = await fetch(BASE + '/api/channels')
+  if (!r.ok) throw new Error(await readDetail(r, 'channels get failed'))
+  return r.json()
+}
+
+// 立即对全部启用渠道做一次主动探活（正常无需手动调，后台会按周期自动探活）
+export async function checkChannels() {
+  const r = await fetch(BASE + '/api/channels/check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: 'null',
+  })
+  if (!r.ok) throw new Error(await readDetail(r, 'channels check failed'))
+  return r.json()
+}
+
 export async function putConfig(cfg) {
   const r = await fetch(BASE + '/api/config', {
     method: 'PUT',

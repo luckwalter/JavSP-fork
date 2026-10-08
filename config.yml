@@ -47,7 +47,14 @@ crawler:
   # 要使用的爬虫列表（汇总数据时从前到后进行）
   # airav avsox avwiki fanza fc2 fc2fan javbus javdb javlib javmenu jav321 mgstage prestige arzon arzon_iv
   selection:
-    normal: [airav, avsox, javbus, javdb, javlib, jav321, mgstage, prestige]
+    # v0.2.1: 末尾三个是 JavBoss 研究移植的新源, 在受限出口(NAS 经 squid)下实测可达,
+    # 用于补位已废/被 Cloudflare 拦截的老源。放在末尾是因为它们覆盖面窄, 让老源先跑,
+    # 新源做兜底与交叉验证。健康/熔断状态见「渠道监控」页。
+    #   javdbapi   —— javdb 手机 App 私有 API(纯 JSON), 绕开 Cloudflare
+    #   javdatabase—— javdatabase.com 详情页(部分番号该站未收录, 会优雅跳过)
+    #   javmenu    —— 原指向死站 mrzyx.xyz, v0.2.1 已就地替换为 javmenu.com
+    normal: [airav, avsox, javbus, javdb, javlib, jav321, mgstage, prestige,
+             javdbapi, javdatabase, javmenu]
     fc2: [fc2, avsox, javdb, javmenu, fc2ppvdb]
     cid: [fanza]
     getchu: [dl_getchu]

@@ -56,6 +56,29 @@
                         <el-table-column label="无码" width="70">
                           <template #default="{ row: s }">{{ s.uncensored ? '是' : '-' }}</template>
                         </el-table-column>
+                        <el-table-column label="渠道状态" width="128">
+                          <template #default="{ row: s }">
+                            <el-tag
+                              v-if="s.breaker === 'open'"
+                              size="small"
+                              type="danger"
+                              style="margin: 2px"
+                            >已跳过</el-tag>
+                            <el-tag
+                              v-else-if="s.breaker === 'half_open'"
+                              size="small"
+                              type="warning"
+                              style="margin: 2px"
+                            >试探中</el-tag>
+                            <el-tag
+                              v-else-if="s.health_status"
+                              size="small"
+                              :type="CH_STATUS_TYPE[s.health_status] || 'info'"
+                              style="margin: 2px"
+                            >{{ s.health_text }}</el-tag>
+                            <span v-else style="color: #999">-</span>
+                          </template>
+                        </el-table-column>
                       </el-table>
                     </div>
                   </template>
@@ -150,6 +173,106 @@
               </el-table-column>
             </el-table>
           </el-card>
+        </el-tab-pane>
+
+        <!-- 渠道监控：熔断状态总览 + 手动探活 -->
+        <el-tab-pane name="channels">
+          <template #label>
+            <span>渠道监控</span>
+            <el-badge
+              v-if="ch.tripped > 0"
+              :value="ch.tripped"
+              type="danger"
+              class="ch-badge"
+            />
+          </template>
+
+          <el-alert
+            v-if="ch.tripped > 0"
+            type="warning"
+            show-icon
+            :closable="false"
+            style="margin-bottom: 12px; max-width: 900px"
+            :title="`有 ${ch.tripped} 个渠道已被熔断, 刮削时会直接跳过(不再浪费时间重试)。若刚改完代理/镜像配置, 可点右侧「立即探活」重测。`"
+          />
+
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
+            <el-button :loading="ch.loading" @click="loadChannels(false)">刷新</el-button>
+            <el-button type="primary" :loading="ch.loading" @click="loadChannels(true)">
+              立即探活
+            </el-button>
+            <el-tag v-if="ch.checked" type="info">
+              上次探活: {{ ch.checked }}
+            </el-tag>
+            <el-tag type="info" v-if="ch.interval">
+              后台每 {{ Math.round(ch.interval / 60) }} 分钟自动探活
+            </el-tag>
+            <el-tag type="info" v-if="ch.threshold">连续失败 {{ ch.threshold }} 次后熔断</el-tag>
+          </div>
+
+          <el-table
+            v-if="ch.rows.length"
+            :data="ch.rows"
+            size="small"
+            border
+            style="margin-top: 12px"
+            max-height="62vh"
+          >
+            <el-table-column label="渠道" width="110">
+              <template #default="{ row }">
+                <div>{{ row.source }}</div>
+                <el-tag v-if="!row.active" size="small" type="info">未启用</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="150">
+              <template #default="{ row }">
+                <el-tag :type="chStatusType(row)" size="small">{{ row.status_text }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="刮削参与" width="130">
+              <template #default="{ row }">
+                <el-tag
+                  v-if="row.breaker === 'open'"
+                  size="small"
+                  type="danger"
+                >已跳过</el-tag>
+                <el-tag v-else-if="row.breaker === 'half_open'" size="small" type="warning">
+                  试探中
+                </el-tag>
+                <el-tag v-else-if="row.active" size="small" type="success">参与</el-tag>
+                <span v-else style="color: #999">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="耗时" width="90">
+              <template #default="{ row }">
+                <span v-if="row.elapsed_ms">{{ row.elapsed_ms }} ms</span>
+                <span v-else style="color: #999">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="近期命中率" width="110">
+              <template #default="{ row }">
+                <span v-if="row.hit_rate !== null">
+                  {{ row.hit_rate }}%
+                  <span style="color: #999">({{ row.scrape_success }}/{{ row.scrape_samples }})</span>
+                </span>
+                <span v-else style="color: #999">暂无样本</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="domain" label="站点" width="170" />
+            <el-table-column label="失败原因" min-width="220">
+              <template #default="{ row }">
+                <span v-if="row.reason" style="color: #c45656">{{ row.reason }}</span>
+                <span v-else style="color: #999">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="冷却" width="90">
+              <template #default="{ row }">
+                <span v-if="row.cooldown_remaining > 0">{{ row.cooldown_remaining }}s</span>
+                <span v-else style="color: #999">-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-else-if="!ch.loading" description="暂无渠道数据" />
         </el-tab-pane>
 
         <!-- 设置（Web 化表单） -->
@@ -305,7 +428,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as api from './api.js'
 
@@ -329,6 +452,57 @@ const avid = ref('')
 const scrapeProgress = ref([])
 const scrapeInfo = ref(null)
 const scrapeSources = ref(null)
+
+// 渠道监控(熔断监控) —— 与后端 /api/channels 对应
+const ch = ref({
+  rows: [], loading: false, tripped: 0, checked: '', interval: 0, threshold: 0,
+})
+
+const CH_STATUS_TYPE = {
+  ok: 'success',
+  timeout: 'warning', dns_error: 'danger', tls_error: 'danger',
+  network_error: 'danger', http_error: 'danger', blocked: 'danger',
+  credential_error: 'danger', error: 'danger', invalid_response: 'warning',
+  not_found: 'info', duplicate: 'info', unchecked: 'info', unknown: 'info',
+  canceled: 'info',
+}
+
+function chStatusType(row) {
+  // 已熔断的源一律用 danger —— 那是需要用户介入的状态
+  if (row.breaker === 'open') return 'danger'
+  return CH_STATUS_TYPE[row.status] || 'info'
+}
+
+async function loadChannels(probe = false) {
+  ch.value.loading = true
+  try {
+    const data = probe ? await api.checkChannels() : await api.getChannels()
+    const rows = data.sources || []
+    ch.value.rows = rows
+    ch.value.tripped = rows.filter((r) => r.active && r.breaker === 'open').length
+    if (probe) {
+      ch.value.checked = new Date().toLocaleTimeString()
+    } else {
+      // 后端探活周期展示
+      ch.value.interval = data.probe_interval || ch.value.interval
+      ch.value.threshold = data.threshold || ch.value.threshold
+      // 用最新的 checked_at 显示"上次探活时间"; 单位是秒(Unix 时间戳)
+      const latest = rows.reduce((m, r) => Math.max(m, r.checked_at || 0), 0)
+      if (latest) ch.value.checked = new Date(latest * 1000).toLocaleTimeString()
+    }
+  } catch (e) {
+    // 后端不可达时静默: 监控是辅助信息, 不该弹错误打断主流程
+    console.warn('渠道监控加载失败', e)
+    ch.value.rows = []
+  } finally {
+    ch.value.loading = false
+  }
+}
+
+// 切换到"渠道监控"页时才拉数据, 避免首屏多打一个请求
+watch(active, (v) => {
+  if (v === 'channels' && !ch.value.rows.length) loadChannels(false)
+})
 const configObj = ref(null)
 const configMsg = ref('')
 // 超时在配置里是 ISO 8601 时长（如 PT10S），界面按「秒」编辑，保存时再转回
@@ -395,10 +569,12 @@ function parseDurationToSec(v) {
 }
 
 // 可选爬虫源(对应 javsp.config.CrawlerID 枚举)
+// 注意: 这是枚举的手工副本, 增删 CrawlerID 时**必须同步此处**, 否则设置页勾不到新源
+// (v0.2.1 就漏过 javdbapi/javdatabase)。verify_crawler_sites_sync.py 会对齐做断言守护。
 const crawlerSites = [
   'airav', 'avsox', 'avwiki', 'dl_getchu', 'fanza', 'fc2', 'fc2fan', 'fc2ppvdb',
-  'gyutto', 'jav321', 'javbus', 'javdb', 'javlib', 'javmenu', 'mgstage',
-  'njav', 'prestige', 'arzon', 'arzon_iv',
+  'gyutto', 'jav321', 'javbus', 'javdb', 'javdbapi', 'javdatabase', 'javlib',
+  'javmenu', 'mgstage', 'njav', 'prestige', 'arzon', 'arzon_iv',
 ]
 
 const batch = ref({ running: false, index: 0, total: 0, current: '', crawlers: [], log: [], done: null })
@@ -625,6 +801,10 @@ function sourceRows(sources) {
       contributed: typeof s.contributed === 'boolean'
         ? s.contributed
         : !!(hasCover || hasGenre || hasActress),
+      // 渠道健康/熔断状态(后端 javsp/web/health.py 注入)。缺失时留空, 表格显示 '-'
+      health_status: s.health_status || '',
+      health_text: s.health_text || '',
+      breaker: s.breaker || '',
     }
   })
 }
