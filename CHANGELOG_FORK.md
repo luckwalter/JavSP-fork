@@ -6,6 +6,43 @@
 
 ---
 
+## v0.2.4（2026-10-09）
+
+**移除 `network.proxy_free` 功能（按站点镜像/免代理地址）**
+
+起因：该机制依赖为每个站点手工维护「镜像域名」，而 `javbus.life` / `javdb38.com` /
+`avsox.click` / `www.javlibrary.net` 这批镜像实际已全部失效或退化为死壳页。现象即上轮
+报告的 `javbus` 渠道 `MovieNotFoundError` —— 爬虫被强制路由到死镜像 `javbus.life`（480 字节
+空壳），而主站 `www.javbus.com` 经同一 squid 出口本可正常访问（49KB 真页，可被解析）。
+
+改动：
+- 删除 `javsp/config.py` 的 `Network.proxy_free` 字段，及 `javsp/web/proxyfree.py` 模块；
+- `javbus` / `javdb` 的 `base_url` 回退到 `permanent_url`（主站），`avsox` 固定主站
+  `https://avsox.click`，`javlib` 的 `init_network_cfg` 去掉镜像探测、只用主站；
+- 四源统一走全局 `network.proxy_server` 代理，不再有按站点的镜像逻辑；
+- 清理 `config.yml` / `tools/config_migration.py` / `README.md` / `verify_config_io.py` 的相关引用；
+- `Network` 模型加 `model_config = ConfigDict(extra='ignore')` 保底：旧配置若残留
+  `proxy_free` 段，忽略而非整体校验失败（不影响其它功能）；保存配置时该字段自动消失；
+- 顺带修复 `javbus.py` 的 302 处理：之前在 302 时取 `resp.history[0]`（空的 302 响应本身）
+  解析导致 `Document is empty`；改为直接用跟随重定向后的 `resp` 解析。
+- 补一道护栏：实测 NAS squid 出口下 `www.javbus.com/IPX-001` 会被 302 到年龄验证页
+  （`/doc/driver-verify`，标题 `Age Verification JavBus`），该页有 `.container` 外壳但无影片
+  `h3` 标题。若只按原逻辑继续解析会 `container.xpath("h3/text()")[0]` 越界抛 `IndexError`
+  中断整次刮削；现改为「有容器外壳却缺 `h3` 标题即判 `MovieNotFoundError`」，报错回到准确、
+  可控的「该源未取得数据」（真实影片页必有 `h3` 标题，此判断不误杀正常刮削）。
+  （该 302 bug 此前因走死镜像 `javbus.life` 不触发 302 分支而一直未被暴露。）
+
+**验证**
+- `verify_config_io.py` 的 T3/T8/T9 改为真实嵌套字段（crawler.selection / network 标量），
+  全绿；容器内 `import javsp.web.javbus` 等无报错。
+- NAS 实测：旧 `config.yml` 含 `proxy_free` 段仍可加载（extra='ignore'）；`javbus` 走主站 +
+  squid 代理，IPX-001 撞上 JavBus 年龄验证墙（302 → driver-verify 空壳页），现已干净报
+  `MovieNotFoundError` 而非崩溃；健康检查 `200` / 版本 `0.2.4`。
+
+
+
+---
+
 ## 版本规则（官方）
 
 - 不沿用上游 JavSP 的版本号（上游最新 v1.8），本项目从 **0.0.1** 起步。

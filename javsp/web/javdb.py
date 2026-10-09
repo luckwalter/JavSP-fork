@@ -7,7 +7,6 @@ from javsp.web.base import Request, resp2html
 from javsp.web.exceptions import *
 from javsp.func import *
 from javsp.avid import guess_av_type
-from javsp.config import Cfg, CrawlerID
 from javsp.datatype import MovieInfo, GenreMap
 from javsp.chromium import get_browsers_cookies
 
@@ -19,11 +18,7 @@ request.headers['Accept-Language'] = 'zh-CN,zh;q=0.9,zh-TW;q=0.8,en-US;q=0.7,en;
 logger = logging.getLogger(__name__)
 genre_map = GenreMap('data/genre_javdb.csv')
 permanent_url = 'https://javdb.com'
-# 有代理时走镜像(主站 javdb.com 对该出口被 Cloudflare/SSL 拦截), 无代理回退主站
-if Cfg().network.proxy_server is not None:
-    base_url = str(Cfg().network.proxy_free[CrawlerID.javdb])
-else:
-    base_url = permanent_url
+base_url = permanent_url
 
 
 def get_html_wrapper(url):

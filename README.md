@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.2.3-blue.svg)
+![Version](https://img.shields.io/badge/version-0.2.4-blue.svg)
 
 ## 功能特点
 
@@ -140,8 +140,8 @@ for cid in Cfg().crawler.selection.normal:
 | `MovieNotFoundError` | 该站未收录此番号 | 正常，不是故障 |
 | `HTTPError 403` | 站点需登录 / 反爬 | 该站本就不可用 |
 | `SSLCertVerificationError` | **代理在解密 HTTPS**（MITM），容器内没有代理的 CA 证书 | 见下方「HTTPS 代理（MITM）下如何让证书校验通过」 |
-| `Fail to connect` / `ConnectionReset` | 镜像站不可用 | `network.proxy_free` 里换一个镜像地址 |
-| 主页正常但搜索页返回**版权限制提示页** | 站点对当前出口做**地域限制** | 换该站的镜像地址（`proxy_free`），或换一个出口 IP/代理节点 |
+| `Fail to connect` / `ConnectionReset` | 站点对当前出口不可达 | 检查 `network.proxy_server` 是否配置正确，或该出口 IP 是否被站点封锁，必要时更换代理节点 |
+| 主页正常但搜索页返回**版权限制提示页** | 站点对当前出口做**地域限制** | 更换出口 IP / 代理节点 |
 
 #### HTTPS 代理（MITM）下如何让证书校验通过
 
@@ -168,9 +168,8 @@ services:
 > 站点原厂 CA（如 `Google Trust Services`），校验天然通过。可用
 > `openssl s_client -proxy <代理> -connect <站点>:443` 查看 `issuer` 是否为代理自己的 CA 来判断。
 
-> ⚠️ `network.proxy_free` 的语义是**「该站的镜像 / 免代理地址」**（如 `javdb368.com`），
-> 不是「让这个站绕过代理」——填错会导致请求被送到失效镜像上。软件在地址失效时会
-> 自动尝试获取新地址（`javsp/web/proxyfree.py`）。
+> ⚠️ 各站点统一走 `network.proxy_server` 配置的全局代理，不再有按站点的镜像/免代理地址
+> （旧版 `network.proxy_free` 已移除）。站点可达性取决于全局代理出口，出口被封锁时请更换代理节点。
 
 > 多阶段构建会自动 `npm run build` 前端并托管 `frontend/dist`。
 
@@ -350,7 +349,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.2.3**
+当前版本：**0.2.4**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

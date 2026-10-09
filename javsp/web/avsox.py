@@ -3,12 +3,11 @@ import logging
 
 from javsp.web.base import get_html
 from javsp.web.exceptions import *
-from javsp.config import Cfg, CrawlerID
 from javsp.datatype import MovieInfo
 
 
 logger = logging.getLogger(__name__)
-base_url = str(Cfg().network.proxy_free[CrawlerID.avsox])
+base_url = 'https://avsox.click'
 
 
 def parse_data(movie: MovieInfo):

@@ -5,18 +5,13 @@ import logging
 from javsp.web.base import *
 from javsp.web.exceptions import *
 from javsp.func import *
-from javsp.config import Cfg, CrawlerID
 from javsp.datatype import MovieInfo, GenreMap
 
 
 logger = logging.getLogger(__name__)
 genre_map = GenreMap('data/genre_javbus.csv')
 permanent_url = 'https://www.javbus.com'
-# 有代理时走镜像(主站 javbus.com 对该出口被 Cloudflare 拦截), 无代理回退主站
-if Cfg().network.proxy_server is not None:
-    base_url = str(Cfg().network.proxy_free[CrawlerID.javbus])
-else:
-    base_url = permanent_url
+base_url = permanent_url
 
 
 def parse_data(movie: MovieInfo):
@@ -26,11 +21,9 @@ def parse_data(movie: MovieInfo):
     """
     url = f'{base_url}/{movie.dvdid}'
     resp = request_get(url, delay_raise=True)
-    # 疑似JavBus检测到类似爬虫的行为时会要求登录，不过发现目前不需要登录也可以从重定向前的网页中提取信息
-    if resp.history and resp.history[0].status_code == 302:
-        html = resp2html(resp.history[0])
-    else:
-        html = resp2html(resp)
+    # JavBus 检测到疑似爬虫时会 302 到年龄验证/登录页; requests 已自动跟随重定向,
+    # 直接用最终响应(resp)解析, 不要取 history[0](那是空的 302 响应本身, 会解析成空文档)
+    html = resp2html(resp)
     # 引入登录验证后状态码不再准确，因此还要额外通过检测标题来确认是否发生了404
     page_title = html.xpath('/html/head/title/text()')
     if page_title and page_title[0].startswith('404 Page Not Found!'):
@@ -40,7 +33,14 @@ def parse_data(movie: MovieInfo):
     if not html.xpath("//div[@class='container']"):
         raise MovieNotFoundError(__name__, movie.dvdid)
     container = html.xpath("//div[@class='container']")[0]
-    title = container.xpath("h3/text()")[0]
+    # 撞上年龄验证/反爬墙页(JavBus 对疑似爬虫出口 302 到 driver-verify):
+    # 有 .container 外壳但无影片标题 h3, 内容几乎为空。这种情况不能继续按正常
+    # 影片页解析(否则 container.xpath("h3/text()")[0] 越界抛 IndexError 中断整次刮削),
+    # 直接判该源未取得数据。真实影片页必有 h3 标题, 此判断不会误杀正常刮削。
+    title = container.xpath("h3/text()")
+    if not title:
+        raise MovieNotFoundError(__name__, movie.dvdid)
+    title = title[0]
     cover = container.xpath("//a[@class='bigImage']/img/@src")[0]
     preview_pics = container.xpath("//div[@id='sample-waterfall']/a/@href")
     info = container.xpath("//div[@class='col-md-3 info']")[0]

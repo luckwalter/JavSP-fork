@@ -86,9 +86,6 @@ network:
   # 设置代理服务器地址，支持 http, socks5/socks5h 代理，比如'http://127.0.0.1:1080'
   # null表示禁用代理
   proxy_server: {'null' if proxy_disabled else f"'{cfg['Network']['proxy']}'"}
-  # 各个站点的免代理地址。地址失效时软件会自动尝试获取新地址，你也可以手动设置
-  proxy_free:
-{'\n'.join([f"    {id}: '{url}'" for id, url in dict(cfg['ProxyFree']).items()])}
   # 网络问题导致抓取数据失败时的重试次数，通常3次就差不多了
   retry: {cfg['Network']['retry']}
   # https://en.wikipedia.org/wiki/ISO_8601#Durations

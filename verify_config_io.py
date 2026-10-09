@@ -7,7 +7,7 @@
 覆盖:
   T1 标量写入（proxy_server 字符串）
   T2 整数写入（retry）
-  T3 嵌套字段写入（proxy_free.avsox）
+  T3 嵌套字段写入（crawler.selection.fc2）
   T4 单行 flow 列表写入（crawler.selection.normal）
   T5 多行 block 列表写入（scanner.ignored_id_pattern）→ 应整块替换为单行且不残留旧行
   T6 无变更时不改动文件
@@ -116,18 +116,14 @@ try:
     check('T2 整数写入成功', 'retry: 5' in txt, str(ch))
 
     # ---------------- T3: 嵌套字段 ----------------
-    p, ch = apply_change({'network': {'proxy_free': {'avsox': 'https://new.example.com'}}})
+    p, ch = apply_change({'crawler': {'selection': {'fc2': ['fc2', 'fc2ppvdb']}}})
     txt = open(p, encoding='utf-8', newline='').read()
-    check('T3 嵌套字段写入成功', "avsox: 'https://new.example.com'" in txt, str(ch))
-    # 守卫「只改 avsox 不波及同级其他键」, 但**不硬编码具体地址** ——
-    # 镜像地址会随时间失效而更新(config.yml 里换过 seedmm -> javbus.com 等),
-    # 写死域名会让本用例在换地址后假失败(本轮就被抓到过一次)。
+    check('T3 嵌套字段写入成功', 'fc2: [fc2, fc2ppvdb]' in txt, str(ch))
+    # 守卫「只改 fc2 不波及同级其他键」
     p_before = read_lines(fresh())
-    others_before = [l.strip() for l in p_before
-                     if l.strip().startswith(('javbus:', 'javdb:', 'javlib:'))]
-    others_after = [l.strip() for l in read_lines(p)
-                    if l.strip().startswith(('javbus:', 'javdb:', 'javlib:'))]
-    check('T3 同级其他站点未被误改', others_before == others_after and len(others_after) == 3,
+    others_before = [l.strip() for l in p_before if l.strip().startswith('normal:')]
+    others_after = [l.strip() for l in read_lines(p) if l.strip().startswith('normal:')]
+    check('T3 同级其他选择未被误改', others_before == others_after and len(others_after) == 1,
           f'before={others_before} after={others_after}')
 
     # ---------------- T4: 单行 flow 列表 ----------------
@@ -173,15 +169,13 @@ try:
             'proxy_server': 'http://127.0.0.1:7890',
             'retry': 4,
             'timeout': 'PT20S',
-            'proxy_free': {'javdb': 'https://db.example.com'},
         },
         'crawler': {'selection': {'normal': ['javdb', 'javlib']}},
     })
     data = yaml.safe_load(open(p, encoding='utf-8').read())
     check('T8 写回后仍是合法 YAML', isinstance(data, dict))
     check('T8 新值可被读回', data['network']['proxy_server'] == 'http://127.0.0.1:7890'
-          and data['network']['retry'] == 4
-          and data['network']['proxy_free']['javdb'] == 'https://db.example.com',
+          and data['network']['retry'] == 4,
           str(data.get('network')))
     check('T8 未改动字段保持原值', data['crawler']['hardworking'] is True)
     try:
@@ -259,18 +253,17 @@ try:
                 'proxy_server': 'http://127.0.0.1:7890',
                 'retry': 6,
                 'timeout': 'PT20S',        # 前端按秒编辑后转回的写法
-                'proxy_free': {'javdb': 'https://db.example.com'},
             }
         }
         resp = client.put('/api/config', json=payload).json()
         # 热重载后状态为 'applied'（即时生效）；若热重载不可用则退回 'written'
         check('T9 PUT 返回写入成功', resp.get('status') in ('written', 'applied'), str(resp)[:160])
         check('T9 无字段定位失败', not resp.get('missing'), str(resp.get('missing')))
-        check('T9 变更字段数 >= 4', (resp.get('changed') or 0) >= 4, str(resp.get('changed')))
+        check('T9 变更字段数 >= 3', (resp.get('changed') or 0) >= 3, str(resp.get('changed')))
         t = open(SRC, encoding='utf-8', newline='').read()
         check('T9 新值已落到文件',
               "proxy_server: 'http://127.0.0.1:7890'" in t and 'retry: 6' in t
-              and 'timeout: PT20S' in t and "javdb: 'https://db.example.com'" in t)
+              and 'timeout: PT20S' in t)
         check('T9 注释未被破坏', comment_count(SRC) == base_comments,
               f'{comment_count(SRC)}/{base_comments}')
     finally:

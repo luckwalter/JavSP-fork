@@ -1,8 +1,8 @@
 from argparse import ArgumentParser, RawTextHelpFormatter
 from enum import Enum
-from typing import Dict, List, Literal, TypeAlias, Union
+from typing import List, Literal, TypeAlias, Union
 from confz import BaseConfig, CLArgSource, EnvSource, FileSource
-from pydantic import ByteSize, Field, NonNegativeInt, PositiveInt
+from pydantic import ByteSize, ConfigDict, Field, NonNegativeInt, PositiveInt
 from pydantic_extra_types.pendulum_dt import Duration
 from pydantic_core import Url
 from pathlib import Path
@@ -44,12 +44,13 @@ class CrawlerID(str, Enum):
     arzon_iv = 'arzon_iv'
 
 class Network(BaseConfig):
+    # 保底: 旧配置若残留 proxy_free 等已废弃字段, 忽略而非整体校验失败(不影响其它功能)
+    model_config = ConfigDict(extra='ignore')
     proxy_server: Url | None
     # ge=1 而非 0: retry=0 会让 core.parallel_crawler 的 for cnt in range(retry)
     # 一次都不执行 -> success 标记永不置位 -> 全部站点结果被丢弃且无任何错误提示(静默全失败)
     retry: int = Field(3, ge=1, le=10)
     timeout: Duration
-    proxy_free: Dict[CrawlerID, Url]
 
 class CrawlerSelect(BaseConfig):
     def items(self) -> List[tuple[str, list[CrawlerID]]]:
