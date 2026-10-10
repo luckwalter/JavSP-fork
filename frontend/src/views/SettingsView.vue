@@ -29,12 +29,21 @@ const GROUPS = [
   { key: 'translator', label: '翻译', hint: '标题与剧情的自动翻译' },
 ]
 
-const ALL_SITES = [
-  'airav', 'avsox', 'avwiki', 'jav321', 'javbus', 'javdb', 'javdbapi',
-  'javdatabase', 'javlib', 'javmenu', 'mgstage', 'prestige',
-  'dl_getchu', 'fanza', 'fc2', 'fc2fan', 'fc2ppvdb', 'gyutto', 'njav',
-  'arzon', 'arzon_iv',
-]
+// 按选源类型(对应 core.py 的 movie.data_src)声明的「推荐源」清单。
+// 每个 crawler 实际支持的番号类型据此收敛, 设置页每个分区只显示该类支持的源:
+//   - normal: 普通厂商番号(如 ABC-123)
+//   - fc2   : FC2-xxxx 专属(fc2/fc2fan/fc2ppvdb) + 跨类型能搜 FC2 的(avsox/javdb/javmenu)
+//   - cid   : CID 专属(fanza, 必须携带 cid 才能检索)
+// fanza 不含在 normal, 因为它需要 cid 而非普通番号(与上游把 fanza 放 normal 的默认不同,
+// 这里严格按能力收敛)。已勾选但不在推荐里的源仍会补显示(见 sitesForKind), 不会丢配置。
+// 注: javfree 是第 22 个番号源, 普通番号库, 归 normal(此前 ALL_SITES 遗漏, 此处补齐)。
+const SOURCE_KINDS = {
+  normal: ['airav', 'avsox', 'avwiki', 'jav321', 'javbus', 'javdb', 'javdbapi',
+           'javdatabase', 'javlib', 'javmenu', 'mgstage', 'prestige', 'dl_getchu',
+           'njav', 'arzon', 'arzon_iv', 'gyutto', 'javfree'],
+  fc2:    ['fc2', 'fc2fan', 'fc2ppvdb', 'avsox', 'javdb', 'javmenu'],
+  cid:    ['fanza'],
+}
 // 实际参与刮削的选源类型(core.py 只按 movie.data_src 取 normal/fc2/cid)。
 // getchu/gyutto 虽在 selection 中但不被 core 使用, 故页面不渲染以免误导。
 const CRAWLER_KINDS = ['normal', 'fc2', 'cid']
@@ -88,6 +97,17 @@ function toggleSite(kind, name, on) {
   if (on && i < 0) arr.push(name)
   if (!on && i >= 0) arr.splice(i, 1)
   cfg.value.crawler.selection[kind] = arr
+}
+
+// 某分区应渲染的源 = 推荐源 ∪ 已勾选源(去重)。
+// 这样既只显示该类支持的源, 又不丢用户在 config 里已勾选但不在推荐清单中的源(仍可取消)。
+function sitesForKind(kind) {
+  const seen = new Set()
+  const out = []
+  for (const s of [...(SOURCE_KINDS[kind] || []), ...siteList(kind)]) {
+    if (s && !seen.has(s)) { seen.add(s); out.push(s) }
+  }
+  return out
 }
 
 function siteLabel(name) {
@@ -203,7 +223,7 @@ onMounted(load)
                 <template v-else>仅对 {{ KIND_HINT[kind] }} 类番号生效(其余类型番号不受影响)</template>
               </p>
               <div class="site-grid">
-                <label v-for="s in ALL_SITES" :key="kind + '-' + s" class="site-chip">
+                <label v-for="s in sitesForKind(kind)" :key="kind + '-' + s" class="site-chip">
                   <input type="checkbox" :checked="hasSite(kind, s)"
                          @change="toggleSite(kind, s, $event.target.checked)" />
                   <span class="site-name">{{ s }}</span>

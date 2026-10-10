@@ -219,9 +219,9 @@ onMounted(() => load(false))
                 <code>{{ r.source }}</code>
                 <span v-if="!r.active" class="pill pill--muted" style="margin-left: 4px;">未启用</span>
                 <button
+                  v-if="r.cookie_supported"
                   class="btn btn--xs"
-                  :disabled="!r.cookie_supported"
-                  :title="r.cookie_supported ? '配置该渠道的浏览器 Cookie' : '该渠道无需 Cookie'"
+                  title="配置该渠道的浏览器 Cookie"
                   @click="openCookieDialog(r)"
                 >配置Cookie</button>
               </td>
