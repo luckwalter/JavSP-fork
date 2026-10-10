@@ -6,6 +6,29 @@
 
 ---
 
+## v0.2.7（2026-10-10）
+
+**修复：WEBUI 刮削源设置补全 FC2 / CID 类型，并默认关闭 fc2ppvdb / avsox（FC2 类）**
+
+起因：v0.2.6 时用户在「系统设置 → 刮削源」页面关闭 avsox / fc2ppvdb，但渠道监控里两者仍显示为
+active、且 FC2 番号刮削仍会调用它们。排查发现页面只渲染了 `selection.normal` 一个勾选区，
+`selection.fc2` / `selection.cid` 在 UI 中根本没有编辑入口；而 `core.py` 按 `movie.data_src`
+（normal / fc2 / cid）选源，FC2 番号实际走 `selection.fc2`，故页面关不掉、监控里仍是 active。
+
+改动：
+- `frontend/src/views/SettingsView.vue`：刮削源分组由写死 `normal` 改为遍历
+  `['normal','fc2','cid']` 三类，各自独立勾选区（标签：普通番号源 / FC2 番号源 / CID 番号源），
+  复用已有的 `hasSite(kind,s)` / `toggleSite(kind,s,on)`；后端 `PUT /api/config` 早已支持任意
+  kind 整体写回，仅前端缺渲染。
+- `config.yml`（运行实例）：`selection.fc2` 由 `[fc2, avsox, javdb, javmenu, fc2ppvdb]` 改为
+  `[fc2, javdb, javmenu]`，彻底关闭 FC2 类的 avsox / fc2ppvdb（avsox 已废、fc2ppvdb 需住宅代理，
+  两者对 FC2 番号基本必失败）。
+
+验证：
+- 运行实例重启后，`/api/channels` 返回 avsox / fc2ppvdb 的 `active=false`、`origin=unknown`；
+  FC2 番号刮削不再调用这两源（core 严格按 selection 选源）。
+- 前端三类勾选区渲染正常，可在页面完整管理所有选源类型。
+
 ## v0.2.6（2026-10-10）
 
 **新增 javfree 番号补充源（第 22 个刮削通道）**

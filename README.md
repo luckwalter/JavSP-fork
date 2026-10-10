@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.2.6-blue.svg)
+![Version](https://img.shields.io/badge/version-0.2.7-blue.svg)
 
 ## 功能特点
 
@@ -349,7 +349,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.2.6**
+当前版本：**0.2.7**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

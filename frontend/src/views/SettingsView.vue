@@ -35,6 +35,11 @@ const ALL_SITES = [
   'dl_getchu', 'fanza', 'fc2', 'fc2fan', 'fc2ppvdb', 'gyutto', 'njav',
   'arzon', 'arzon_iv',
 ]
+// 实际参与刮削的选源类型(core.py 只按 movie.data_src 取 normal/fc2/cid)。
+// getchu/gyutto 虽在 selection 中但不被 core 使用, 故页面不渲染以免误导。
+const CRAWLER_KINDS = ['normal', 'fc2', 'cid']
+const KIND_LABEL = { normal: '普通番号源', fc2: 'FC2 番号源', cid: 'CID 番号源' }
+const KIND_HINT = { fc2: 'FC2-xxxx', cid: 'CID 番号' }
 
 const MASK = '***MASKED***'
 
@@ -189,17 +194,18 @@ onMounted(load)
             </div>
           </template>
 
-          <!-- 刮削源 -->
+          <!-- 刮削源: 遍历 normal/fc2/cid 三类, 每类独立勾选区(根治只暴露 normal 的坑) -->
           <template v-else-if="g.key === 'crawler'">
-            <div class="field">
-              <label class="field-label">普通番号源</label>
+            <div class="field" v-for="kind in CRAWLER_KINDS" :key="kind">
+              <label class="field-label">{{ KIND_LABEL[kind] }}</label>
               <p class="field-hint" style="margin-bottom: var(--space-2);">
-                勾选即参与刮削。已熔断的渠道会自动跳过, 可在「渠道监控」查看原因
+                <template v-if="kind === 'normal'">勾选即参与刮削。已熔断的渠道会自动跳过, 可在「渠道监控」查看原因</template>
+                <template v-else>仅对 {{ KIND_HINT[kind] }} 类番号生效(其余类型番号不受影响)</template>
               </p>
               <div class="site-grid">
-                <label v-for="s in ALL_SITES" :key="s" class="site-chip">
-                  <input type="checkbox" :checked="hasSite('normal', s)"
-                         @change="toggleSite('normal', s, $event.target.checked)" />
+                <label v-for="s in ALL_SITES" :key="kind + '-' + s" class="site-chip">
+                  <input type="checkbox" :checked="hasSite(kind, s)"
+                         @change="toggleSite(kind, s, $event.target.checked)" />
                   <span class="site-name">{{ s }}</span>
                   <span v-if="siteLabel(s)" class="site-hint">{{ siteLabel(s) }}</span>
                 </label>
