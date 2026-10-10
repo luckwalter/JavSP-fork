@@ -1,7 +1,7 @@
 """从JavBus抓取数据"""
 import logging
 
-
+from javsp.config import Cfg
 from javsp.web.base import *
 from javsp.web.exceptions import *
 from javsp.func import *
@@ -14,29 +14,46 @@ permanent_url = 'https://www.javbus.com'
 base_url = permanent_url
 
 
+def _resolve_javbus_cookies() -> dict:
+    """解析 javbus 渠道配置里的浏览器 cookie（随 config.yml 持久化, 热重载即生效）
+
+    从 Cfg().crawler.cookies['javbus'] 读取 Cookie-Editor 导出数组([{name, value}]),
+    转成 requests 可用的 {name: value} 字典。未配置或读取失败时回退到默认 age=verified,
+    仍尽力取数。
+    """
+    try:
+        arr = (Cfg().crawler.cookies or {}).get('javbus') or []
+        cookies = {str(c['name']): str(c['value'])
+                   for c in arr if isinstance(c, dict) and c.get('name')}
+        if cookies:
+            return cookies
+    except Exception:
+        logger.debug('读取 javbus cookie 配置失败, 使用默认 age cookie')
+    return {'age': 'verified'}
+
+
 def parse_data(movie: MovieInfo):
     """从网页抓取并解析指定番号的数据
     Args:
         movie (MovieInfo): 要解析的影片信息，解析后的信息直接更新到此变量内
     """
     url = f'{base_url}/{movie.dvdid}'
-    resp = request_get(url, delay_raise=True)
-    # JavBus 检测到疑似爬虫时会 302 到年龄验证/登录页; requests 已自动跟随重定向,
-    # 直接用最终响应(resp)解析, 不要取 history[0](那是空的 302 响应本身, 会解析成空文档)
+    # JavBus 对未通过年龄验证的访客, 会把番号详情页 302 到年龄验证页(driver-verify);
+    # 该页有 .container 外壳但无影片数据, 继续按影片页解析会 IndexError 崩溃。
+    # 注入年龄验证 cookie(值 'verified' 为服务端确认后下发的固定值, 约 30 天有效):
+    # 带此 cookie 的请求服务端直接放行, 等效浏览器通过年龄验证(实测可拿到真实详情页)。
+    resp = request_get(url, cookies=_resolve_javbus_cookies(), delay_raise=True)
     html = resp2html(resp)
-    # 引入登录验证后状态码不再准确，因此还要额外通过检测标题来确认是否发生了404
     page_title = html.xpath('/html/head/title/text()')
     if page_title and page_title[0].startswith('404 Page Not Found!'):
         raise MovieNotFoundError(__name__, movie.dvdid)
-
-    # 废站/壳页/墙页不含详情结构时直接判未找到, 避免 xpath [0] 越界
+    # 年龄验证墙兜底(极端情况下 cookie 未生效仍被 302 到 driver-verify):
+    # 该页 title 含 'Age Verification', 直接判该源未取得数据, 不崩溃。
+    if page_title and 'Age Verification' in page_title[0]:
+        raise MovieNotFoundError(__name__, movie.dvdid)
     if not html.xpath("//div[@class='container']"):
         raise MovieNotFoundError(__name__, movie.dvdid)
     container = html.xpath("//div[@class='container']")[0]
-    # 撞上年龄验证/反爬墙页(JavBus 对疑似爬虫出口 302 到 driver-verify):
-    # 有 .container 外壳但无影片标题 h3, 内容几乎为空。这种情况不能继续按正常
-    # 影片页解析(否则 container.xpath("h3/text()")[0] 越界抛 IndexError 中断整次刮削),
-    # 直接判该源未取得数据。真实影片页必有 h3 标题, 此判断不会误杀正常刮削。
     title = container.xpath("h3/text()")
     if not title:
         raise MovieNotFoundError(__name__, movie.dvdid)

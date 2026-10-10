@@ -72,6 +72,60 @@ async function load(probe = false) {
   }
 }
 
+// --------------------- 渠道 Cookie 配置弹窗 ---------------------
+const cookieDialog = ref({ open: false, source: '', text: '', loading: false, count: null })
+const flash = ref('')
+
+function showFlash(msg) {
+  flash.value = msg
+  setTimeout(() => { flash.value = '' }, 4000)
+}
+
+async function openCookieDialog(r) {
+  if (!r.cookie_supported) return
+  cookieDialog.value = { open: true, source: r.source, text: '', loading: false, count: null }
+  try {
+    const d = await api.getChannelCookie(r.source)
+    cookieDialog.value.text = (d.cookie && d.cookie.length)
+      ? JSON.stringify(d.cookie, null, 2)
+      : ''
+    cookieDialog.value.count = d.count
+  } catch (e) {
+    console.warn('读取 cookie 失败', e)
+  }
+}
+
+async function saveCookie() {
+  cookieDialog.value.loading = true
+  try {
+    const d = await api.putChannelCookie(cookieDialog.value.source, cookieDialog.value.text)
+    cookieDialog.value.count = d.count
+    cookieDialog.value.open = false
+    showFlash(d.note)
+  } catch (e) {
+    console.warn('保存 cookie 失败', e)
+    alert('保存失败：' + (e.message || e))
+  } finally {
+    cookieDialog.value.loading = false
+  }
+}
+
+async function clearCookie() {
+  cookieDialog.value.loading = true
+  try {
+    const d = await api.putChannelCookie(cookieDialog.value.source, '[]')
+    cookieDialog.value.count = 0
+    cookieDialog.value.text = ''
+    cookieDialog.value.open = false
+    showFlash(d.note)
+  } catch (e) {
+    console.warn('清空 cookie 失败', e)
+    alert('清空失败：' + (e.message || e))
+  } finally {
+    cookieDialog.value.loading = false
+  }
+}
+
 onMounted(() => load(false))
 </script>
 
@@ -107,6 +161,10 @@ onMounted(() => load(false))
     <div v-if="summary.tripped > 0" class="notice notice--warning" style="margin-bottom: var(--space-4);">
       有 {{ summary.tripped }} 个渠道已被熔断, 刮削时会直接跳过(省下重试等待)。
       若刚改完代理或镜像配置, 可点「立即探活」重测。
+    </div>
+
+    <div v-if="flash" class="notice notice--success" style="margin-bottom: var(--space-4);">
+      {{ flash }}
     </div>
 
     <div class="toolbar">
@@ -160,6 +218,12 @@ onMounted(() => load(false))
               <td>
                 <code>{{ r.source }}</code>
                 <span v-if="!r.active" class="pill pill--muted" style="margin-left: 4px;">未启用</span>
+                <button
+                  class="btn btn--xs"
+                  :disabled="!r.cookie_supported"
+                  :title="r.cookie_supported ? '配置该渠道的浏览器 Cookie' : '该渠道无需 Cookie'"
+                  @click="openCookieDialog(r)"
+                >配置Cookie</button>
               </td>
               <td><span class="pill" :class="`pill--${statusType(r)}`">{{ r.status_text }}</span></td>
               <td>
@@ -199,6 +263,44 @@ onMounted(() => load(false))
     <div v-if="!rows.length && !loading" class="empty">
       <p class="empty-title">暂无渠道数据</p>
       <p>点「刷新」重新加载</p>
+    </div>
+
+    <!-- 渠道 Cookie 配置弹窗 -->
+    <div v-if="cookieDialog.open" class="modal-mask" @click.self="cookieDialog.open = false">
+      <div class="modal">
+        <h3 class="modal-title">配置 {{ cookieDialog.source }} 的 Cookie</h3>
+        <p class="modal-desc">粘贴从浏览器扩展 Cookie-Editor 导出的 JSON（数组格式），保存后立即生效，无需重启。</p>
+        <textarea
+          v-model="cookieDialog.text"
+          class="cookie-text"
+          spellcheck="false"
+          placeholder='[{"name":"PHPSESSID","value":"..."},{"name":"existmag","value":"mag"}]'
+        ></textarea>
+
+        <div class="cookie-guide">
+          <p class="guide-title">如何获取（浏览器扩展 Cookie-Editor）</p>
+          <ol>
+            <li>用能正常打开该站点的浏览器，打开站点任一页面。</li>
+            <li>安装扩展
+              <a href="https://chrome.google.com/webstore/detail/cookie-editor/" target="_blank" rel="noopener">Cookie-Editor</a>
+              （Chrome / Edge / Firefox 应用店均有）。
+            </li>
+            <li>点扩展图标，确认域名是该站点，点 <b>Export</b> → 选 <b>JSON</b> → 复制整段。</li>
+            <li>粘贴到上方文本框，点「保存」即可。</li>
+          </ol>
+        </div>
+
+        <p v-if="cookieDialog.count !== null" class="modal-hint">当前已配置 {{ cookieDialog.count }} 条 cookie</p>
+
+        <div class="modal-actions">
+          <button class="btn" :disabled="cookieDialog.loading" @click="clearCookie">清空</button>
+          <span class="spacer"></span>
+          <button class="btn" @click="cookieDialog.open = false">取消</button>
+          <button class="btn btn--primary" :disabled="cookieDialog.loading" @click="saveCookie">
+            {{ cookieDialog.loading ? '保存中…' : '保存' }}
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -244,4 +346,68 @@ code {
   font-family: var(--font-mono);
   font-size: var(--font-sm);
 }
+
+/* 渠道列「配置 Cookie」小按钮 */
+.btn--xs {
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: var(--font-xs);
+  line-height: 1.6;
+  border-radius: var(--radius-sm);
+}
+
+/* Cookie 配置弹窗 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: var(--space-4);
+}
+.modal {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg, 0 12px 32px rgba(0, 0, 0, 0.25));
+  width: min(560px, 100%);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+.modal-title { font-size: var(--font-lg); margin: 0 0 var(--space-2); }
+.modal-desc { color: var(--color-text-secondary); font-size: var(--font-sm); margin: 0 0 var(--space-3); }
+.cookie-text {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+  box-sizing: border-box;
+}
+.cookie-text:focus { outline: none; box-shadow: var(--focus-ring); border-color: var(--color-primary); }
+.cookie-guide {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg-base);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  color: var(--color-text-secondary);
+}
+.cookie-guide .guide-title { font-weight: 600; margin: 0 0 var(--space-1); color: var(--color-text-primary); }
+.cookie-guide ol { margin: 0; padding-left: 1.2em; }
+.cookie-guide li { margin-bottom: 2px; }
+.cookie-guide a { color: var(--color-primary); }
+.modal-hint { font-size: var(--font-sm); color: var(--color-text-tertiary); margin: var(--space-3) 0 0; }
+.modal-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-4); }
+.modal-actions .spacer { flex: 1; }
 </style>

@@ -103,7 +103,9 @@ def _render(value):
     if isinstance(value, (list, tuple)):
         if not value:
             return '[]'
-        return '[' + ', '.join(_scalar(v) for v in value) + ']'
+        # 列表元素可能是嵌套 dict(flow 映射), 必须递归 _render, 不能用 _scalar
+        # (否则 dict 经 str() 变成 "{...}" 字符串, 写回后 YAML 解析错误)
+        return '[' + ', '.join(_render(v) for v in value) + ']'
     if isinstance(value, dict):
         if not value:
             return '{}'
@@ -219,6 +221,28 @@ def diff_leaves(current, merged, path=()):
     return out
 
 
+def _try_insert_missing(lines, index, inserted, path, value):
+    """在已存在的祖先容器内新建缺失字段（仅支持单级缺失）
+
+    例如原 config.yml 无 `crawler.cookies`, 但要写入 `crawler.cookies`(整块),
+    则在 `crawler:` 容器行之后插入 `  cookies: {javbus: [...]}`(flow 单行)。
+    成功返回 True; 若找不到合适的祖先容器则返回 False(交由调用方记 missing)。
+    """
+    for i in range(len(path) - 1, 0, -1):
+        parent = path[:i]
+        pentry = index.get(parent)
+        if not pentry or pentry[0] != 'container':
+            continue
+        p_i = pentry[1]
+        content, eol = _split_eol(lines[p_i])
+        p_indent = len(content) - len(content.lstrip())
+        new_indent = p_indent + 2
+        new_line = ' ' * new_indent + path[-1] + ': ' + _render(value)
+        inserted.append((p_i, new_line + (eol or '\n')))
+        return True
+    return False
+
+
 def write_config_preserving_comments(cfg_path, changes):
     """只替换 changes 中指定字段，其余内容（含注释）原样保留
 
@@ -233,38 +257,48 @@ def write_config_preserving_comments(cfg_path, changes):
 
     to_replace = {}                 # 行号 -> 新行内容
     to_delete = set()               # block 列表被替换成单行后需要删除的旧行
+    inserted = []                    # (原行号, 新行内容): 在祖先容器行后插入缺失字段
     missing = []
 
     for path, value in changes.items():
         entry = index.get(path)
-        if entry is None:
-            missing.append('.'.join(path))
-            continue
-        kind, i = entry
-        content, eol = _split_eol(lines[i])
-        indent = len(content) - len(content.lstrip())
-        new_line = ' ' * indent + path[-1] + ': ' + _render(value)
-        if kind == 'container':
-            # 原字段是多行嵌套块，而 _render 对任何取值都只产出**单行**，
-            # 故必须把原有子行整块删除，否则残留的缩进行会让 YAML 结构错乱
-            # （如 `engine: null` 写成 `engine: {name: slimeface}`，或反过来收敛为 null）。
-            # 注意：块内部更深缩进的注释会一并被吞掉，这是「替换整块」语义的固有代价。
-            end = _block_end(lines, i, indent)
-            to_delete.update(range(i + 1, end))
+        if entry is not None:
+            kind, i = entry
+            content, eol = _split_eol(lines[i])
+            indent = len(content) - len(content.lstrip())
+            new_line = ' ' * indent + path[-1] + ': ' + _render(value)
+            if kind == 'container':
+                # 原字段是多行嵌套块，而 _render 对任何取值都只产出**单行**，
+                # 故必须把原有子行整块删除，否则残留的缩进行会让 YAML 结构错乱
+                # （如 `engine: null` 写成 `engine: {name: slimeface}`，或反过来收敛为 null）。
+                # 注意：块内部更深缩进的注释会一并被吞掉，这是「替换整块」语义的固有代价。
+                end = _block_end(lines, i, indent)
+                to_delete.update(range(i + 1, end))
+            else:
+                # leaf 也未必只有一行: flow 集合允许跨行书写, 只换首行会留下孤立续行。
+                end = _flow_end(lines, i)
+                to_delete.update(range(i + 1, end))
+            to_replace[i] = new_line + eol
         else:
-            # leaf 也未必只有一行: flow 集合允许跨行书写, 只换首行会留下孤立续行。
-            end = _flow_end(lines, i)
-            to_delete.update(range(i + 1, end))
-        to_replace[i] = new_line + eol
+            # 字段在文件中不存在: 尝试在已存在的祖先容器内新建(仅单级缺失,
+            # 如新增嵌套字段 crawler.cookies 而原 config.yml 无此块)。
+            if not _try_insert_missing(lines, index, inserted, path, value):
+                missing.append('.'.join(path))
 
     out_lines = []
     for i, line in enumerate(lines):
         if i in to_delete:
             continue
         out_lines.append(to_replace.get(i, line))
+        # 在该原行之后插入缺失的新字段(基于原行号定位, 不受前面替换/删除影响)
+        for ins_i, ins_line in inserted:
+            if ins_i == i:
+                out_lines.append(ins_line)
 
     _atomic_write(cfg_path, ''.join(out_lines))
-    return len(to_replace), missing
+    # 写入计数要包含「新建的缺失字段」行(inserted), 否则 confz 热重载会因 n==0 被跳过,
+    # 表现为「文件已写入但运行时未生效」
+    return len(to_replace) + len(inserted), missing
 
 
 def _atomic_write(cfg_path, text):

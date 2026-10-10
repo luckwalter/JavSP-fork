@@ -55,6 +55,7 @@ crawler:
         - javdbapi
         - javdatabase
         - javmenu
+        - javfree          # v0.2.6: javfree.me 番号库(WordPress), 日本出口下可达, 补位已废/被墙老源
     fc2: [fc2, avsox, javdb, javmenu, fc2ppvdb]
     cid: [fanza]
     getchu: [dl_getchu]
@@ -76,6 +77,8 @@ crawler:
   normalize_actress_name: true
   # 刮削时的最大并发爬虫数(线程池大小)，默认 5。调大可提速但更易触发站点风控/打满出口带宽
   max_concurrency: 5
+  # 各渠道浏览器 Cookie(供反爬墙站点携带, 如 javbus 年龄验证); 通过 WEBUI「渠道监控」页配置
+  cookies: {}
 
 ################################
 # 配置整理时的命名规则

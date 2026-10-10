@@ -6,6 +6,54 @@
 
 ---
 
+## v0.2.6（2026-10-10）
+
+**新增 javfree 番号补充源（第 22 个刮削通道）**
+
+起因：跨项目研究 `metatube-server-fork` 的 37 个 provider 后发现，两边真正重叠的番号库只有 8 个，
+而 `javfree`（javfree.me，番号聚合检索站）是 JavSP 当前缺失的补充源。其实现为纯 Python 爬虫、
+零新依赖（lxml 本就是正式依赖），可作为候选移植。经实测 javfree.me 在 NAS 的 squid 出口下可达、
+且解析结构清晰，故移植为本项目第 22 个通道。
+
+改动：
+- `javsp/web/javfree.py`（新增）：实现 `parse_data(movie)`，按番号搜索结果页精确匹配（忽略横线
+  差异）后进入详情页，解析 title（剥离 `[IPX-001]` 前缀）、cover（取正文首图
+  `cf.javfree.me/HLIC/{id}.jpg`，已验证 200 image/webp）、actress（过滤非 ASCII 噪声标签）、
+  preview_pics（正文图片集）；找不到番号匹配或详情页缺失时抛 `MovieNotFoundError`，不覆盖
+  `movie.dvdid`。
+- `config.py`：`CrawlerID` 枚举加 `javfree = 'javfree'`。
+- `health.py`：`DOMAIN_HINTS` 加 `'javfree': 'javfree.me'`。
+- `config.yml`：`crawler.selection.normal` 列表末尾加 `- javfree`（作为番号补充源兜底）。
+
+验证：
+- 本地经 squid（日本出口）实测：搜索页 / 详情页均 200；title 剥离正确（`女子校生便所交際…妃月るい`）、
+  actors 取 `['妃月るい']`、cover 取真实首图、preview_pics 14 张。
+- NAS 容器内 `docker cp` 部署后，渠道监控页出现 javfree 行；经 squid 出口切换至稳定节点后探测转绿，
+  实刮 `IPX-001` 经服务同款代理配置取数成功。
+
+## v0.2.5（2026-10-09）
+
+**渠道 Cookie 配置 UI（页面内粘贴 JSON，随 config.yml 持久化，热重载生效）**
+
+起因：此前 javbus 的浏览器 cookie 靠外挂文件 `/etc/javsp/javbus_cookies.json`（需手动 sftp
+进挂载卷 + docker restart），既不内聚也不便维护。改为在「渠道监控」页面为每个支持 cookie 的
+渠道提供「配置 Cookie」按钮，弹窗内粘贴 Cookie-Editor 导出的 JSON 即可，配置与其它持久化
+配置同存 config.yml，保存后立即生效，无需重启。
+
+改动：
+- `config.py`：`Crawler` 新增 `cookies: Dict[str, list]`（channel_id → Cookie-Editor 精简数组）。
+- `javbus.py`：删除外挂文件逻辑，运行时从 `Cfg().crawler.cookies.get('javbus')` 读取
+  （数组转 {name: value} 给 requests；未配置回退默认 age=verified），热重载即生效。
+- `server.py`：新增集合 `COOKIE_CAPABLE = {'javbus'}`（未来加源只改此处）；`/api/channels`
+  每行附 `cookie_supported` 标记；新增 `GET/PUT /api/channels/{source}/cookie`，保存复用
+  既有「保注释写回 + 热重载」机制（只替换该渠道字段，不影响其它渠道）。
+- 前端 `ChannelsView.vue`：渠道列加「配置Cookie」按钮，`!cookie_supported` 置灰禁用；弹窗内
+  textarea 粘贴 JSON + Cookie-Editor 操作指引 + 保存/清空，保存后提示已生效。
+
+验证：
+- 前端 `vite build` 通过；容器内 import 无错；`/api/channels` 返回 `cookie_supported`
+  （javbus=true，其余 false）；PUT 写回 config.yml 并热重载生效，GET 回显一致。
+
 ## v0.2.4（2026-10-09）
 
 **移除 `network.proxy_free` 功能（按站点镜像/免代理地址）**

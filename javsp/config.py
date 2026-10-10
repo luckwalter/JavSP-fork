@@ -1,6 +1,6 @@
 from argparse import ArgumentParser, RawTextHelpFormatter
 from enum import Enum
-from typing import List, Literal, TypeAlias, Union
+from typing import Dict, List, Literal, TypeAlias, Union
 from confz import BaseConfig, CLArgSource, EnvSource, FileSource
 from pydantic import ByteSize, ConfigDict, Field, NonNegativeInt, PositiveInt
 from pydantic_extra_types.pendulum_dt import Duration
@@ -42,6 +42,7 @@ class CrawlerID(str, Enum):
     prestige = 'prestige'
     arzon = 'arzon'
     arzon_iv = 'arzon_iv'
+    javfree = 'javfree'   # v0.2.6 新增: javfree.me 番号库(WordPress), 日本出口下可达, 补位已废/被墙老源
 
 class Network(BaseConfig):
     # 保底: 旧配置若残留 proxy_free 等已废弃字段, 忽略而非整体校验失败(不影响其它功能)
@@ -123,6 +124,10 @@ class Crawler(BaseConfig):
     use_javdb_cover: UseJavDBCover
     normalize_actress_name: bool
     max_concurrency: int = Field(5, ge=1, le=32)  # 刮削并发上限(各爬虫线程池大小), 防止瞬时全开打爆出口/代理
+    # 各渠道浏览器 cookie(供反爬墙站点携带, 如 javbus 年龄验证)。
+    # 值为 Cookie-Editor 导出的精简数组([{name, value}]), 随 config.yml 持久化;
+    # 运行时从 Cfg 读取, 保存后立即热重载生效, 无需 docker restart。
+    cookies: Dict[str, list] = {}
     # 上界 32: ThreadPoolExecutor(max_workers) 直接决定线程数, 设过大(如 10^7)会耗尽线程/内存
 
 class MovieDefault(BaseConfig):

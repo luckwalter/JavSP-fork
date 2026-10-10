@@ -79,8 +79,9 @@ DOMAIN_HINTS = {
     'jav321': 'jav321.com', 'javbus': 'javbus.com', 'javdb': 'javdb.com',
     'javdbapi': 'jdforrepam.com', 'javdatabase': 'javdatabase.com',
     'javlib': 'javlibrary.net', 'javmenu': 'javmenu.com', 'mgstage': 'mgstage.com',
-    'njav': 'njav.tv', 'prestige': 'prestige-av.com', 'arzon': 'arzon.jp',
+    'njav': 'njav.tv', 'prestige': 'prestige-av.com',     'arzon': 'arzon.jp',
     'arzon_iv': 'arzon.jp',
+    'javfree': 'javfree.me',
 }
 
 STATUS_TEXT = {

@@ -12,7 +12,7 @@ import threading
 import hashlib
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -258,6 +258,11 @@ def api_auth_logout(request: Request, response: Response):
 
 # --------------------- 渠道健康监控(熔断) ---------------------
 
+# 支持浏览器 cookie 配置的渠道(目前仅 javbus 需要携带 cookie 绕过年龄验证墙)。
+# 未来若其它源也需要, 只需在此集合加渠道 ID —— 前端据此启用「配置 Cookie」按钮。
+COOKIE_CAPABLE = {'javbus'}
+
+
 def _sources_with_health(m) -> dict:
     """把刮削结果里的各站点摘要并入渠道健康/熔断状态
 
@@ -280,6 +285,9 @@ def api_channels():
     附带总体摘要, 前端可一眼看出"有几个源坏了"。
     """
     rows = channel_health.overview(include_inactive=True)
+    for r in rows:
+        # 前端据此启用/置灰「配置 Cookie」按钮(仅支持 cookie 的渠道可点)
+        r['cookie_supported'] = r['source'] in COOKIE_CAPABLE
     active = [r for r in rows if r['active']]
     return {
         'sources': rows,
@@ -309,6 +317,100 @@ def api_channels_check(sources: Optional[List[str]] = None):
     except Exception as e:      # noqa: BLE001
         raise HTTPException(status_code=500, detail=f'探活失败: {channel_health._sanitize(str(e))}')
     return {'sources': rows, 'summary': channel_health.summary_for_log()}
+
+
+# --------------------- 渠道 Cookie 配置 ---------------------
+
+class ChannelCookieRequest(BaseModel):
+    """保存某渠道的浏览器 cookie
+
+    cookie_json 接受三种形态:
+    - Cookie-Editor 导出的 JSON 文本(数组): '[{"name":"PHPSESSID","value":"..."}]'
+    - 已解析的数组对象: [{"name":..,"value":..}]
+    - 纯对象(已转好的 {name: value}): {"PHPSESSID": "..."}
+    仅提取 name/value 精简存储, 其它字段(domain/secure 等)丢弃。
+    """
+    cookie_json: Any
+
+
+@app.get('/api/channels/{source}/cookie')
+def api_channel_cookie_get(source: str):
+    """读取某渠道当前配置的 cookie（供前端弹窗回显/编辑）
+
+    注意：cookie 含会话令牌, 本接口明文返回给已登录的前端用于编辑,
+    与翻译 api_key 同属单用户内网工具的合理暴露范围。
+    """
+    if source not in COOKIE_CAPABLE:
+        raise HTTPException(status_code=404, detail=f'渠道 {source} 不支持 cookie 配置')
+    try:
+        arr = (Cfg().crawler.cookies or {}).get(source) or []
+        return {'source': source, 'supported': True, 'cookie': arr, 'count': len(arr)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'读取 cookie 失败: {e}')
+
+
+@app.put('/api/channels/{source}/cookie')
+def api_channel_cookie_put(source: str, req: ChannelCookieRequest):
+    """保存某渠道的浏览器 cookie, 写回 config.yml 并立即热重载(无需重启)
+
+    清空该渠道 cookie 请传空数组 `[]`(将回退到默认 age=verified 尽力取数)。
+    """
+    if source not in COOKIE_CAPABLE:
+        raise HTTPException(status_code=404, detail=f'渠道 {source} 不支持 cookie 配置')
+
+    # 1) 解析(文本 JSON / 数组 / 对象)
+    raw = req.cookie_json
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f'cookie JSON 解析失败: {e}')
+
+    # 2) 归一化为精简数组 [{name, value}]
+    try:
+        if isinstance(data, dict):
+            cookies = [{'name': str(k), 'value': str(v)} for k, v in data.items()]
+        elif isinstance(data, list):
+            cookies = []
+            for item in data:
+                if isinstance(item, dict) and item.get('name') is not None:
+                    cookies.append({'name': str(item['name']), 'value': str(item.get('value'))})
+        else:
+            raise ValueError('cookie 必须是 JSON 数组或对象')
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f'cookie 格式不合法: {e}')
+
+    # 3) 写回 config.yml 的 crawler.cookies(整块), 并热重载
+    #    用整块覆盖而非 diff 递归到子键: 原 config.yml 可能根本没有 cookies 块,
+    #    write_config_preserving_comments 对「不存在的嵌套字段」会在 crawler 容器内新建。
+    with config_transaction():
+        try:
+            current = Cfg().model_dump(mode='json')
+            old_cookies = (current.get('crawler') or {}).get('cookies') or {}
+            # 保留其它渠道的 cookie, 只替换当前渠道(清空时 cookies=[])
+            new_cookies = {k: v for k, v in old_cookies.items() if k != source}
+            new_cookies[source] = cookies
+            changes = {('crawler', 'cookies'): new_cookies}
+            Cfg.model_validate(current)      # 仅校验原结构合法
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f'配置校验失败: {e}')
+        cfg_path = _config_file_path()
+        try:
+            res = apply_config_changes(cfg_path, changes)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f'写入配置失败: {e}')
+    if res.get('rolled_back'):
+        raise HTTPException(
+            status_code=500,
+            detail=f'新配置未能加载，已自动回滚 config.yml 与运行时配置。原因：{res["error"]}')
+
+    if res['written'] == 0:
+        note = '未写入 config.yml（字段未变化或路径定位失败）'
+    elif res['reloaded']:
+        note = '已写入 config.yml 并立即生效，无需重启'
+    else:
+        note = '已写入 config.yml，但热重载未成功，需重启服务后生效'
+    return {'status': 'applied' if res['reloaded'] else 'written', 'source': source,
+            'count': len(cookies), 'reloaded': res['reloaded'], 'note': note}
 
 
 @app.get('/api/browse')

@@ -129,6 +129,24 @@ export async function putConfig(cfg) {
   return r.json()
 }
 
+// 读取某渠道当前配置的 cookie（供渠道监控页弹窗回显/编辑）
+export async function getChannelCookie(source) {
+  const r = await request('/api/channels/' + encodeURIComponent(source) + '/cookie')
+  if (!r.ok) throw new Error(await readDetail(r, '读取 cookie 失败'))
+  return r.json()
+}
+
+// 保存某渠道的浏览器 cookie（文本 JSON / 数组 / 对象均可），写回 config.yml 并热重载
+export async function putChannelCookie(source, cookieJson) {
+  const r = await request('/api/channels/' + encodeURIComponent(source) + '/cookie', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cookie_json: cookieJson }),
+  })
+  if (!r.ok) throw new Error(await readDetail(r, '保存 cookie 失败'))
+  return r.json()
+}
+
 // 消费 SSE 流(POST + ReadableStream), onEvent 收到每个 data 事件
 export function scrapeStream(payload, onEvent) {
   return consumeSSE(BASE + '/api/scrape', payload, onEvent)
