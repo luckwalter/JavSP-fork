@@ -48,7 +48,7 @@ server = "javsp.server:entry"
 
 [[tool.poetry.source]]
 name = "mirrors"
-url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
+url = "https://pypi.org/simple/"
 priority = "primary"
 
 
