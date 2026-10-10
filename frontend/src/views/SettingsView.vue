@@ -110,6 +110,21 @@ function sitesForKind(kind) {
   return out
 }
 
+// Duration 字段后端用 ISO8601 字符串(如 PT1S=1秒); 前端以“秒”展示与编辑, 保存时转回 ISO。
+// 直接 v-model.number 会因 PT1S 非数字被浏览器清空, 用户改填数字保存时后端 Duration 校验失败。
+function isoToSeconds(v) {
+  if (v == null) return 0
+  if (typeof v === 'number') return v
+  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(v))
+  if (!m) return 0
+  return (+(m[1] || 0)) * 86400 + (+(m[2] || 0)) * 3600 + (+(m[3] || 0)) * 60 + (+(m[4] || 0))
+}
+
+function secondsToIso(n) {
+  const s = Math.max(0, Math.floor(Number(n) || 0))
+  return 'PT' + s + 'S'
+}
+
 function siteLabel(name) {
   const hints = {
     javdbapi: 'javdb App API', javdatabase: 'javdatabase.com',
@@ -206,12 +221,13 @@ onMounted(load)
                 <p class="field-hint">ISO8601 时长, 如 PT10S = 10 秒</p>
               </div>
             </div>
-            <div class="field">
-              <label class="field-label">刮削间隔(秒)</label>
-              <input v-model.number="cfg.crawler.sleep_after_scraping" type="number" min="0" class="input"
-                     style="max-width: 140px;" />
-              <p class="field-hint">每部之间的等待, 调低更快但更易触发反爬</p>
-            </div>
+              <div class="field">
+                <label class="field-label">刮削间隔(秒)</label>
+                <input :value="isoToSeconds(cfg.crawler.sleep_after_scraping)" type="number" min="0" class="input"
+                       style="max-width: 140px;"
+                       @input="cfg.crawler.sleep_after_scraping = secondsToIso($event.target.value)" />
+                <p class="field-hint">每部之间的等待(单位秒), 调低更快但更易触发反爬; 0 表示不等待</p>
+              </div>
           </template>
 
           <!-- 刮削源: 遍历 normal/fc2/cid 三类, 每类独立勾选区(根治只暴露 normal 的坑) -->

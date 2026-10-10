@@ -6,6 +6,20 @@
 
 ---
 
+## v0.2.9（2026-10-10）
+
+**修复：设置页「刮削间隔」保存报 Duration 校验错误**
+
+- 现象：保存配置提示 `1 validation error for Cfg crawler.sleep_after_scraping Assertion failed ... input_value=1`。
+- 根因：`sleep_after_scraping` 字段类型是 `Duration`（`pydantic_extra_types.pendulum_dt.Duration`，
+  ISO8601 时长，实际只接受 `PT1S` 这类格式），而前端用 `v-model.number` + `type="number"` 渲染。
+  浏览器对 `<input type=number>` 无法显示字符串 `PT1S` 而清空，用户改填数字 `1` 保存时提交 int `1`，
+  后端 Duration 校验器拒绝裸 int，遂报 `assertion_error`。
+  （对比：上游作者在 `network.timeout` 已用文本输入 + ISO8601 提示正确处理，唯独该字段漏改。）
+- 修复：`SettingsView.vue` 将该字段改为「秒数」受控输入——显示时 `isoToSeconds()` 把 `PT1S` 解析成 `1`，
+  保存时 `secondsToIso()` 把秒数转回 `PT{n}S` 提交，后端 Duration 正常接受；`0` 表示不等待。
+  同时补充 `isoToSeconds`/`secondsToIso` 两个工具函数。
+
 ## v0.2.8（2026-10-10）
 
 **改进：WEBUI 两处收敛（监控页 cookie 按钮 + 设置页刮削源分区）**
