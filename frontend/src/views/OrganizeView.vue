@@ -72,12 +72,15 @@ async function organizeOne(movie) {
 
   running.value = true
   try {
-    await api.organizeStream(movie.guid, (d) => {
-      if (d.done) {
-        results.value = { ...results.value, [movie.guid]: { ok: true, path: d.saved_path || d.movie_path || '完成' } }
+      await api.organizeStream(movie.guid, (d) => {
+      // 后端 organize 完成事件是 {type:'result'}, 错误是 {type:'error'} —— 没有 d.done 字段
+      if (d.type === 'result') {
+        const path = (d.result && (d.result.saved_path || d.result.movie_path)) || '完成'
+        results.value = { ...results.value, [movie.guid]: { ok: true, path } }
+        load()  // 刷新 organized 真实态: 使按钮变"已落盘"并禁用, 避免重复整理
       }
-      if (d.error) {
-        results.value = { ...results.value, [movie.guid]: { ok: false, error: d.error } }
+      if (d.type === 'error') {
+        results.value = { ...results.value, [movie.guid]: { ok: false, error: d.msg } }
       }
     })
     return true
@@ -225,15 +228,18 @@ onMounted(load)
                     <span v-if="results[m.guid].ok" class="pill pill--success">已写入</span>
                     <span v-else class="pill pill--danger" :title="results[m.guid].error">失败</span>
                   </template>
+                  <span v-else-if="m.organized" class="pill pill--success">已落盘</span>
                   <span v-else class="dim">—</span>
                 </td>
                 <td>
                   <button
-                    v-if="m.scraped"
+                    v-if="m.scraped && !results[m.guid]?.ok && !m.organized"
                     class="btn btn--sm btn--danger"
                     :disabled="running"
                     @click="organizeOne(m)"
                   >整理</button>
+                  <span v-else-if="results[m.guid]?.ok || m.organized" class="pill pill--success">已落盘</span>
+                  <span v-else class="dim">—</span>
                 </td>
               </tr>
             </tbody>

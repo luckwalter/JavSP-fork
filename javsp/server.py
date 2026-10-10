@@ -466,6 +466,26 @@ def api_browse(path: Optional[str] = None):
     }
 
 
+def _is_organized(movie) -> bool:
+    """基于磁盘真实产物判定影片是否已整理落盘, 不依赖易失的会话状态。
+
+    整理落盘(core.organize_movie)会创建 save_dir 并写入 NFO/封面/改名后的视频。
+    只要这些产物存在其一, 即认为已落盘 —— 这样即便页面刷新、重进 OrganizeView,
+    也能从磁盘真实状态还原“已落盘”标记, 而不是退回误导性的横线。
+    """
+    sd = getattr(movie, 'save_dir', None)
+    if not sd or not os.path.isdir(sd):
+        return False
+    video_exts = ('.mp4', '.mkv', '.avi', '.wmv', '.ts', '.iso', '.rmvb', '.mov', '.m2ts')
+    for name in os.listdir(sd):
+        low = name.lower()
+        if low.endswith('.nfo') or low in ('poster.jpg', 'fanart.jpg'):
+            return True
+        if os.path.splitext(low)[1] in video_exts:
+            return True
+    return False
+
+
 @app.post('/api/scan')
 def api_scan(req: ScanRequest):
     root = req.path
@@ -485,6 +505,7 @@ def api_scan(req: ScanRequest):
             'data_src': m.data_src,
             'files': m.files,
             'scraped': m.info is not None,
+            'organized': _is_organized(m),
         })
     return {'count': len(out), 'movies': out}
 
@@ -498,6 +519,7 @@ def api_movies():
         'data_src': m.data_src,
         'files': m.files,
         'scraped': m.info is not None,
+        'organized': _is_organized(m),
     } for m in TASKS.values()]
 
 

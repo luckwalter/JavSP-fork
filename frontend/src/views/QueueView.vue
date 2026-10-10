@@ -81,7 +81,7 @@ async function run(withOrganize) {
             { index: d.index, avid: d.avid, ok: d.ok, title: d.title, sources: d.sources },
           ]
         }
-        if (d.done) done.value = d.done
+        if (d.type === 'all_done') done.value = { success: d.success, fail: d.fail, total: d.total }
       },
     )
   } catch (e) {

@@ -154,4 +154,5 @@ debug_*.py
 tmp_*.py
 *.local.py
 .local_*.py
+smoke_tasks.py
 

@@ -112,6 +112,13 @@ function confirmBrowse() {
   browserVisible.value = false
 }
 
+// 跳转前把勾选的影片写入队列存储: 否则 QueueView 的 guids 永远为空、
+// 「仅刮削」按钮保持 disabled、刮削请求根本不会发出(实测表现=点了没反应)。
+function goQueue() {
+  saveState('queueGuids', selectedGuids.value)
+  emit('navigate', 'queue')
+}
+
 onMounted(() => {
   // 默认目录指向允许浏览的根(通常是 /data, 即容器内媒体目录)。
   // 已有持久化值或已选过则不覆盖 —— 用户的选择优先。
@@ -174,7 +181,7 @@ defineExpose({ scanPath, movies, selectedGuids, doScan })
         </span>
         <div class="toolbar-spacer"></div>
         <button class="btn" :disabled="!selectedGuids.length"
-                @click="emit('navigate', 'queue')">
+                @click="goQueue">
           去刮削 ({{ selectedGuids.length }})
         </button>
       </div>

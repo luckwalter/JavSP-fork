@@ -6,6 +6,15 @@
 
 ---
 
+## v0.2.10（2026-10-11）
+
+**修复：整理落盘状态持久化 + SSE 完成事件判定（3 处回归修复）**
+
+- 整理结果状态持久化：`OrganizeView` 的「整理结果」列原本依赖前端内存态 `results`，刷新或重进页面即清空，已落盘的影片会误导性地显示横线 `—`。改为后端基于磁盘真实产物判定 `organized`（`server.py` 新增 `_is_organized(movie)`：检查 `save_dir` 下是否存在 `.nfo` / `poster.jpg` / `fanart.jpg` / 改名后的视频文件之一），`GET /api/movies` 与扫描接口返回均带上该字段；前端整理按钮改为优先看会话内 `results[m.guid].ok`、以 `m.organized` 兜底，点完整理立即置灰，刷新后仍保持「已落盘」。
+- 扫描路由回归修复：上版加 `_is_organized` 时误把 `@app.post('/api/scan')` 装饰器贴到该函数，真正的 `api_scan` 失去路由，前端 `POST /api/scan` 只传 JSON body 无 query 参数，被 FastAPI 当成必填查询参数而返回 `422 query.movie: Field required`（表现为「扫描失败」）。已把装饰器归还 `api_scan`，并在容器内实测扫描链路：`SCAN_BADPATH 400` / `SCAN_DATA 200 count 2038`。
+- 整理按钮立即置灰（真正根因）：`organizeOne` 回调此前用 `if (d.done)` 判定完成，但后端 organize SSE 完成事件发的是 `{type:'result'}`、错误是 `{type:'error'}`，**从不发 `done` 字段** → 该分支永远不成立，`results` 从不写入 `ok` → 点完「整理选中项」按钮不置灰、须手动刷新。改为 `d.type === 'result'` 写成功、`d.type === 'error'` 写失败。
+- 队列统计修复（同源）：`QueueView` 用 `if (d.done)` 判 batch 完成，后端发的是 `all_done`，导致「成功/失败」计数恒为 0。改为 `d.type === 'all_done'` 写统计。
+
 ## v0.2.9（2026-10-10）
 
 **修复：设置页「刮削间隔」保存报 Duration 校验错误**
