@@ -301,6 +301,12 @@ def api_channels():
             'total': len(rows),
             'active': len(active),
             'ok': sum(1 for r in active if r['status'] == 'ok'),
+            # 配置里勾了、但源本身用不了(被封/需真人校验/前端渲染/站点失效)。
+            # 与 not_found 有本质区别: 那类源"能用, 只是这部片子没收录", 会一直参与刮削;
+            # 这类源再刮多少次都是白费, 应当提示用户去换代理、配 Cookie 或关闭该源。
+            'unusable': sum(1 for r in active if not r.get('usable', True)),
+            'unusable_names': [r['source'] for r in active
+                               if not r.get('usable', True)],
             'tripped': sum(1 for r in active if r['breaker'] == 'open'),
             'unchecked': sum(1 for r in active if r['status'] == 'unchecked'),
             'skipped_names': [r['source'] for r in active

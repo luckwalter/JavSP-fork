@@ -35,7 +35,9 @@ import logging
 import re
 import threading
 import time
+from contextvars import ContextVar
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit
 
 import requests
 from requests.exceptions import (
@@ -116,6 +118,14 @@ SOURCE_STATUS_OVERRIDE = {
     'avwiki': ('source_defunct',
                '该站不是番号库(实测标题为"AV女優の名前が知りたい!"女优名字查询站), '
                '没有影片详情页, 搜索页返回 404, 对刮削无意义'),
+    # javbus: 站点可连通(200), 但**所有番号都返回同一个年龄/驾照验证页**
+    # (实测 <title> = "Age Verification JavBus", 链接指向 /doc/driver-verify,
+    #  不同番号响应字节数完全相同 21344)。已配置的 Cookie(PHPSESSID/existmag)
+    # 无法通过这道验证, 表现为一律 MovieNotFoundError —— 会被误判成"可达但未收录",
+    # 让主人以为是番号问题。该站已要求**驾照(driver-verify)验证**, 静态抓取过不去。
+    'javbus': ('source_defunct',
+               '站点要求驾照/年龄验证(driver-verify), 任意番号均返回同一个验证页; '
+               '已配置的 Cookie 无法通过, 建议关闭该源或改用其它源'),
 }
 
 STATUS_TEXT = {
@@ -125,16 +135,21 @@ STATUS_TEXT = {
     'duplicate': '可达但结果重复(不熔断)',
     'code_mismatch': '番号不适用(不熔断)',
     'outage': '出口整体故障(不熔断)',
-    # 站点自身"不可用"的两类, 均不熔断(重试也没意义, 又不是出口或网络问题):
-    'client_rendered': '前端渲染·静态刮削不可用(不熔断)',
-    'source_defunct': '站点已失效/非番号库(不熔断)',
+    # 站点自身"不可用"的两类。这两个状态**都会让刮削跳过该源**(见 is_tripped),
+    # 所以文案里不再写"(不熔断)" —— 那是内部实现细节, 反而让人以为还能继续用。
+    'client_rendered': '前端渲染·无法静态刮削',
+    'source_defunct': '站点已失效/非番号库',
     'timeout': '超时',
     'dns_error': 'DNS 解析失败',
     'tls_error': 'TLS/证书校验失败',
     'network_error': '网络不可达',
     'http_error': 'HTTP 错误',
     'blocked': '被反爬拦截',
-    'geo_blocked': '地区版权封锁',
+    # 三类封禁的处置方式不同, 文案必须写明**真实原因 + 怎么解**, 否则用户看到
+    # 一堆"被拦截/IP被封"却不知道该换地区代理还是换 IP(实测踩过)。
+    'ip_banned': 'IP 被封禁(需换代理 IP)',
+    'geo_blocked': '地区版权封锁(需换日本等地区代理)',
+    'challenge_required': '需人机验证(浏览器可过)',
     'credential_error': '缺少凭据',
     'error': '内部错误',
     'canceled': '已取消',
@@ -149,6 +164,9 @@ STATUS_TEXT = {
 _TRIP_STATUSES = frozenset({
     'timeout', 'dns_error', 'tls_error', 'network_error', 'http_error',
     'blocked', 'geo_blocked', 'credential_error', 'error', 'unknown',
+    # 出口被封 / 需真人校验: 在**当前出口下**该源必然抓不到, 与 not_found 有本质区别
+    # (not_found 是"源能用, 只是这部片子没收录"), 故计入熔断, 避免每次刮削都白等超时。
+    'ip_banned', 'challenge_required',
 })
 # 可接受的"源本身没问题"状态: 只更新健康档案, 不改熔断计数
 # code_mismatch 见 _classify 的说明: 它说明站点活着, 只是探活样本番号不属于它
@@ -159,7 +177,9 @@ _HEALTHY_STATUSES = {'ok', 'not_found', 'invalid_response', 'duplicate', 'code_m
 
 # 展示优先级: 数字越小越需要用户关注(前端按此排序, 避免问题源被淹没)
 _STATUS_SEVERITY = {
-    'blocked': 0, 'geo_blocked': 0, 'credential_error': 1, 'error': 2, 'tls_error': 3,
+    # 需要主人换出口代理才能恢复, 与"站点自身坏了"不同, 故排在 blocked 之后
+    'ip_banned': 1, 'challenge_required': 2,
+    'blocked': 3, 'geo_blocked': 3, 'credential_error': 1, 'error': 2, 'tls_error': 4,
     'http_error': 4, 'network_error': 5, 'dns_error': 6, 'timeout': 7,
     'invalid_response': 8, 'duplicate': 9, 'not_found': 10, 'code_mismatch': 10,
     'outage': 10, 'canceled': 11,
@@ -171,6 +191,30 @@ _STATUS_SEVERITY = {
 # 出口整体故障的判定门槛(见 _guard_against_outage): 至少探了这么多源, 且失败占比达到此值
 OUTAGE_MIN_SOURCES = 5
 OUTAGE_FAIL_RATIO = 0.7
+
+# ---- 「这个源现在还能不能刮到数据」 ------------------------------------
+# 与 _HEALTHY_STATUSES 的区别: 那一组是"不熔断"(源没坏, 只是这部片子没收录/临时故障);
+# 这一组是**源本身用不了**, 再刮多少次都是白费 —— 面板必须如实说"不可用", 否则
+# 主人看到"参与刮削"会以为它是正常源, 反复去查为什么没数据。
+# 判定依据是**站点侧的硬性阻断**, 与出口网络无关(not_found/timeout 都不算)。
+_UNUSABLE_STATUSES = frozenset({
+    'ip_banned',            # 出口 IP/ASN 被封, 换代理 IP 才可能恢复
+    'geo_blocked',          # 地区版权封锁, 换日本等地区代理才可能恢复
+    'challenge_required',   # 需真人校验, 程序过不了
+    'client_rendered',      # 已改前端渲染, 静态抓取取不到数据
+    'source_defunct',       # 站点已失效 / 本就不是番号库
+    'credential_error',     # 缺凭据, 不配就永远失败
+})
+
+# 每种不可用状态对应的处理建议(直接展示给用户, 省去"这该怎么办"的猜测)
+_UNUSABLE_HINTS = {
+    'ip_banned': '当前出口 IP 被该站封禁(Error 1005/blocked), 需更换代理 IP 才能恢复',
+    'geo_blocked': '该站按**IP 所在地区**做版权封锁, 需换用日本等地区的代理出口',
+    'challenge_required': '需在浏览器完成人机验证, 并为该渠道配置浏览器 Cookie',
+    'client_rendered': '站点已改为前端渲染, 静态刮削无法获取数据',
+    'source_defunct': '站点已失效或本就不是番号库, 建议在设置中关闭该源',
+    'credential_error': '缺少登录凭据, 需为该渠道配置 Cookie',
+}
 
 STATE_CLOSED, STATE_OPEN, STATE_HALF_OPEN = 'closed', 'open', 'half_open'
 
@@ -187,20 +231,37 @@ _probe_stop = threading.Event()
 def _sanitize(text, limit: int = 180) -> str:
     """把异常压成安全的一行摘要: 剥掉 URL(可能含代理凭据/token/设备标识), 限长
 
-    必须同时处理两类 URL —— requests 异常里两种形态都极常见:
+    必须同时处理**三类** URL —— requests/urllib3 异常里三种形态都极常见, 漏一种
+    就等于把凭据直接写进日志与 `/api/channels`(实测踩过, 见下方注释):
       1. 带 scheme: 'https://user:pw@host/path?token=abc'
-      2. **无 scheme**: "Max retries exceeded with url: //IPX-001?token=SECRET"
-         (urllib3 拼装后的常见形态, 只写 scheme:// 正则会漏掉, token 会直接进日志/前端)
-    另外 `user:pw@host` 这种裸凭据串也一并抹掉。
+      2. **协议相对**: '//IPX-001?token=SECRET'
+      3. **path-only(单斜杠)**: 'Max retries exceeded with url: /search?PHPSESSID=SECRET'
+         —— urllib3 的真实形态是**单斜杠**, 只写 // 规则会整条漏掉(实测 token 存活)
+
+    ⚠️ 本函数的输出会经 `rec['reason']` 直接进 `/api/channels` 给前端渲染,
+    服务默认监听 0.0.0.0(容器内), 故**不能只考虑"日志好看"**, 必须真的脱敏。
     """
     if not text:
         return ''
     s = str(text)
     # 1) 带 scheme 的 URL
     s = re.sub(r'\b[a-zA-Z][a-zA-Z0-9+.-]*://\S+', '<url>', s)
-    # 2) 无 scheme 的协议相对 URL: //host/path?query —— 前面补一个哨兵以便匹配
+    # 2) 协议相对 URL: //host/path?query
     s = re.sub(r'''(?<!:)//[^\s'"<>]+''', '<url>', s)
-    # 3) 兜底: 形如 user:pass@host 的裸凭据(可能不在 URL 语法内)
+    # 3) path-only 查询串(单斜杠): "with url: /search?PHPSESSID=SECRET"
+    #    前面补哨兵以避免重复匹配 2) 已处理的部分
+    s = re.sub(r"""(?<![\w:])/(?!/)[^\s'"<>?]*\?[^\s'"<>]+""", '<url+query>', s)
+    # 4) 兜底: 任何 key=value 里带敏感键名的一律抹掉值(token/Cookie/密钥…)
+    s = re.sub(r'(?i)\b([a-z0-9_-]*(?:token|secret|session|sess|passwd|password|'
+               r'auth|cookie|key|sig|signature|phpsessid)[a-z0-9_-]*)=[^&\s\'"<>]+',
+               r'\1=<redacted>', s)
+    # 5) 代理/连接池形态: host='<内网地址>', port=<端口> —— 内网拓扑不该出进程
+    s = re.sub(r"(?i)\b(host|proxy|server)='[^']*'(?:\s*,\s*port=\d+)?", r'\1=<addr>', s)
+    # 6) 裸 IP(含内网)与本机文件路径
+    s = re.sub(r'(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?![\w.])', '<ip>', s)
+    s = re.sub(r'(?i)[A-Za-z]:[\\/][^\s\'"<]+|/(?:home|root|tmp|var|usr|etc|opt)/[^\s\'"<]+',
+               '<path>', s)
+    # 7) 形如 user:pass@host 的裸凭据(可能不在 URL 语法内)
     s = re.sub(r'\b[\w.+-]+:[\w.+-]*@[A-Za-z0-9.\-]+', '<cred>', s)
     s = re.sub(r'\s+', ' ', s).strip()
     return s[:limit]
@@ -215,11 +276,83 @@ _CODE_MISMATCH_RE = re.compile(r'Invalid\s+\w+\s+number', re.I)
 
 # 地区版权封锁: 部分站点对受限地区(如中国大陆 IP)返回 200 + 版权提示页而非硬拦截,
 # 需按页面文本识别。命中走 geo_blocked 状态(见 _classify), 便于主人快速判断"需换地区代理"。
+#
+# ⚠️ 两处踩坑教训, 词表必须精确:
+#  1. 必须覆盖**我们自己抛异常时用的中文措辞**(javdb 检测到版权页后抛
+#     '当前IP所在地区禁止访问(版权限制)...'), 否则地区封锁会被误判成 blocked;
+#  2. **绝不能包含"禁止访问"这种宽泛词** —— javdb.py 里 403/503 的**所有**分支模板都是
+#     f'JavDB: {code} 禁止访问: {url}', 匹配它等于把 CF 1010(浏览器指纹封禁)、
+#     普通 403、503 全判成"地区封锁"。而 geo_blocked 属不可用(is_tripped 恒 True 且
+#     不走半开恢复), 一次误判就永久停用该源, 按提示换日本代理也解决不了 1010。
 _GEO_BLOCK_RE = re.compile(
     r'copyright restrictions|prohibited in the country|'
-    r'版權限制|禁止了你的網路|access to this site is prohibited|'
-    r'your (internet|network) is located',
+    r'版權限制|版權限製|禁止了你的網路|access to this site is prohibited|'
+    r'your (internet|network) is located|'
+    r'版權地區|地區版權|地区版权|'
+    # javdb 地区封锁分支的专用文案(比"禁止访问"精确得多)
+    r'屏蔽了来自日本地区的IP|'
+    # 我们自己抛的中文异常里的**特征词**(取"版权限制"而非整个句子)
+    r'版权限制',
     re.I)
+
+# ---- Cloudflare 的两种"人机门槛"必须区分开(实测三站特征各异, 见下) ----
+# ① ip_banned: **出口 IP/ASN 被封禁**, 换代理即可。特征:
+#    - fc2ppvdb: 403 + "Error 1005 ... has banned the autonomous system number (ASN) your IP
+#      address is in (16509)" —— 这是**整段 ASN 封禁**, 站点专门封机房/云厂商网段;
+#    - njav:     403 + "Sorry, you have been blocked" + "Attention Required!"。
+#    二者本质相同(换个出口 IP 就能用), 所以归为同一状态。
+_IP_BAN_RE = re.compile(
+    r'error\s*1005|has banned the autonomous system number|'
+    r'you have been blocked|'
+    r'your ip (?:address )?(?:has been|is) (?:blocked|banned)',
+    re.I)
+
+# ② challenge_required: **需要过真人校验**(浏览器点一下就能进), 并不是 IP 被封。
+#    判据只用**挑战页独有**的特征: cf-mitigated 响应头(CF 明确标注这是 challenge)、
+#    "Just a moment..."、"Enable JavaScript and cookies to continue"、cf_chl_opt。
+#    ⚠️ 刻意**不含** "/cdn-cgi/challenge-platform": 那是 Cloudflare **所有错误页**都会加载的
+#    脚本路径(实测 njav/fc2ppvdb 的封禁页里也有它), 用它做判据会把封禁误判成挑战。
+_CHALLENGE_RE = re.compile(
+    r'just a moment\.\.\.|enable javascript and cookies to continue|'
+    r'cf_chl_opt|正在进行安全验证|'
+    r'验证您不是自动程序|安全服务防护',
+    re.I)
+
+
+def _classify_response(resp) -> str:
+    """按**响应内容**区分「IP 被封」与「需真人校验」
+
+    两者状态码都是 403, 不看正文一律会归成 http_error, 主人就无法判断
+    "该换代理"还是"该用浏览器过一下"。这里以正文特征判定, 比人工列举源更通用。
+
+    ⚠️ 顺序很重要: **封禁特征优先于挑战特征**。Cloudflare 的封禁页与挑战页同源模板,
+    封禁页同样会加载 challenge-platform 脚本, 若挑战判据放前面, njav(you have been
+    blocked)、fc2ppvdb(Error 1005) 都会被误判成"需真人校验"(实测踩过)。
+    """
+    if resp is None:
+        return ''
+    # Cloudflare 专用头: mitigated=challenge 明确表示"这是挑战页, 不是封禁"
+    mitigated = (resp.headers.get('cf-mitigated') or '').strip().lower()
+    text = ''
+    try:
+        # ⚠️ requests 的 `.text` 是纯 property, **不缓存**: 每次访问都重新解码, 且
+        # encoding 为 None 时会触发 apparent_encoding 的全量字符集探测。实测扫描成本
+        # 随页面体积线性增长(8 KiB→0.48ms, 2 MiB→109ms), 而 CF 的封禁/挑战特征都
+        # 在 <head> 与首屏内, 故只取前 8 KiB 足够判定, 能挡掉"误撞大错误页"的 CPU 浪费。
+        text = (resp.text or '')[:8192]
+    except Exception as exc:       # noqa: BLE001 流被消费(stream=True+iter_content)时
+        # 不能静默降级: 降级会让 CF 封禁页退化成 http_error, 于是"换代理就能好"的源
+        # 被永久熔断, 而运维看到的只是一句无用的"HTTP 错误"。至少留一条 debug 痕迹。
+        logger.debug('读取响应正文失败, 无法区分 ip_banned/challenge_required: %s',
+                     type(exc).__name__)
+        text = ''
+    # 1) 先看封禁特征(错误 1005 / you have been blocked / ASN banned)
+    if _IP_BAN_RE.search(text):
+        return 'ip_banned'
+    # 2) 再看挑战特征(cf-mitigated 头 或 挑战页正文)
+    if mitigated == 'challenge' or _CHALLENGE_RE.search(text):
+        return 'challenge_required'
+    return ''
 
 
 def _classify(exc) -> str:
@@ -245,7 +378,16 @@ def _classify(exc) -> str:
     # 4xx 会被误判成网络故障 => 好源/仅未收录的源被无谓熔断。
     if isinstance(exc, requests.exceptions.HTTPError):
         sc = getattr(getattr(exc, 'response', None), 'status_code', 0)
-        return 'http_error' if isinstance(sc, int) and sc >= 400 else 'invalid_response'
+        if isinstance(sc, int) and sc >= 400:
+            # 403 有多种成因, 必须看响应内容才分得清: 封禁(换代理) / 真人校验(手动过)
+            # / 其它。不看正文一律归 http_error, 主人就只能看到一句无用的"HTTP 错误"。
+            resp = getattr(exc, 'response', None)
+            if sc == 403:
+                by_body = _classify_response(resp)
+                if by_body:
+                    return by_body
+            return 'http_error'
+        return 'invalid_response'
     if isinstance(exc, (ReadTimeout, ConnectTimeout, Timeout)):
         return 'timeout'
     if isinstance(exc, SSLError):
@@ -298,6 +440,11 @@ def _sample_for(source: str) -> str:
 # 直连/代理/主站之间选一个)。静态值一旦与实际不符, 面板就在骗人 —— 所以探活时顺带
 # 把**真正请求到的 host** 记下来, 与静态值不符时前端高亮提示。
 _HOST_TRACKER = threading.local()
+# 探活期间的超时覆盖(仅探活线程内生效, 用 contextvar 避免污染真实刮削)。
+# 各爬虫在 import 时就把超时固化成 Cfg().network.timeout, 不靠这个覆盖的话
+# probe(timeout=) 就形同虚设(PROBE_TIMEOUT 会是死常量)。
+_probe_timeout: ContextVar[Optional[float]] = ContextVar('javsp_probe_timeout',
+                                                           default=None)
 # 钩子的安装是**进程级全局**的, 而 hosts 集合是 thread-local 的。二者必须分开管理:
 #   - 用引用计数保证"装一次、还原一次", 避免并发探活互相把对方的 spy 装回去;
 #   - _spy 必须**闭包捕获**原始 request, 不能在调用时再去读 thread-local 的 prev
@@ -308,11 +455,24 @@ _capture_depth = 0
 _original_request = None
 
 
+_ABS_URL_RE = re.compile(r'^[a-zA-Z][\w+.-]*://')
+
+
 def _host_of(url) -> str:
-    """取 URL 的 host(小写, 去掉端口); 取不到返回空串"""
+    """取 URL 的 host(小写, 剥端口与凭据); 取不到返回空串
+
+    ⚠️ 不要用 `re.match(r'://([^/?#:]+)')` 手撸 —— 实测它有两个真 bug:
+       - 'https://user:SECRET@javbus.com/' 返回 **'user'**(把 URL 用户名当主机名),
+         而这个值会经 domain_actual 送到 /api/channels, 等于把凭据送到前端;
+       - 'http://[2001:db8::1]:8080/' 返回 **'[2001'**(IPv6 被方括号截断)。
+    `urlsplit().hostname` 两者都正确。实测两者速度相当(urlsplit 1.04µs vs 正则 0.99µs,
+    相对单请求数百毫秒的网络耗时可忽略), 故选正确性优先的那个。
+    """
     try:
-        m = re.match(r'^[a-zA-Z][\w+.-]*://([^/?#:]+)', str(url))
-        return m.group(1).lower() if m else ''
+        s = url if isinstance(url, str) else str(url)
+        if not _ABS_URL_RE.match(s):
+            return ''                      # 协议相对或裸路径: requests 会自行补全, 不必处理
+        return (urlsplit(s).hostname or '').lower()
     except Exception:
         return ''
 
@@ -429,6 +589,7 @@ def _decorate(rec: dict, active: bool) -> dict:
         static_domain.split(' ')[0].lower() in h or h in static_domain.lower()
         for h in hosts)
     row['status_text'] = STATUS_TEXT.get(row['status'], row['status'])
+    # severity 供 overview() 排序(问题源最前), 不可缺失
     row['severity'] = _STATUS_SEVERITY.get(row['status'], 50)
     row['breaker_text'] = {
         STATE_CLOSED: '正常参与刮削',
@@ -437,8 +598,28 @@ def _decorate(rec: dict, active: bool) -> dict:
     }.get(row['breaker'], row['breaker'])
     row['active'] = active
     row['sample'] = _sample_for(row['source'])
-    row['hit_rate'] = (round(row['scrape_success'] / row['scrape_samples'] * 100)
-                       if row['scrape_samples'] else None)
+
+    # ---- 「配置启用」≠「实际可用」, 两者也与「是否展示命中率」正交 ----
+    # active 只反映"配置里勾没勾这个源"(active_sources 读 selection), 与健康状态无关。
+    # 于是 IP 被封 / 需人机验证 / 前端渲染 / 站点已失效的源, 在"刮削参与"列里仍显示
+    # "参与" —— 而它们每次刮削必然失败, 这个说法会误导主人以为是正常源。
+    # usable 明确回答"这个源现在还能不能刮到数据"。
+    row['usable'] = row['status'] not in _UNUSABLE_STATUSES      # 只看状态, 不掺"是否勾选"
+    row['participating'] = active and row['usable']              # 真正会参与刮削 = 勾选 且 可用
+    row['unusable_reason'] = _UNUSABLE_HINTS.get(row['status'], '') if not row['usable'] else ''
+
+    # 命中率: 仅当"**已启用且不可用**"时隐藏 —— 那才是"成功率必然 0%、展示只会
+    # 让人误以为偶发失败"的情形。
+    # ⚠️ 不可用要把 active 一并纳入: 未启用是**用户主动关掉**, 与"源用不了"是两回事,
+    # 直接置 None 会抹掉历史命中率(用户下次勾回来时正需要它判断该不该开)。
+    suppress_hit_rate = active and not row['usable']
+    if row['scrape_samples'] and not suppress_hit_rate:
+        row['hit_rate'] = round(row['scrape_success'] / row['scrape_samples'] * 100)
+    else:
+        row['hit_rate'] = None
+    # 连续失败计数同理: 不可用的源不该再提示"再失败一次就熔断"(它早就熔断了/永远不可用)
+    row['show_fail_count'] = (row['usable'] and active
+                              and row['breaker'] == STATE_CLOSED)
     return row
 
 
@@ -460,11 +641,24 @@ def overview(include_inactive: bool = True) -> List[dict]:
 
 
 def is_tripped(source: str) -> bool:
-    """该源当前是否应被刮削跳过。**刮削路径的热路径, 务必轻量**"""
+    """该源当前是否应被刮削跳过。**刮削路径的热路径, 务必轻量**
+
+    ⚠️ 这里同时覆盖两类"跳过", 因为二者对刮削的含义完全一样 —— **别去请求它**:
+      1. **熔断**(breaker=open): 临时性故障, 冷却后会自动恢复再试;
+      2. **不可用**(_UNUSABLE_STATUSES): IP 被封 / 需真人校验 / 前端渲染 / 站点已失效
+         / 缺凭据。这类**不会自己恢复**, 若不跳过, 每部影片都要在它身上白等
+         retry x timeout(实测一个源就是几十秒), 而结果必然是失败 —— 这正是主人
+         要求的"不能刮削的就不要浪费时间"。
+    之前只看 breaker, 导致面板已标"不可用"、实际刮削仍在请求的割裂。
+    """
     with _lock:
         rec = _records.get(source)
         if rec is None:
             return False                      # 未知源: 从未探活过, 照常尝试(首次运行不该全跳过)
+        # 不可用: 无视冷却直接跳过(它不会自己好), 但仍返回 False 给一次探活恢复的机会:
+        # probe() 不走 is_tripped, 所以恢复路径不受影响。
+        if rec['status'] in _UNUSABLE_STATUSES:
+            return True
         if rec['breaker'] != STATE_OPEN:
             return False
         # 冷却期到 -> 转半开, 放一个请求试探(由并行爬虫正常调用 parse_data 触发)
@@ -619,6 +813,11 @@ def probe(source: str, timeout: float = PROBE_TIMEOUT) -> dict:
     status, reason, status_code = 'unknown', '', 0
     hosts = []
     _start_host_capture()          # 顺带记录实际请求到的 host, 供面板核对展示值
+    # 让 probe 的 timeout 参数真正生效: 各爬虫在 import 时就把超时固化成
+    # Cfg().network.timeout(airav 甚至硬性抬高到 20s 下限), 若不在此处覆盖,
+    # PROBE_TIMEOUT 就是死常量 —— 用户把 network.timeout 调到 60s 时探活会整体拖到
+    # 分钟级, 定时任务持续堆积。用 contextvar 而非全局量, 避免影响真实刮削。
+    _prev_timeout = _probe_timeout.set(timeout)
     try:
         mod = __import__('javsp.web.' + source, fromlist=['parse_data'])
         movie = MovieInfo(sample)
@@ -648,6 +847,10 @@ def probe(source: str, timeout: float = PROBE_TIMEOUT) -> dict:
         # 必须在 finally 里还原: 否则一次异常就会让 requests 的钩子永久留在进程里,
         # 之后所有请求都会被计入 hosts(线程局部变量, 泄漏后无人能清理)
         hosts = _stop_host_capture()
+        try:
+            _probe_timeout.reset(_prev_timeout)
+        except Exception:       # noqa: BLE001 极端情况下不可让还原失败拖垮探活
+            pass
     elapsed = int((time.perf_counter() - started) * 1000)
 
     # 人工核实的站点现状优先于自动分类: 这些源无论怎么探都会得到
@@ -731,6 +934,16 @@ def _guard_against_outage(results: List[dict]) -> None:
                   'breaker': STATE_CLOSED, 'consecutive_failures': 0,
                   'cooldown_remaining': 0.0,
                   'breaker_text': '暂不参与判定'})
+        # ⚠️ 必须重算派生字段: usable / unusable_reason / hit_rate / show_fail_count /
+        # severity 都是 _decorate 按 status 算出来的。outage 覆盖了 status 却不同步它们,
+        # 就会出现"面板显示不参与(usable=False) 而实际会参与(is_tripped 读的是 _records
+        # 里的 status=outage -> False)"这种**面板与实际行为相反**的矛盾, 且副标题还
+        # 会残留"需换代理 IP"这类针对旧状态的错误排查建议。
+        actives = set(active_sources())
+        fresh = _decorate(_get(src), src in actives)
+        r.update({k: fresh[k] for k in ('usable', 'participating', 'unusable_reason',
+                                        'hit_rate', 'show_fail_count', 'severity',
+                                        'domain_actual', 'domain_mismatch')})
         names.append(src)
     if names:
         logger.warning(f'出口整体故障: {len(names)}/{len(results)} 个源同时失败, '
@@ -798,14 +1011,33 @@ def reset() -> None:
 
 # ---------------------------------------------------------------- 展示辅助
 
+def _is_skippable(source: str, allow: set) -> bool:
+    """**纯查询**: 该源现在会不会被刮削跳过。不改任何状态。
+
+    刻意不用 `is_tripped()` —— 它在冷却到期时会把 breaker 推进到 half_open
+    (放行一个试探请求)。而本函数服务于**展示路径**, 每部影片的结果都会调一次;
+    在这里触发状态转移等于让"渲染结果"推进了熔断状态机, 会同时放行多个试探请求,
+    破坏"半开只放一个"的并发保护, 并让 `skipped` 的取值依赖循环顺序。
+    """
+    rec = _records.get(source)
+    if rec is None:
+        return False
+    return source not in allow
+
+
 def merge_into_scrape_sources(sources: dict) -> dict:
     """把健康档案并入刮削结果的 sources, 供前端**一次渲染**
 
     刮削结果原本只有"这个源抓到了什么", 没有"这个源健康吗/是否被跳过"。合并后
     同一张表既能看到字段贡献, 也能看到熔断状态 —— 无需第二次请求。
+
+    ⚠️ allowlist 必须**在循环外算一次**: 放循环里会变成 O(n²)(每次都重建集合,
+    19 源 = 361 次加锁), 且因 is_tripped 有副作用而使 skipped 取值随循环顺序漂移。
     """
     if not isinstance(sources, dict):
         return sources
+    # 循环外算一次; 用无副作用的纯查询, 不触碰熔断状态机
+    allow = {s for s in active_sources() if not is_tripped(s)}
     out = {}
     with _lock:
         for name, data in sources.items():
@@ -814,7 +1046,9 @@ def merge_into_scrape_sources(sources: dict) -> dict:
             row['health_status'] = rec['status']
             row['health_text'] = STATUS_TEXT.get(rec['status'], rec['status'])
             row['breaker'] = rec['breaker']
-            row['skipped'] = rec['breaker'] == STATE_OPEN and name not in allowlist_names()
+            row['skipped'] = (rec['breaker'] == STATE_OPEN
+                              or rec['status'] in _UNUSABLE_STATUSES) \
+                and name not in allow
             row['trip_reasons'] = rec['consecutive_failures']
             out[name] = row
     return out

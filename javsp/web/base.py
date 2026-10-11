@@ -75,7 +75,17 @@ class Request():
         self.proxies = read_proxy()
         # False(默认)=每次请求现取最新代理, 见 _resolve_proxies; True=沿用 self.proxies 当前值
         self._proxies_pinned = False
-        self.timeout = Cfg().network.timeout.total_seconds()
+        # 探活期间 health.probe 会用 contextvar 覆盖超时(见 health._probe_timeout),
+        # 让 probe(timeout=...) 真正生效 —— 否则各爬虫 import 时固化的
+        # Cfg().network.timeout 会让 PROBE_TIMEOUT 变成死常量(实测踩过)。
+        # 这里只作为**默认值**: 探活之外完全等于原行为。
+        try:
+            from javsp.web.health import _probe_timeout as _pt
+            _override = _pt.get()
+        except Exception:
+            _override = None
+        self.timeout = (_override if _override is not None
+                        else Cfg().network.timeout.total_seconds())
         # 统一在此处注入 verify, 而不是让 40+ 个调用点各自记得传 —— 漏一个就等于
         # 该站点在 MITM 代理下静默失效。用 partial 绑定比逐处改更不易漏。
         if verify is None:

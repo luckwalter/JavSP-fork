@@ -16,12 +16,17 @@ const loading = ref(false)
 const probing = ref(false)
 const lastChecked = ref('')
 
+// 状态配色: **不可用类一律 danger(红)**, 与「被反爬拦截」同色, 视觉上就能筛出来。
+// 缺登记会回落到 info(蓝), 让人以为状态还不严重(v0.2.12 首次加这些状态时就踩过)。
 const STATUS_TYPE = {
   ok: 'success', timeout: 'warning', dns_error: 'danger', tls_error: 'danger',
   network_error: 'danger', http_error: 'danger', blocked: 'danger',
   credential_error: 'danger', error: 'danger', invalid_response: 'warning',
   not_found: 'info', duplicate: 'info', code_mismatch: 'info',
   outage: 'warning', unchecked: 'info', unknown: 'info',
+  // 不可用(源本身用不了, 刮削会被跳过) —— 与 blocked 同为红, 统一表示"别用它"
+  ip_banned: 'danger', challenge_required: 'danger',
+  client_rendered: 'danger', source_defunct: 'danger',
 }
 
 // 视图筛选: all=全部 / active=仅启用 / inactive=仅未启用
@@ -156,6 +161,20 @@ onMounted(() => load(false))
         <p class="stat-label">待检查</p>
         <p class="stat-value" style="color: var(--color-text-tertiary);">{{ summary.unchecked ?? 0 }}</p>
       </div>
+      <!-- 「已跳过」与「熔断跳过」是同一件事的两种成因: 前者源本身用不了(被封/需校验/
+           前端渲染/站点失效), 后者临时故障已熔断。两者都不会发起请求, 故合并计数,
+           避免用户以为"不可用"和"已跳过"是两种状态。 -->
+      <div v-if="summary.unusable > 0" class="stat">
+        <p class="stat-label" title="配置里已勾选, 但源本身当前用不了, 刮削会跳过">不可用(跳过)</p>
+        <p class="stat-value" style="color: var(--color-warning);">{{ summary.unusable }}</p>
+      </div>
+    </div>
+
+    <div v-if="summary.unusable > 0" class="notice notice--warning" style="margin-bottom: var(--space-4);">
+      有 {{ summary.unusable }} 个已启用渠道<b>不会参与刮削</b>
+      （{{ (summary.unusable_names || []).join('、') }}）。
+      它们不是"没收录"，而是源本身当前用不了（被封 / 需人机验证 / 已改前端渲染 / 站点已失效），
+      已从刮削流程中跳过以免浪费时间；请按各行说明处理（换代理 IP / 配置浏览器 Cookie / 在设置中关闭该源）。
     </div>
 
     <div v-if="summary.tripped > 0" class="notice notice--warning" style="margin-bottom: var(--space-4);">
@@ -227,28 +246,50 @@ onMounted(() => load(false))
               </td>
               <td><span class="pill" :class="`pill--${statusType(r)}`">{{ r.status_text }}</span></td>
               <td>
+                <!-- 刮削参与列: 结论只有两种 —— 「参与」或「不参与」。
+                     原先"跳过 / 已跳过 / 不可用 / 试探中"四个词并存, 用户分不清区别
+                     (实质都是"不会去请求这个源"), 故统一为一个词「不参与」,
+                     具体成因由下方副标题和左侧状态列说明。 -->
                 <span v-if="!r.active" class="dim">-</span>
-                <span v-else-if="r.breaker === 'open'" class="pill pill--danger">已跳过</span>
-                <span v-else-if="r.breaker === 'half_open'" class="pill pill--warning">试探中</span>
+                <span v-else-if="!r.usable" class="pill pill--danger"
+                      :title="r.unusable_reason">
+                  不参与
+                </span>
+                <span v-else-if="r.breaker === 'open'" class="pill pill--danger"
+                      title="连续失败已熔断, 冷却结束后会自动重试">不参与</span>
+                <span v-else-if="r.breaker === 'half_open'" class="pill pill--warning"
+                      title="冷却结束, 正在放一个请求试探">试探中</span>
                 <template v-else>
                   <span class="pill" :class="r.consecutive_failures > 0 ? 'pill--warning' : 'pill--success'">
                     参与
                   </span>
-                  <!-- 已经失败过但还没到熔断阈值时, 光写"参与"会让人以为一切正常,
-                       与左边"内部错误/HTTP 错误"的状态自相矛盾。把 x/2 摆出来,
-                       用户才知道"再失败一次就会被跳过"。 -->
-                  <span v-if="r.consecutive_failures > 0" class="dim" style="margin-left: 4px;">
+                  <!-- 仅对**可用**的源提示"再失败一次就会被跳过"。不可用的源永远
+                       失败, 显示 x/2 没有意义(那 2 次是被判死刑前的挣扎)。 -->
+                  <span v-if="r.show_fail_count && r.consecutive_failures > 0"
+                        class="dim" style="margin-left: 4px;">
                     失败 {{ r.consecutive_failures }}/{{ threshold }}
                   </span>
                 </template>
+                <!-- 副标题: 说明"为什么不参与", 避免只有一个红字让人不知该做什么 -->
+                <div v-if="r.active && !r.usable && r.unusable_reason" class="dim domain-note">
+                  {{ r.unusable_reason }}
+                </div>
+                <div v-else-if="r.active && r.breaker === 'open'" class="dim domain-note">
+                  连续失败已熔断, {{ Math.round(r.cooldown_remaining) }}s 后自动重试
+                </div>
               </td>
               <td class="num">{{ r.elapsed_ms ? r.elapsed_ms + ' ms' : '—' }}</td>
               <td class="num">
-                <template v-if="r.hit_rate !== null">
+                <!-- 命中率只对可用源有意义: 不可用源必然 0%, 展示成功率会让人
+                     误以为是偶发失败。后端已把这类源的 hit_rate 置为 null。 -->
+                <template v-if="r.hit_rate !== null && r.hit_rate !== undefined">
                   {{ Math.round(r.hit_rate) }}%
                   <span class="dim">({{ r.scrape_success }}/{{ r.scrape_samples }})</span>
                 </template>
-                <span v-else class="dim">暂无样本</span>
+                <span v-else class="dim"
+                      :title="r.usable ? '尚无刮削样本' : '源不可用, 成功率无意义'">
+                  {{ r.usable ? '暂无样本' : '—' }}
+                </span>
               </td>
               <td>
                 <!-- 站点列: 优先显示探活时**实际请求到**的 host; 与静态标注不一致时高亮,
