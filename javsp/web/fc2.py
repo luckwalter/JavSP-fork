@@ -1,5 +1,6 @@
 """从FC2官网抓取数据"""
 import logging
+import re
 
 
 from javsp.web.base import get_html, request_get, resp2html
@@ -56,8 +57,18 @@ def parse_data(movie: MovieInfo):
     # FC2没有制作商和发行商的区分，作为个人市场，影片页面的'by'更接近于制作商
     producer = container.xpath("//li[text()='by ']/a/text()")[0]
     genre = container.xpath("//a[@class='tag tagTag']/text()")
-    date_str = container.xpath("//div[@class='items_article_Releasedate']/p/text()")[0]
-    publish_date = date_str[-10:].replace('/', '-')  # '販売日 : 2017/11/30'
+    # 发售日: 站点改版后已不再包在 div.items_article_Releasedate 里, 而是裸的
+    # <p>販売日 : 2017/11/30</p>(实测 FC2-718323 / FC2-1254456 均如此)。
+    # 老选择器命中 0 会让 [0] 抛 IndexError, 导致整部影片解析失败、渠道监控误报"内部错误"。
+    # 先按文本特征找, 找不到再退回老结构。
+    date_node = container.xpath("//*[contains(text(), '販売日')]/text()")
+    if not date_node:
+        date_node = container.xpath("//div[@class='items_article_Releasedate']/p/text()")
+    publish_date = None
+    if date_node:
+        m = re.search(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})', date_node[0])
+        if m:
+            publish_date = '%s-%02d-%02d' % (m.group(1), int(m.group(2)), int(m.group(3)))
     preview_pics = container.xpath("//ul[@data-feed='sample-images']/li/a/@href")
 
     if Cfg().crawler.hardworking:

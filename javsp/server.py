@@ -118,6 +118,30 @@ if _allowed_hosts != ['*']:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
+def _config_file_path() -> str:
+    """解析**实际生效**的配置文件路径, 供 PUT /api/config 写回使用
+
+    原实现硬编码 `<包目录>/config.yml`, 但 confz 支持 `-c/--config` 指定其它路径。
+    二者不一致时会出现「界面提示保存成功、配置却没生效」——服务读的是 `-c` 指定的文件,
+    写的却是包目录那个: 实测挂载 `/etc/javsp/config.yml` 后, PUT 返回 applied 且
+    reloaded=true, 但 GET 读到的仍是旧值(写 A 读 B), 且容器重建后全部丢失。
+
+    改为从 confz 的 CONFIG_SOURCES 里取第一个 FileSource 的路径 —— 那就是
+    `Cfg()` 真实读取的文件。
+
+    ⚠️ 必须定义在首次调用之前: 本函数原先定义在「路由」段(调用点在其上方约 70 行),
+    Python 按模块自上而下执行, 于是启动时抛 NameError 被 try/except 吞掉,
+    会话目录静默回退到默认位置(包目录)——容器重建即丢会话。已上移到调用点之前。
+    """
+    for src in get_config_source():
+        path = getattr(src, 'file', None)
+        if path:
+            return str(path)
+    # 兜底: get_config_source 始终会 append 一个 FileSource, 走到这里说明结构变了
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
+
+
 # 会话文件跟随**实际生效的配置文件**所在目录: 那个位置通常是挂载出来的持久卷,
 # 容器重启/重建后仍在, 已登录的浏览器才不会被"重启即登出"踢下线。
 try:
@@ -191,24 +215,6 @@ def _within_browse_root(target: str) -> bool:
 
 
 # ----------------------------- 路由 -----------------------------
-def _config_file_path() -> str:
-    """解析**实际生效**的配置文件路径, 供 PUT /api/config 写回使用
-
-    原实现硬编码 `<包目录>/config.yml`, 但 confz 支持 `-c/--config` 指定其它路径。
-    二者不一致时会出现「界面提示保存成功、配置却没生效」——服务读的是 `-c` 指定的文件,
-    写的却是包目录那个: 实测挂载 `/etc/javsp/config.yml` 后, PUT 返回 applied 且
-    reloaded=true, 但 GET 读到的仍是旧值(写 A 读 B), 且容器重建后全部丢失。
-
-    改为从 confz 的 CONFIG_SOURCES 里取第一个 FileSource 的路径 —— 那就是
-    `Cfg()` 真实读取的文件。
-    """
-    for src in get_config_source():
-        path = getattr(src, 'file', None)
-        if path:
-            return str(path)
-    # 兜底: get_config_source 始终会 append 一个 FileSource, 走到这里说明结构变了
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
 
 
 @app.get('/api/health')

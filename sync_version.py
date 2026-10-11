@@ -8,16 +8,23 @@
 背景：曾出现 pyproject 已是 0.1.8，而 README 徽章 / package-lock 仍停在 0.1.1。
 本脚本把这三处纳入机械同步，避免靠人记忆。
 
-注意：前端页面显示的版本号**不来自** package.json，而是运行时从后端 /api/health 拉取，
-所以这里的同步属于工程卫生（便于打包/排查），不同步也不影响运行时正确性。
+==== 跨环境同步(2026-11 新增) ====
+**新增 `--sync-target <path>`**: 把某个目标环境里的 pyproject.toml 也对齐到当前版本。
+起因: 2026-10-11 实测踩坑 —— 部署脚本只 `docker cp` 了 *.py, **漏掉 pyproject.toml**,
+容器里的版本因此长期停在 0.2.9(界面右下角显示旧版本), 而仓库已是 0.2.11。
+这类漂移不会被本脚本默认检查发现, 所以提供显式的跨环境同步入口。
 
-用法：
-    python sync_version.py            # 执行同步（写入上述文件）
-    python sync_version.py --check    # 只校验，有任何一处不一致则以退出码 1 报错（不写入）
+用法:
+    python sync_version.py                     # 执行同步（写入上述文件）
+    python sync_version.py --check             # 只校验，有任何一处不一致则以退出码 1 报错（不写入）
+    python sync_version.py --check-target <path>   # 校验目标环境的 pyproject.toml
+    python sync_version.py --sync-target <path>    # 把目标环境的 pyproject.toml 对齐到当前版本
 """
+import argparse
 import json
 import os
 import re
+import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +46,37 @@ def read_pyproject_version():
     if not m:
         raise RuntimeError(f'在 {PYPROJECT} 中未找到 version 字段')
     return m.group(1)
+
+
+def sync_target_env(path: str, ver: str, dry_run: bool) -> int:
+    """校验/同步目标环境的 pyproject.toml 版本
+
+    path 可以是 pyproject.toml 文件本身, 也可以是包含它的目录。
+    """
+    target = path if path.endswith('.toml') else os.path.join(path, 'pyproject.toml')
+    if not os.path.isfile(target):
+        print(f'FAIL 目标环境不存在: {target}')
+        return 2
+    with open(target, 'r', encoding='utf-8', newline='') as f:
+        text = f.read()
+    m = _VERSION_RE.search(text)
+    got = m.group(1) if m else '(未找到 version 字段)'
+    if got == ver:
+        print(f'OK   目标环境 {target} = {ver}')
+        return 0
+    print(f'OUT  目标环境 {target} = {got} (仓库为 {ver})')
+    if dry_run:
+        return 1
+    # 只替换 version 行, 保留其余内容与原换行符
+    new_text, n = _VERSION_RE.subn(lambda mm: f'version = "{ver}"', text, count=1)
+    if n != 1:
+        print(f'FAIL 未能定位 version 行, 请人工检查 {target}')
+        return 2
+    shutil.copyfile(target, target + '.bak.syncver')
+    with open(target, 'w', encoding='utf-8', newline='') as f:
+        f.write(new_text)
+    print(f'DONE 目标环境 {target} -> {ver} (已备份 {os.path.basename(target)}.bak.syncver)')
+    return 0
 
 
 def _detect_newline(path, default='\n'):
@@ -133,8 +171,23 @@ TARGETS = [
 
 
 def main():
-    check_only = '--check' in sys.argv
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument('--check', action='store_true',
+                    help='只校验仓库内各文件，有不一致则以退出码 1 报错（不写入）')
+    ap.add_argument('--check-target', metavar='PATH',
+                    help='只校验目标环境（目录或 pyproject.toml 路径）的版本')
+    ap.add_argument('--sync-target', metavar='PATH',
+                    help='把目标环境的 pyproject.toml 对齐到当前版本')
+    args = ap.parse_args()
+
     ver = read_pyproject_version()
+
+    # 跨环境模式：只处理目标环境，不做仓库内同步
+    if args.check_target or args.sync_target:
+        path = args.sync_target or args.check_target
+        return sync_target_env(path, ver, dry_run=bool(args.check_target))
+
+    check_only = args.check
     print(f'单一版本源 pyproject.toml = {ver}')
 
     stale = []

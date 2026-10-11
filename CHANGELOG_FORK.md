@@ -6,6 +6,43 @@
 
 ---
 
+## v0.2.12（2026-10-11）
+
+**清理：删除死源 fc2fan + 救回 airav（迁站 airav.io）+ 新增「前端渲染 / 站点失效」两种状态归类**
+
+- **救回 airav（换站 + 重写解析，实测 status=ok）**：原 `airav.wiki` 已停服（HTTP 521），站点迁到 **airav.io**。但**两者架构完全不同，不能只换域名**：
+  - 旧站：JSON API（`/api/video/barcode/{番号}`），详情页按番号寻址，一次返回 barcode/name/description/img_url/tags/actors/publish_date/images/factories；
+  - 新站：**服务端渲染 HTML、无 JSON API**，详情页按**内部 ID** 寻址（`/video?hid=QC-BT-4732114`），番号需经搜索页 `/search_result?kw=` 定位。
+  - 已重写 `parse_data`：搜索定位 → 详情页比对番号 → JSON-LD（schema.org `VideoObject`）取标题/封面，HTML 取女优（`a[contains(@href,'/actor?id=')]`）、类型标签（`/tag?tid=`）与**发行商**（`/tag?fid=`，与标签同一机制）。
+  - ⚠️ **刻意不采信新站 JSON-LD 的 `duration` 与 `uploadDate`**：实测多部影片均为 `PT10M0S` 与「采集当天」，是采集站的占位值而非真实时长/发行日。采信会把「10 分钟」「今天」写进 NFO，故这两项留空交给其它源补。
+  - 实测：IPZZ-989 / JUR-852 / DSOD-097 / IPX-001 均解析完整（标题、女优、发行商、类型、封面），探活由 `source_defunct` 恢复为 **正常**。
+  - 已知限制：该站**不收录 FC2 番号**（`FC2-PPV-xxxxx` / 纯数字 / `FC2-` 三种写法搜索均为 0 条），FC2 影片请依赖 `fc2` / `javdb` 等源。
+- **删除 fc2fan（fc2club.top）**：实测主站只返回 493 字节、`title='Loading...'` 的壳页，站点已关停（原代码在这种情况下直接抛「站点不可用」）。已清理 6 处：爬虫实现 `javsp/web/fc2fan.py`、`CrawlerID` 枚举（20 → 19）、配置字段 `crawler.fc2fan_local_path`、`DOMAIN_HINTS` 条目、前端源列表与站点标签。
+  - **一并移除其「本地镜像」能力**：该源原本支持把 `fc2fan_local_path` 指向一个存放 `FC2-xxxx.html` 的本地目录来兜底解析下架影片。经确认本部署从未使用，故连同配置字段一并删除。
+  - **兼容性注意**：删除枚举前必须先清理运行配置 —— 挂载卷 `config.yml` 的 `selection.fc2` 里原本含 `fc2fan`，confz 会按枚举校验，不先摘掉会直接启动失败。本次已在部署脚本里前置处理。
+- **新增两种状态，避免把「站点用不了」误报成「未收录」**：
+  - `client_rendered`「前端渲染·静态刮削不可用」：站点已改为纯前端渲染，静态抓取取不到数据。实测 **avsox** 任意路径（首页/搜索/详情）都返回同一个 1520 字节空壳页（`<div id="javu-site-index"></div>` + JS 注入），浏览器能看到内容全靠 JS。
+  - `source_defunct`「站点已失效/非番号库」：**airav** 原域名 `www.airav.wiki` 已停服（HTTP 521），根域跳转到 `airav.io`（已非原站）；**avwiki**（`av-wiki.net`）经核实**根本不是番号库**，实测标题为「AV女優の名前が知りたい！」女优名字查询站，无影片详情页、搜索页返回 404。
+  - 两者均**不熔断**（重试无意义，又不是出口/网络问题），但状态文案直指原因，主人不必再像这次一样反复排查「是不是样本号不对」「是不是代理坏了」。
+  - 实现方式：`SOURCE_STATUS_OVERRIDE` 人工核实结论表 + 探活时覆盖自动分类。**不能靠异常类型自动判断** —— avsox / avwiki 抛的都是 `MovieNotFoundError`，与「该站真的没收录这部片子」完全同形。
+
+## v0.2.11（2026-10-11）
+
+**修复：javdb 女优全站解析失败 + fanza 整源改版失效 + fc2 发售日改版 + arzon 死源清理**
+
+- **javdb 女优恒为空（此前无人发现）**：新版 JavDB 不再用 `<strong>♀</strong>` 标记演员性别，改为给女优的 `<a>` 加 `class="actor-female"`。原 `genders = actors_tag.xpath("strong/text()")` **恒返回空**，导致**所有影片** `actress=[]`（表现为"每部片都没女优"，而非"这片没有"）。已改为 class 优先（`a[contains(@class,'actor-female')]/text()`）、旧符号写法兜底。
+- **javdb 演员性别配对越界**：原 `genders[all_actors.index(i)]` 按下标取，数量不齐时抛 `IndexError` 使整部影片解析失败（渠道监控误报"内部错误"）。一并改为 `zip` 顺序配对（不越界，且修正重名演员 `index()` 只返回首次位置导致的错配）。
+- **fanza 整源结构性失效（浏览器能搜到、程序却判"未收录"）**：详情页 `digital/videoa` 已 **301 迁移到 `video.dmm.co.jp`**，且为纯前端渲染（Next.js 壳，无 title/meta/正文，payload 内也无业务数据），静态解析彻底不可用；搜索页的老选择器 `//ul[@id='list']` 已归零。改造为走**仍为服务端渲染的 `mono/dvd` 通販页**，并新增 `parse_mono_dvd_page()`（标题/品番/女优/収録時間/発売日/メーカー/レーベル/シリーズ/監督/ジャンル/封面/样本图/评分）。同时修正两处：`get_urls_of_cid` 用"精确匹配优先"会把 mono 组整组漏掉（查 `ipx00120` 时 monthly 恰好字面相等），改为**精确 + 规范化合并**再排序；`_search_and_parse` 跳过所有候选后静默返回会造成「解析成功但字段全空」的假成功，改为必须显式报错。
+- **fc2 发售日改版致整部影片解析失败**：站点把发售日从 `div.items_article_Releasedate` 移到裸 `<p>販売日 : 2017/11/30</p>`，老选择器命中 0 → `[0]` 抛 `IndexError`。已改为「先按文本特征查找 → 再退回老结构」。探活样本 `FC2-1234567`（编造的号，该站根本没有，永远 `not_found`）改为真实存在的 `FC2-718323`。
+- **avsox 域名拼接错误导致完全访问不到站点**：`f'{base_url}tw/search/{x}'` 而 `base_url` 结尾无斜杠，拼出畸形域名 **`avsox.clicktw`**（表现为 `ProxyError`，极易误判为"站点已死"或"出口不通"）。已改为显式 `base_url.rstrip('/') + '/' + path.lstrip('/')`。修复后确认站点已改版为纯前端渲染（返回 1520 字节空壳页），静态抓取暂不可行。
+- **删除死源 arzon / arzon_iv**：实测 `www.arzon.jp` 连接被重置、直连超时，两者指向同一死域名。已彻底清理 6 处：爬虫实现、`CrawlerID` 枚举（22 → 20）、`base.py` 中的 arzon 专属 Referer 特判、`config.yml` 注释、前端源列表、渠道监控展示表。
+- **渠道监控「站点」信息准确性**：修正 `DOMAIN_HINTS` 中 4 处与代码不符的标注（airav 曾错标为 `javdb.com`、实为 `www.airav.wiki`；fc2 曾错标 `fc2club.com`、实为 `adult.contents.fc2.com`；fc2fan 曾标「本地镜像」、实为写死的 `fc2club.top`；javdbapi 补注为 App API 入口）。
+- **站点列改为动态显示**：探活时捕获**实际请求到的 host**（`requests` 请求层钩子）入库，面板优先显示实测地址；与静态标注不符时红色高亮并列出静态值，防将来改 `base_url` 或迁域名后展示值失真。
+- **修复 host 捕获钩子的并发递归缺陷**：初版把钩子装在 thread-local 上且在调用时动态读取原始实现，后台自动探活与手动探活并发时互相把对方的包装函数装回，导致 **全部渠道被误判为 `outage` 并触发熔断**（表象极像代理失效）。改为「进程级单一钩子 + 引用计数 + 闭包捕获原始实现」，并附本地并发压测（8 线程 / 嵌套 / 异常路径）。
+- **会话目录失效**：`server.py` 在 `_config_file_path` 定义之前就调用它，`NameError` 被 `try/except` 静默吞掉，会话目录回退到包目录而非挂载卷（容器重建即丢登录态）。已将定义上移到调用点之前。
+- **版本一致性门禁（工程改进）**：本次容器内版本漂移到 0.2.9 才被发现——根因是部署脚本只同步 `*.py`、漏了 `pyproject.toml`。`sync_version.py` 新增 `--check-target` / `--sync-target`，把**跨环境版本**纳入可机械校验的范围，避免再靠人记。
+- **废弃配置清理**：镜像（`network.proxy_free`）功能已移除，但挂载卷配置里仍残留整段镜像地址与说明注释，一并清理。
+
 ## v0.2.10（2026-10-11）
 
 **修复：整理落盘状态持久化 + SSE 完成事件判定（3 处回归修复）**
@@ -165,6 +202,16 @@ active、且 FC2 番号刮削仍会调用它们。排查发现页面只渲染了
   3. `python sync_version.py --check` —— 校验三处一致（不一致则退出码 1，可作发版门禁）
   4. 补 `CHANGELOG_FORK.md` 版本条目
   5. `commit` + `push` GitHub
+
+- **发版清单（v0.2.11 起增补：跨环境版本门禁）**：踩坑实录——本次容器内 `pyproject.toml` 长期停在 0.2.9，
+  而仓库已是 0.2.11，界面右下角显示旧版本才被发现。**根因：部署脚本只 `docker cp` 了 `*.py`，
+  漏掉 `pyproject.toml`**，而 `javsp/version.py` 的单一版本源正是它（界面版本号来自 `/api/health`，运行时读取）。
+  故增补：
+  1. 部署到容器/目标环境时，**部署清单必须包含 `pyproject.toml`**（不只是 `*.py`、前端 `dist/`）
+  2. 部署后校验：`python sync_version.py --check-target <目标环境路径>`（不一致时退出码 1）
+  3. 需要就地修复时：`python sync_version.py --sync-target <目标环境路径>`（自动备份 `.bak.syncver` 后只改 version 行）
+  4. 改完前端后必须重建 `dist/` 并同步进容器，否则运行的是旧界面（比对容器内 `index.html` 引用的
+     `index-*.js` 文件名与本地构建产物是否一致，可一眼看出漏没漏同步）
 
 ---
 

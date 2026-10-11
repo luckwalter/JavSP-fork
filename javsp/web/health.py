@@ -71,17 +71,51 @@ PROBE_TIMEOUT = 20.0           # 单源探活超时(秒)
 # 而是**真的解析出了有效标题** —— 因为很多死站会返回 200 + 壳页/跳转页, 传输层毫无异常。
 DEFAULT_SAMPLE = 'IPX-001'
 
-# 各源详情页域名, 供前端展示(便于核对是否配了镜像)。仅提示, 不参与探活。
+# 各源实际访问的站点, 供前端展示(便于核对是否配了镜像/判断当前出口能不能通)。仅提示, 不参与探活。
+#
+# ⚠️ 必须与各爬虫模块里真实使用的域名保持一致, 否则面板会误导人(历史教训):
+#   - airav 曾被错标成 'javdb.com', 实际是 www.airav.wiki —— 两个不同站点, 会让人误判为"重复源";
+#   - fc2 曾被错标成 'fc2club.com', 代码实际访问 adult.contents.fc2.com(fc2club 是 fc2fan 的镜像);
+#   - fc2fan 曾被标成 '(本地镜像)', 代码里其实是写死的 fc2club.top。
+# 下面每一项都对照 javsp/web/<源>.py 的 base_url / permanent_url / BASE_URL 逐一核对过。
+# (fc2fan 已于 0.2.12 移除: 主站 fc2club.top 实测只返回 493 字节 'Loading...' 壳页, 站点已关停)
 DOMAIN_HINTS = {
-    'airav': 'javdb.com', 'avsox': 'avsox.click', 'avwiki': 'av-wiki.net',
-    'dl_getchu': 'getchu.com', 'fanza': 'dmm.co.jp', 'fc2': 'fc2club.com',
-    'fc2fan': '(本地镜像)', 'fc2ppvdb': 'fc2ppvdb.com', 'gyutto': 'gyutto.com',
-    'jav321': 'jav321.com', 'javbus': 'javbus.com', 'javdb': 'javdb.com',
-    'javdbapi': 'jdforrepam.com', 'javdatabase': 'javdatabase.com',
-    'javlib': 'javlibrary.net', 'javmenu': 'javmenu.com', 'mgstage': 'mgstage.com',
-    'njav': 'njav.tv', 'prestige': 'prestige-av.com',     'arzon': 'arzon.jp',
-    'arzon_iv': 'arzon.jp',
+    # airav 已迁至 airav.io(旧站 www.airav.wiki 已停服 HTTP 521), 且从 JSON API 改成了
+    # 服务端渲染 HTML —— airav.py 已按新架构重写(搜索定位 + JSON-LD/HTML 解析)
+    'airav': 'airav.io',
+    'avsox': 'avsox.click',
+    'avwiki': 'av-wiki.net',
+    'dl_getchu': 'dl.getchu.com',
+    'fanza': 'dmm.co.jp',
+    'fc2': 'adult.contents.fc2.com',
+    'fc2ppvdb': 'fc2ppvdb.com',
+    'gyutto': 'gyutto.com',
+    'jav321': 'www.jav321.com',
+    'javbus': 'www.javbus.com',
+    'javdb': 'javdb.com',
+    # javdbapi 走的是 javdb 手机 App 私有 API, 与主站 javdb.com 是同一份数据、不同入口
+    'javdbapi': 'jdforrepam.com (javdb App API)',
+    'javdatabase': 'www.javdatabase.com',
     'javfree': 'javfree.me',
+    'javlib': 'www.javlibrary.com',
+    'javmenu': 'javmenu.com',
+    'mgstage': 'www.mgstage.com',
+    'njav': 'njav.tv',
+    'prestige': 'www.prestige-av.com',
+}
+
+# 人工核实的"站点现状"结论 —— 这些**无法从异常类型推断**, 必须显式记录:
+# avsox/avwiki 抛的都是 MovieNotFoundError, 与"该站真的没收录这部片子"完全同形;
+# 若交给 _classify 自动判断, 面板会显示"可达但未收录", 让主人误以为源是好的,
+# 反复排查"是不是样本号不对"(实测就绕了很大一圈)。
+# 每条都是**实测核对过**的结论(2026-10-11), 不是推测。
+SOURCE_STATUS_OVERRIDE = {
+    'avsox': ('client_rendered',
+              '站点已改为纯前端渲染: 任意路径都返回同一个 1520 字节空壳页'
+              '(内容由 JS 注入), 静态抓取取不到任何数据'),
+    'avwiki': ('source_defunct',
+               '该站不是番号库(实测标题为"AV女優の名前が知りたい!"女优名字查询站), '
+               '没有影片详情页, 搜索页返回 404, 对刮削无意义'),
 }
 
 STATUS_TEXT = {
@@ -91,12 +125,16 @@ STATUS_TEXT = {
     'duplicate': '可达但结果重复(不熔断)',
     'code_mismatch': '番号不适用(不熔断)',
     'outage': '出口整体故障(不熔断)',
+    # 站点自身"不可用"的两类, 均不熔断(重试也没意义, 又不是出口或网络问题):
+    'client_rendered': '前端渲染·静态刮削不可用(不熔断)',
+    'source_defunct': '站点已失效/非番号库(不熔断)',
     'timeout': '超时',
     'dns_error': 'DNS 解析失败',
     'tls_error': 'TLS/证书校验失败',
     'network_error': '网络不可达',
     'http_error': 'HTTP 错误',
     'blocked': '被反爬拦截',
+    'geo_blocked': '地区版权封锁',
     'credential_error': '缺少凭据',
     'error': '内部错误',
     'canceled': '已取消',
@@ -110,20 +148,24 @@ STATUS_TEXT = {
 # 原先完全不上报结果, 导致熔断器看不到死源(只见 start/成功)。
 _TRIP_STATUSES = frozenset({
     'timeout', 'dns_error', 'tls_error', 'network_error', 'http_error',
-    'blocked', 'credential_error', 'error', 'unknown',
+    'blocked', 'geo_blocked', 'credential_error', 'error', 'unknown',
 })
 # 可接受的"源本身没问题"状态: 只更新健康档案, 不改熔断计数
 # code_mismatch 见 _classify 的说明: 它说明站点活着, 只是探活样本番号不属于它
+# client_rendered / source_defunct: 站点还在但**静态抓取已不可行**(改前端渲染/已变质),
+#   重试毫无意义, 故既不熔断(免得白白禁用一个仍可人工访问的站点), 也不算"健康"。
 _HEALTHY_STATUSES = {'ok', 'not_found', 'invalid_response', 'duplicate', 'code_mismatch',
-                     'outage'}
+                     'outage', 'client_rendered', 'source_defunct'}
 
 # 展示优先级: 数字越小越需要用户关注(前端按此排序, 避免问题源被淹没)
 _STATUS_SEVERITY = {
-    'blocked': 0, 'credential_error': 1, 'error': 2, 'tls_error': 3,
+    'blocked': 0, 'geo_blocked': 0, 'credential_error': 1, 'error': 2, 'tls_error': 3,
     'http_error': 4, 'network_error': 5, 'dns_error': 6, 'timeout': 7,
     'invalid_response': 8, 'duplicate': 9, 'not_found': 10, 'code_mismatch': 10,
     'outage': 10, 'canceled': 11,
-    'unknown': 12, 'unchecked': 13, 'ok': 99,
+    # 站点还在但用不了: 需要用户知道"不是配置问题, 是站点变了", 但不紧急
+    'client_rendered': 11, 'source_defunct': 12,
+    'unknown': 13, 'unchecked': 14, 'ok': 99,
 }
 
 # 出口整体故障的判定门槛(见 _guard_against_outage): 至少探了这么多源, 且失败占比达到此值
@@ -171,6 +213,14 @@ def _sanitize(text, limit: int = 180) -> str:
 # fc2 / fc2ppvdb / dl_getchu / gyutto 各失败 1 次, 再探一轮即被跳过)。
 _CODE_MISMATCH_RE = re.compile(r'Invalid\s+\w+\s+number', re.I)
 
+# 地区版权封锁: 部分站点对受限地区(如中国大陆 IP)返回 200 + 版权提示页而非硬拦截,
+# 需按页面文本识别。命中走 geo_blocked 状态(见 _classify), 便于主人快速判断"需换地区代理"。
+_GEO_BLOCK_RE = re.compile(
+    r'copyright restrictions|prohibited in the country|'
+    r'版權限制|禁止了你的網路|access to this site is prohibited|'
+    r'your (internet|network) is located',
+    re.I)
+
 
 def _classify(exc) -> str:
     """把异常映射到状态分类(对齐 JavBoss availabilityErrorStatus 的思路)"""
@@ -182,6 +232,9 @@ def _classify(exc) -> str:
     if isinstance(exc, MovieNotFoundError):
         return 'not_found'
     if isinstance(exc, (SiteBlocked, SitePermissionError)):
+        # 地区版权封锁(如 javdb 对中国 IP 返回版权提示页)单独归类, 与"反爬拦截"区分
+        if _GEO_BLOCK_RE.search(str(exc)):
+            return 'geo_blocked'
         return 'blocked'
     if isinstance(exc, CredentialError):
         return 'credential_error'
@@ -211,6 +264,10 @@ def _classify(exc) -> str:
         return 'network_error'
     if isinstance(exc, requests.exceptions.RequestException):
         return 'network_error'
+    # 兜底: 解析类异常(在异常/壳页上硬取值越界等, 如 javdb 在地区封锁页上 xpath 越界)
+    # 应归为 invalid_response(不熔断), 否则死站/封锁页会让源被误判成"内部错误"并累计熔断。
+    if isinstance(exc, (IndexError, KeyError, AttributeError, ValueError, TypeError)):
+        return 'invalid_response'
     return 'error'
 
 
@@ -219,17 +276,88 @@ def _classify(exc) -> str:
 # 番号段的站点, 它们会直接抛 `Invalid XX number`: 那是"问错了对象", 不是站点故障。
 # (实测: 用 IPX-001 探活时 fc2 / fc2ppvdb / dl_getchu / gyutto 全部报这类错)
 _SAMPLE_BY_SOURCE = {
-    'fc2': 'FC2-1234567',
-    'fc2ppvdb': 'FC2-1234567',
+    # FC2-1234567 是编造的号, 该站根本没有 -> 永远返回 not_found, 探活形同虚设。
+    # 换成实测真实存在、且字段完整的经典号(FC2-718323 / FC2-1254456 均实测可解析出
+    # 标题/女优/封面/样本图/发售日)。
+    'fc2': 'FC2-718323',
+    'fc2ppvdb': 'FC2-718323',
     'dl_getchu': 'GETCHU-12345',
     'gyutto': 'GYUTTO-12345',
-    'fanza': 'ipx00001',        # FANZA 按 cid 查询, 形如 ssis00123(品番小写去横线)
+    'fanza': 'ipx00120',        # FANZA 按 cid 查询, 形如 ipx00120(品番小写去横线); 原 ipx00001 在 FANZA 未收录, 会永远误报"未收录"
 }
 
 
 def _sample_for(source: str) -> str:
     """挑一个该源必然支持的样本查询串"""
     return _SAMPLE_BY_SOURCE.get(source, DEFAULT_SAMPLE)
+
+
+# ---------------------------------------------------------------- 实际站点捕获
+# 面板「站点」列原先只显示 DOMAIN_HINTS 里的静态值。镜像功能虽已移除(Network.domain
+# 字段已删), 但 base_url 仍**可能**被改动或运行时兜底(javlib 的 init_network_cfg 会在
+# 直连/代理/主站之间选一个)。静态值一旦与实际不符, 面板就在骗人 —— 所以探活时顺带
+# 把**真正请求到的 host** 记下来, 与静态值不符时前端高亮提示。
+_HOST_TRACKER = threading.local()
+# 钩子的安装是**进程级全局**的, 而 hosts 集合是 thread-local 的。二者必须分开管理:
+#   - 用引用计数保证"装一次、还原一次", 避免并发探活互相把对方的 spy 装回去;
+#   - _spy 必须**闭包捕获**原始 request, 不能在调用时再去读 thread-local 的 prev
+#     (否则两个探活线程交错时会读到自己, 造成无限递归 RecursionError ——
+#      曾导致全部渠道被误判为 outage)。
+_capture_lock = threading.Lock()
+_capture_depth = 0
+_original_request = None
+
+
+def _host_of(url) -> str:
+    """取 URL 的 host(小写, 去掉端口); 取不到返回空串"""
+    try:
+        m = re.match(r'^[a-zA-Z][\w+.-]*://([^/?#:]+)', str(url))
+        return m.group(1).lower() if m else ''
+    except Exception:
+        return ''
+
+
+def _start_host_capture():
+    """开始捕获当前线程内所有请求的目标 host(进程内首次调用时才真正装钩子)"""
+    global _capture_depth, _original_request
+    with _capture_lock:
+        if _capture_depth == 0:
+            original = requests.sessions.Session.request
+
+            # ⚠️ 必须用**局部变量** original 闭包捕获, 不能在 _spy 里去读模块级
+            # _original_request: 后者在还原时会被置 None, 而嵌套/并发的还原顺序不保证,
+            # 读到 None 会抛 UnboundLocalError/TypeError, 且钩子永远装不回去。
+            def _spy(session, method, url, *args, _orig=original, **kwargs):
+                host = _host_of(url)
+                if host:
+                    bucket = getattr(_HOST_TRACKER, 'hosts', None)
+                    if bucket is not None:
+                        bucket.add(host)
+                return _orig(session, method, url, *args, **kwargs)
+
+            requests.sessions.Session.request = _spy
+            _original_request = original      # 仅用于还原时取回, 不参与 spy 内部调用
+        _capture_depth += 1
+    _HOST_TRACKER.hosts = set()
+
+
+def _stop_host_capture() -> list:
+    """停止捕获并返回本次采集到的 host 列表(去重后按字母序)"""
+    global _capture_depth, _original_request
+    hosts = sorted(getattr(_HOST_TRACKER, 'hosts', set()) or set())
+    with _capture_lock:
+        if _capture_depth > 0:
+            _capture_depth -= 1
+            if _capture_depth == 0:
+                # ⚠️ 必须先取到全局值再判断: global 声明会让 _original_request 成为
+                # 函数局部变量, 直接写在 `if ... and _original_request is not None`
+                # 条件里会在"尚未赋值"时抛 UnboundLocalError(本地并发压测实测)。
+                saved = _original_request
+                _original_request = None
+                if saved is not None:
+                    requests.sessions.Session.request = saved
+    _HOST_TRACKER.hosts = None
+    return hosts
 
 
 def _new_record(source: str) -> dict:
@@ -249,6 +377,9 @@ def _new_record(source: str) -> dict:
         'trips': 0,                  # 累计熔断次数(诊断用)
         'last_status_code': 0,
         'last_error': '',
+        # 探活时**实际请求到**的 host 列表; 与 DOMAIN_HINTS 不符时前端会高亮,
+        # 提示"展示值可能已失真"(防的是有人改了 base_url 却忘了同步展示值)
+        'hosts': [],
     }
 
 
@@ -286,7 +417,17 @@ def known_sources() -> List[str]:
 def _decorate(rec: dict, active: bool) -> dict:
     """补上前端展示所需的派生字段"""
     row = dict(rec)
-    row['domain'] = DOMAIN_HINTS.get(row['source'], '')
+    static_domain = DOMAIN_HINTS.get(row['source'], '')
+    hosts = list(row.get('hosts') or [])
+    row['domain'] = static_domain
+    row['domain_static'] = static_domain
+    # 实测 host: 优先用探活真正请求到的; 没探过(未检查)则回退到静态值
+    row['hosts'] = hosts
+    row['domain_actual'] = ', '.join(hosts) if hosts else static_domain
+    # 与静态值不符 => 展示值可能失真(有人改了 base_url / 走了镜像 / 域名迁移未同步)
+    row['domain_mismatch'] = bool(hosts) and not any(
+        static_domain.split(' ')[0].lower() in h or h in static_domain.lower()
+        for h in hosts)
     row['status_text'] = STATUS_TEXT.get(row['status'], row['status'])
     row['severity'] = _STATUS_SEVERITY.get(row['status'], 50)
     row['breaker_text'] = {
@@ -476,6 +617,8 @@ def probe(source: str, timeout: float = PROBE_TIMEOUT) -> dict:
     sample = _sample_for(source)
     started = time.perf_counter()
     status, reason, status_code = 'unknown', '', 0
+    hosts = []
+    _start_host_capture()          # 顺带记录实际请求到的 host, 供面板核对展示值
     try:
         mod = __import__('javsp.web.' + source, fromlist=['parse_data'])
         movie = MovieInfo(sample)
@@ -501,11 +644,24 @@ def probe(source: str, timeout: float = PROBE_TIMEOUT) -> dict:
         status_code = sc if isinstance(sc, int) else 0
         if status in ('not_found', 'invalid_response') and status_code >= 400:
             status = 'http_error'
+    finally:
+        # 必须在 finally 里还原: 否则一次异常就会让 requests 的钩子永久留在进程里,
+        # 之后所有请求都会被计入 hosts(线程局部变量, 泄漏后无人能清理)
+        hosts = _stop_host_capture()
     elapsed = int((time.perf_counter() - started) * 1000)
+
+    # 人工核实的站点现状优先于自动分类: 这些源无论怎么探都会得到
+    # MovieNotFoundError / 403 这类"看起来源还好"的结果, 显示出来会误导主人
+    # 去排查"样本号不对""是不是代理坏了"。实测结论见 SOURCE_STATUS_OVERRIDE。
+    override = SOURCE_STATUS_OVERRIDE.get(source)
+    if override and status != 'ok':
+        status, reason = override[0], override[1]
 
     stale = _is_stale(source, seq)
     _commit(source, seq, status, reason, elapsed, status_code, origin='active')
     with _lock:
+        if hosts:
+            _get(source)['hosts'] = hosts
         rec = _decorate(_get(source), source in set(active_sources()))
     rec['stale'] = stale
     return rec

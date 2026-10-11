@@ -1,101 +1,192 @@
-"""从airav抓取数据"""
-import re
+"""从 airav 抓取数据（2026-10 起适配新站 airav.io）
+
+==== 站点变迁 ====
+原 airav.wiki 走 JSON API(`/api/video/barcode/{番号}`), 现已停服(实测 HTTP 521)。
+新站 **airav.io 是完全不同的架构**, 不是同一套接口的镜像:
+
+  - 旧: JSON API, 详情页按番号寻址, 字段齐全(barcode/name/description/img_url/
+       tags/actors/publish_date/images/factories 一次返回)
+  - 新: **服务端渲染 HTML, 无 JSON API**; 详情页按**内部 ID**寻址
+       (`/video?hid=QC-BT-4732114`), 番号要用搜索页(`/search_result?kw=番号`)定位
+
+因此不能只换域名, 必须改为"搜索定位 -> HTML 解析 + JSON-LD 取封面"。
+
+⚠️ **新站的 JSON-LD 里有两个假字段, 不要采信**(实测 IPZZ-989 与 JUR-852 均为同值):
+   - `duration`    = 'PT10M0S'  → 采集站占位值, 与真实时长无关
+   - `uploadDate`  = 采集当天    → 不是发行日期
+故这两项**留空交给其它源补**, 只采信 name / thumbnailUrl / description。
+"""
+import json
 import logging
+import re
 from html import unescape
 
-
-from javsp.web.base import Request
+from javsp.web.base import Request, resp2html
 from javsp.web.exceptions import *
 from javsp.config import Cfg
 from javsp.datatype import MovieInfo
 
 # 初始化Request实例
-request = Request(use_scraper=True)
+request = Request()
 request.headers['Accept-Language'] = 'zh-TW,zh;q=0.9'
-# 近期airav服务器似乎不稳定，时好时坏，单次查询平均在17秒左右，timeout时间增加到20秒
-# 该下限同时供「配置热重载」读取(config_reload._refresh_crawler_requests), 避免刷新时把下限冲掉
+# 新站为普通站点(无 Cloudflare 挑战), 实测单次响应 <1.5s; 沿用 20s 下限以容忍偶发慢响应
 _TIMEOUT_FLOOR = 20
-request.timeout = max(_TIMEOUT_FLOOR, Cfg().network.timeout.total_seconds())  # 下限20s(服务器不稳); 尊重全局 network.timeout 配置取其较大者
-
+request.timeout = max(_TIMEOUT_FLOOR, Cfg().network.timeout.total_seconds())
 
 logger = logging.getLogger(__name__)
-base_url = 'https://www.airav.wiki'
+base_url = 'https://airav.io'
+permanent_url = base_url
+
+# 番号在标题/JSON-LD 里的形态: 允许 xxx-123 / FC2-PPV-1234567 / 012717_472 / 1pondo_012717_472
+_DVDID_RE = re.compile(r'[A-Za-z0-9]+[-_][A-Za-z0-9\-]+')
+
+
+def _json_ld(html):
+    """取详情页里的 schema.org VideoObject(JSON-LD)"""
+    for node in html.xpath("//script[@type='application/ld+json']"):
+        raw = (node.text or '').strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            # 站点偶尔输出带尾逗号的非法 JSON, 去掉再试
+            try:
+                data = json.loads(re.sub(r',\s*([}\]])', r'\1', raw))
+            except ValueError:
+                continue
+        for item in (data if isinstance(data, list) else [data]):
+            if isinstance(item, dict) and item.get('@type') == 'VideoObject':
+                return item
+    return {}
 
 
 def search_movie(dvdid):
-    """通过搜索番号获取指定的影片在网站上的ID"""
-    # 部分影片的ID并不直接等于番号（如012717-360），此时需要尝试通过搜索来寻找影片
-    page = 0
-    count = 1
-    result = []
-    while len(result) < count:
-        url = f'{base_url}/api/video/list?lang=zh-TW&lng=zh-TW&search={dvdid}&page={page}'
-        r = request.get(url).json()
-        # {"offset": 2460, "count": 12345, "result": [...], "status": "ok"}
-        if r['result']:
-            result.extend(r['result'])
-            count = r['count']
-            page += 1
-        else: # 结果为空，结束循环
-            break
-    # 如果什么都没搜索到，直接返回
-    if not result:
+    """用番号搜索, 返回该片在 airav.io 上的详情页地址(hid 形式)
+
+    新站搜索页为 `/search_result?kw=<番号>`, 结果条目链接形如
+    `https://airav.io/video?hid=QC-BT-4732114` —— 注意**不是**按番号寻址,
+    所以只能从搜索结果里挑出与番号匹配的那一条。
+    """
+    url = base_url.rstrip('/') + '/search_result?kw=' + dvdid
+    r = request.get(url)
+    if r.status_code == 404:
         raise MovieNotFoundError(__name__, dvdid)
-    # 排序，以优先选择更符合预期的结果（如'012717_472'对应的'1pondo_012717_472'和'_1pondo_012717_472'）
-    result.sort(key=lambda x:x['barcode'])
-    # 从所有搜索结果中选择最可能的番号，返回它的URL
-    target = dvdid.replace('-', '_')
-    for item in result:
-        # {'vid': '', 'slug': '', 'name': '', 'url': '', 'view': '', 'img_url': '', 'barcode': ''}
-        barcode = item['barcode'].replace('-', '_')
-        if target in barcode:
-            return item['barcode']
-    raise MovieNotFoundError(__name__, dvdid, result)
+    r.raise_for_status()
+    html = resp2html(r)
+    links = html.xpath("//a[contains(@href, '/video?hid=')]/@href")
+    if not links:
+        raise MovieNotFoundError(__name__, dvdid)
+
+    # 逐个候选详情页, 取回番号匹配的那一条(搜索页文本不含番号, 只能进详情页比对)
+    target = dvdid.upper()
+    for link in links:
+        if not link.lower().startswith('http'):
+            link = base_url.rstrip('/') + '/' + link.lstrip('/')
+        try:
+            cand = resp2html(request.get(link))
+        except Exception:
+            continue
+        cand_dvdid = _pick_dvdid(cand, target)
+        if cand_dvdid:
+            return link, cand_dvdid
+    raise MovieNotFoundError(__name__, dvdid, links)
+
+
+def _pick_dvdid(html, target=None):
+    """从详情页取出番号
+
+    优先取 `div.video-title` 内的 span(结构化且就是番号本身), 取不到再从 h1 里
+    抠开头的番号串。target 传入时校验是否匹配(大小写与连字符/下划线差异视作相同)。
+    """
+    dvdid = ''
+    for node in html.xpath("//div[contains(@class,'video-title')]//span"):
+        text = (node.text_content() or '').strip()
+        if text and _DVDID_RE.fullmatch(text):
+            dvdid = text
+            break
+    if not dvdid:
+        h1 = html.xpath("//div[contains(@class,'video-title')]/h1/text()")
+        if h1:
+            m = _DVDID_RE.search(unescape(h1[0]).strip())
+            if m:
+                dvdid = m.group(0)
+    if not dvdid:
+        return ''
+    if target:
+        norm = lambda s: s.upper().replace('_', '-')
+        if norm(dvdid) != norm(target):
+            return ''
+    return dvdid
 
 
 def parse_data(movie: MovieInfo):
     """解析指定番号的影片数据"""
-    # airav也提供简体，但是为了尽量保持女优名等与其他站点一致，抓取繁体的数据
-    url = f'{base_url}/api/video/barcode/{movie.dvdid}?lng=zh-TW'
-    resp = request.get(url).json()
-    # 只在番号是纯数字时，尝试进行搜索，否则可能导致搜索到错误的影片信息
-    if resp['count'] == 0 and re.match(r'\d{6}[-_]\d{2,3}', movie.dvdid):
-        barcode = search_movie(movie.dvdid)
-        if barcode:
-            url = f'{base_url}/api/video/barcode/{barcode}?lng=zh-TW'
-            resp = request.get(url).json()
-    if resp['count'] == 0:
-        raise MovieNotFoundError(__name__, movie.dvdid, resp)
+    # 空番号无意义(拼出的搜索地址会是站点首页, 拿到的是壳页)
+    if not (getattr(movie, 'dvdid', '') or '').strip():
+        raise MovieNotFoundError(__name__, '(空番号)')
+    full_id = movie.dvdid
+    # FC2 番号在该站以 FC2-PPV-xxxxx 形式收录
+    # (实测: 2026-10 该站对 FC2 已**完全无收录** —— 'FC2-PPV-2735981'/'2735981'/
+    #  'FC2-2735981' 四种写法搜索结果均为 0 条, 故这里转换后仍会如实报未收录,
+    #  属正常表现而非 bug。FC2 番号请依赖 fc2/javdb 等源)
+    if full_id.upper().startswith('FC2-'):
+        full_id = 'FC2-PPV-' + full_id[4:]
 
-    # 从API返回的数据中提取需要的字段
-    # TODO: 数据中含有更多信息（如女优的中文&日文名对照），可能有助于未来功能扩展
-    data = resp['result']
-    dvdid = data['barcode']
+    detail_url, dvdid = search_movie(full_id)
+    html = resp2html(request.get(detail_url))
+
+    ld = _json_ld(html)
+    title = unescape((ld.get('name') or '').strip())
+    if not title:
+        h1 = html.xpath("//div[contains(@class,'video-title')]/h1/text()")
+        title = unescape(h1[0]).strip() if h1 else ''
+    if not title:
+        # 页面结构变了(既无 JSON-LD 也无 h1) —— 报"内部错误"以便渠道监控归类,
+        # 不能静默返回, 否则上层会写入一条全空影片
+        raise WebsiteError('airav: 详情页未取到标题(页面结构可能已改变)')
+
     movie.dvdid = dvdid
-    movie.url = base_url + '/video/' + dvdid
-    # plot和title中可能含有HTML的转义字符，需要进行解转义处理
-    movie.plot = unescape(data['description']) or None
-    movie.cover = data['img_url']
-    # airav的genre是以搜索关键词的形式组织的，没有特定的genre_id
-    movie.genre = [i['name'] for i in data['tags']]
-    movie.title = unescape(data['name'])
-    movie.actress = [i['name'] for i in data['actors']]
-    movie.publish_date = data['publish_date']
-    movie.preview_pics = data['images'] or []
-    if data['factories']:
-        movie.producer = data['factories'][0]['name']
+    movie.url = detail_url
+    movie.title = title.replace(dvdid, '').strip()
 
-    if Cfg().crawler.hardworking:
-        # 注意这里用的是获取的dvdid，而不是传入的movie.dvdid（如'1pondo_012717_472'与'012717_472'）
-        video_url = f"{base_url}/api/video/getVideoMedia?barcode={dvdid}&vid={data['vid']}"
-        resp = request.get(video_url).json()
-        # 如果失败，结果如 {'msg': 'fail', 'status': 'fail'}
-        if 'data' in resp:
-            # 除url外还有url_cdn, url_hlx, url_hls_cdn字段，后两者为m3u8格式。目前将url作为预览视频的地址
-            # TODO: 发现部分影片（如080719-976）的传统格式预览片错误
-            movie.preview_video = resp['data'].get('url')
+    # 封面: JSON-LD 的 thumbnailUrl 最稳
+    thumb = ld.get('thumbnailUrl')
+    if isinstance(thumb, list):
+        thumb = thumb[0] if thumb else None
+    if not thumb:
+        thumb = (html.xpath("//meta[@property='og:image']/@content") or [None])[0]
+    movie.cover = thumb
 
-    # airav上部分影片会被标记为'馬賽克破壞版'等，这些影片的title、plot和genre都不再准确
+    # 女优: 详情页形如 /actor?id=34849 的链接
+    actress = []
+    for node in html.xpath("//a[contains(@href, '/actor?id=')]"):
+        name = (node.text_content() or '').strip()
+        # 导航里的"女優一覽"也会命中 /actors, 但不含 '?id=' 故不会混入;
+        # 这里仍做一次"是否像人名"的兜底过滤
+        if name and '一覽' not in name and name not in actress:
+            actress.append(name)
+    movie.actress = actress
+
+    # 类型标签: /tag?tid=  ;  发行商: /tag?fid= (站点用同一机制, fid 表示厂商)
+    genre = [(n.text_content() or '').strip()
+             for n in html.xpath("//a[contains(@href, '/tag?tid=')]")]
+    movie.genre = [g for g in genre if g]
+    factory = [(n.text_content() or '').strip()
+               for n in html.xpath("//a[contains(@href, '/tag?fid=')]")]
+    if factory:
+        movie.producer = factory[0]
+
+    # 简介: JSON-LD 的 description 与标题同文, 信息量有限, 有非空才写
+    desc = unescape((ld.get('description') or '').strip())
+    movie.plot = desc or None
+
+    # ⚠️ 刻意**不写** publish_date / duration: 新站 JSON-LD 的 uploadDate 与
+    # duration 均为占位值(uploadDate 是采集当天, duration 恒为 PT10M0S),
+    # 采信会把错误数据写进 NFO, 让 Jellyfin 显示错误发行日与"10分钟"时长。
+    # 这两项留给其它源补(JavSP 多源合并时不会因缺字段报错)。
+
+    # 站点会把部分影片标记为'馬賽克破壞版'等, 这类 title/plot/genre 不再准确
     for keyword in ('馬賽克破壞版', '馬賽克破解版', '無碼流出版'):
         if movie.title and keyword in movie.title:
             movie.title = None
@@ -103,8 +194,6 @@ def parse_data(movie: MovieInfo):
         if movie.plot and keyword in movie.plot:
             movie.plot = None
             movie.genre = []
-        if not any([movie.title, movie.plot, movie.genre]):
-            break
 
 
 if __name__ == "__main__":
@@ -112,7 +201,7 @@ if __name__ == "__main__":
     pretty_errors.configure(display_link=True)
     logger.root.handlers[1].level = logging.DEBUG
 
-    movie = MovieInfo('DSAD-938')
+    movie = MovieInfo('IPZZ-989')
     try:
         parse_data(movie)
         print(movie)

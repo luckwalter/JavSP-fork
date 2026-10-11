@@ -26,7 +26,8 @@ def init_network_cfg():
     # 使用代理容易触发IUAM保护，先尝试不使用代理访问
     proxy_cfgs = [{}, read_proxy()] if Cfg().network.proxy_server else [{}]
     for proxies in proxy_cfgs:
-        request.proxies = proxies
+        # pin: javlib 要手动在「直连/代理」间切换绕 IUAM, 不能让 Request 每次现取覆盖掉它的选择
+        request.pin_proxies(proxies)
         for url in urls:
             if proxies == {} and url == permanent_url:
                 continue

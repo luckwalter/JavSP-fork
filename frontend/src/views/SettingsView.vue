@@ -32,16 +32,20 @@ const GROUPS = [
 // 按选源类型(对应 core.py 的 movie.data_src)声明的「推荐源」清单。
 // 每个 crawler 实际支持的番号类型据此收敛, 设置页每个分区只显示该类支持的源:
 //   - normal: 普通厂商番号(如 ABC-123)
-//   - fc2   : FC2-xxxx 专属(fc2/fc2fan/fc2ppvdb) + 跨类型能搜 FC2 的(avsox/javdb/javmenu)
+//   - fc2   : FC2-xxxx 专属(fc2/fc2ppvdb) + 跨类型能搜 FC2 的(avsox/javdb/javmenu)
 //   - cid   : CID 专属(fanza, 必须携带 cid 才能检索)
 // fanza 不含在 normal, 因为它需要 cid 而非普通番号(与上游把 fanza 放 normal 的默认不同,
 // 这里严格按能力收敛)。已勾选但不在推荐里的源仍会补显示(见 sitesForKind), 不会丢配置。
 // 注: javfree 是第 22 个番号源, 普通番号库, 归 normal(此前 ALL_SITES 遗漏, 此处补齐)。
+// 注: arzon / arzon_iv 已于 0.2.11 移除 —— 实测 www.arzon.jp 连接被重置(ConnectionReset)、
+//     直连超时, 两个源指向同一死域名, 已彻底删除(爬虫实现 + CrawlerID 枚举 + 配置 + 本列表)。
+// 注: fc2fan 已于 0.2.12 移除 —— 主站 fc2club.top 实测只返回 493 字节 'Loading...' 壳页,
+//     站点已关停(代码原本就直接抛"站点不可用")。其"本地镜像"能力一并移除。
 const SOURCE_KINDS = {
   normal: ['airav', 'avsox', 'avwiki', 'jav321', 'javbus', 'javdb', 'javdbapi',
            'javdatabase', 'javlib', 'javmenu', 'mgstage', 'prestige', 'dl_getchu',
-           'njav', 'arzon', 'arzon_iv', 'gyutto', 'javfree'],
-  fc2:    ['fc2', 'fc2fan', 'fc2ppvdb', 'avsox', 'javdb', 'javmenu'],
+           'njav', 'gyutto', 'javfree'],
+  fc2:    ['fc2', 'fc2ppvdb', 'avsox', 'javdb', 'javmenu'],
   cid:    ['fanza'],
 }
 // 实际参与刮削的选源类型(core.py 只按 movie.data_src 取 normal/fc2/cid)。
@@ -129,7 +133,8 @@ function siteLabel(name) {
   const hints = {
     javdbapi: 'javdb App API', javdatabase: 'javdatabase.com',
     javmenu: 'javmenu.com', njav: '无码', fanza: 'FANZA',
-    fc2fan: '本地镜像', airav: 'javdb 镜像',
+    airav: 'javdb 镜像',
+    avsox: '前端渲染·不可用', avwiki: '非番号库·不可用',
   }
   return hints[name] || ''
 }

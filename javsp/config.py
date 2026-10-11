@@ -25,7 +25,6 @@ class CrawlerID(str, Enum):
     dl_getchu = 'dl_getchu'
     fanza = 'fanza'
     fc2 = 'fc2'
-    fc2fan = 'fc2fan'
     fc2ppvdb = 'fc2ppvdb'
     gyutto = 'gyutto'
     jav321 = 'jav321'
@@ -40,8 +39,6 @@ class CrawlerID(str, Enum):
     mgstage = 'mgstage'
     njav = 'njav'
     prestige = 'prestige'
-    arzon = 'arzon'
-    arzon_iv = 'arzon_iv'
     javfree = 'javfree'   # v0.2.6 新增: javfree.me 番号库(WordPress), 日本出口下可达, 补位已废/被墙老源
 
 class Network(BaseConfig):
@@ -119,7 +116,6 @@ class Crawler(BaseConfig):
     required_keys: list[MovieInfoField]
     hardworking: bool
     respect_site_avid: bool
-    fc2fan_local_path: Path | None
     sleep_after_scraping: Duration
     use_javdb_cover: UseJavDBCover
     normalize_actress_name: bool

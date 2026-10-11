@@ -250,7 +250,24 @@ onMounted(() => load(false))
                 </template>
                 <span v-else class="dim">暂无样本</span>
               </td>
-              <td class="dim">{{ r.domain || '—' }}</td>
+              <td>
+                <!-- 站点列: 优先显示探活时**实际请求到**的 host; 与静态标注不一致时高亮,
+                     提示展示值已失真(有人改了 base_url / 站点迁域名未同步) -->
+                <template v-if="r.hosts && r.hosts.length">
+                  <span :class="{ 'domain-warn': r.domain_mismatch }"
+                        :title="r.domain_mismatch
+                          ? `静态标注为 ${r.domain_static}, 但实际请求到了别处(镜像/改版/base_url 被改)`
+                          : `实际刮削地址(与静态标注 ${r.domain_static} 一致)`">
+                    {{ r.domain_actual }}
+                  </span>
+                  <div v-if="r.domain_mismatch" class="dim domain-note">
+                    静态标注: {{ r.domain_static }}
+                  </div>
+                </template>
+                <span v-else class="dim" :title="'尚未探活, 显示静态标注值'">
+                  {{ r.domain || '—' }}
+                </span>
+              </td>
               <td class="reason">{{ r.reason || '—' }}</td>
               <td class="num">{{ r.cooldown_remaining > 0 ? r.cooldown_remaining + 's' : '—' }}</td>
             </tr>
@@ -308,6 +325,10 @@ onMounted(() => load(false))
 <style scoped>
 .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dim { color: var(--color-text-tertiary); font-size: var(--font-sm); }
+
+/* 站点列: 实测 host 与静态标注不符 -> 警示色 + 下方小字说明静态值 */
+.domain-warn { color: var(--color-danger); font-size: var(--font-sm); word-break: break-all; }
+.domain-note { margin-top: 2px; word-break: break-all; }
 
 /* 未启用的行整体淡化 —— 与"启用中"一眼区分, 但仍完整可见 */
 .row-off td { opacity: 0.62; }

@@ -7,7 +7,15 @@ from javsp.datatype import MovieInfo
 
 
 logger = logging.getLogger(__name__)
+# ⚠️ 结尾斜杠不能省: 原实现写成 f'{base_url}tw/search/{full_id}' 而 base_url 没有尾斜杠,
+# 拼出来的是 **avsox.clicktw**(实测报 ProxyError: host 'avsox.clicktw'), 即程序压根没访问到
+# 真正的 avsox.click。改为 base_url.rstrip('/') + '/tw/...' 显式拼接, 不再依赖尾斜杠。
 base_url = 'https://avsox.click'
+
+
+def _url(path: str) -> str:
+    """拼接站点地址, 避免因 base_url 缺少尾斜杠而拼出错误域名"""
+    return base_url.rstrip('/') + '/' + path.lstrip('/')
 
 
 def parse_data(movie: MovieInfo):
@@ -16,7 +24,7 @@ def parse_data(movie: MovieInfo):
     full_id = movie.dvdid
     if full_id.startswith('FC2-'):
         full_id = full_id.replace('FC2-', 'FC2-PPV-')
-    html = get_html(f'{base_url}tw/search/{full_id}')
+    html = get_html(_url(f'tw/search/{full_id}'))
     ids = html.xpath("//div[@class='photo-info']/span/date[1]/text()")
     urls = html.xpath("//a[contains(@class, 'movie-box')]/@href")
     ids_lower = list(map(str.lower, ids))

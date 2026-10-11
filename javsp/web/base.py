@@ -73,6 +73,8 @@ class Request():
         self.cookies = {}
 
         self.proxies = read_proxy()
+        # False(默认)=每次请求现取最新代理, 见 _resolve_proxies; True=沿用 self.proxies 当前值
+        self._proxies_pinned = False
         self.timeout = Cfg().network.timeout.total_seconds()
         # 统一在此处注入 verify, 而不是让 40+ 个调用点各自记得传 —— 漏一个就等于
         # 该站点在 MITM 代理下静默失效。用 partial 绑定比逐处改更不易漏。
@@ -112,10 +114,37 @@ class Request():
                 return fallback(*args, **kw)
         return wrapper
 
+    def _resolve_proxies(self):
+        """决定本次请求实际使用的代理 —— 默认**每次现取**, 而非一直用 __init__ 固化下来的值
+
+        为什么要现取: 固化的代价已在 NAS 上实证 —— javdb 模块在 import 时就把代理焊死,
+        之后无论"配置热重载"还是"启动时序变化"都改不动它, 于是它直连被墙, 渠道监控
+        把它报成 network_error(看着像 javdb 不可达); 而同一出口下**每次现取**的 javdbapi
+        却正常返回 —— 同一个代理, 两种结论。现取让代理不再受固化时机影响, 是根治而非补丁。
+
+        唯一例外: javlib 需要在「直连 vs 代理」之间手动切换以绕开 IUAM, 它会 pin 住自己
+        挑中的那份, 此时必须尊重它的手工选择, 不能自作主张刷新。
+        """
+        if self._proxies_pinned:
+            return self.proxies
+        self.proxies = read_proxy()
+        return self.proxies
+
+    def pin_proxies(self, proxies=None):
+        """锁定代理为给定值(省略则用当前值), 之后不再现取
+
+        仅供 javlib 这类要手动在「直连/代理」间切换以绕开反爬的爬虫使用; 调用后
+        再改 self.proxies 依然生效(pin 的是"不现取"这一行为, 不是某个具体值)。
+        """
+        if proxies is not None:
+            self.proxies = proxies
+        self._proxies_pinned = True
+        return self
+
     def get(self, url, delay_raise=False):
         r = self.__get(url,
                       headers=self.headers,
-                      proxies=self.proxies,
+                      proxies=self._resolve_proxies(),
                       cookies=self.cookies,
                       timeout=self.timeout)
         if not delay_raise:
@@ -126,7 +155,7 @@ class Request():
         r = self.__post(url,
                       data=data,
                       headers=self.headers,
-                      proxies=self.proxies,
+                      proxies=self._resolve_proxies(),
                       cookies=self.cookies,
                       timeout=self.timeout)
         if not delay_raise:
@@ -136,7 +165,7 @@ class Request():
     def head(self, url, delay_raise=True):
         r = self.__head(url,
                       headers=self.headers,
-                      proxies=self.proxies,
+                      proxies=self._resolve_proxies(),
                       cookies=self.cookies,
                       timeout=self.timeout)
         if not delay_raise:
@@ -257,8 +286,6 @@ def is_connectable(url, timeout=3):
 
 
 def urlretrieve(url, filename=None, reporthook=None, headers=None, max_bytes=None):
-    if "arzon" in url:
-        headers["Referer"] = "https://www.arzon.jp/"
     """使用requests实现urlretrieve"""
     # https://blog.csdn.net/qq_38282706/article/details/80253447
     with contextlib.closing(requests.get(url, headers=headers,

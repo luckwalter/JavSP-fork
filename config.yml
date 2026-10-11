@@ -34,7 +34,9 @@ network:
 ################################
 crawler:
   # 要使用的爬虫列表（汇总数据时从前到后进行）
-  # airav avsox avwiki fanza fc2 fc2fan javbus javdb javlib javmenu jav321 mgstage prestige arzon arzon_iv
+  # airav avsox avwiki fanza fc2 javbus javdb javlib javmenu jav321 mgstage prestige
+  # 注: arzon / arzon_iv 已移除(0.2.11) —— 实测 www.arzon.jp 连接被重置, 已彻底删除
+  # 注: fc2fan 已移除(0.2.12) —— 主站 fc2club.top 已关停(仅返回 'Loading...' 壳页)
   selection:
     # v0.2.1: 末尾三个是 JavBoss 研究移植的新源, 在受限出口(NAS 经 squid)下实测可达,
     # 用于补位已废/被 Cloudflare 拦截的老源。放在末尾是因为它们覆盖面窄, 让老源先跑,
@@ -66,8 +68,6 @@ crawler:
   hardworking: true
   # 使用网页番号作为最终番号（启用时会对番号大小写等进行更正）
   respect_site_avid: true
-  # fc2fan已关站。如果你有镜像，请设置本地镜像文件夹的路径，此文件夹内要有类似'FC2-12345.html'的网页文件
-  fc2fan_local_path: null
   # 刮削一部电影后的等待时间（设置为0禁用此功能）
   # https://en.wikipedia.org/wiki/ISO_8601#Durations
   sleep_after_scraping: PT1S

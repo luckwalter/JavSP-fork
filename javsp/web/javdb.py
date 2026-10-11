@@ -21,6 +21,20 @@ permanent_url = 'https://javdb.com'
 base_url = permanent_url
 
 
+# 地区版权封锁页关键词(返回 200 + 内容页, 而非 Cloudflare 1020 硬拦截)
+_GEO_BLOCK_PATTERNS = (
+    'copyright restrictions', 'prohibited in the country',
+    '版權限制', '禁止了你的網路', 'access to this site is prohibited',
+    'your internet is located', 'your network is located',
+)
+
+
+def _is_geo_blocked(html):
+    """检测地区版权封锁页(200 + 内容页, 非 Cloudflare 1020 拦截)"""
+    text = html.text_content()
+    return any(p in text for p in _GEO_BLOCK_PATTERNS)
+
+
 def get_html_wrapper(url):
     """包装外发的request请求并负责转换为可xpath的html，同时处理Cookies无效等问题"""
     global request, cookies_pool
@@ -52,6 +66,13 @@ def get_html_wrapper(url):
             raise SitePermissionError(f"JavDB: 此资源被限制为仅VIP可见: '{r.history[0].url}'")
         else:
             html = resp2html(r)
+            # 地区版权封锁页走 200 + 内容页(如对中国 IP 返回 "Due to copyright
+            # restrictions..." / 繁中版權限制提示), 不会进 403/503 的 SiteBlocked 分支,
+            # 会让 parse_data 在异常页面上硬解析触发 IndexError 并被误判为"内部错误"。
+            # 这里提前识别, 归为地区封锁(geo_blocked)而非崩溃。
+            if _is_geo_blocked(html):
+                raise SiteBlocked(
+                    'JavDB: 当前IP所在地区禁止访问(版权限制), 请使用日本等其他地区代理')
             return html
     elif r.status_code in (403, 503):
         html = resp2html(r)
@@ -178,9 +199,18 @@ def parse_data(movie: MovieInfo):
         movie.uncensored = {'uncensored': True, 'tags':False}.get(subsite)
     # JavDB目前同时提供男女优信息，根据用来标识性别的符号筛选出女优
     actors_tag = info.xpath("//strong[text()='演員:']/../span")[0]
-    all_actors = actors_tag.xpath("a/text()")
-    genders = actors_tag.xpath("strong/text()")
-    actress = [i for i in all_actors if genders[all_actors.index(i)] == '♀']
+    # 新版 JavDB 已改用 <a class="actor-female"> 标记女优(实测: 详情页 strong/text()
+    # 恒为空, 全站女优解析结果都是 [])。优先按 class 取, 取不到再回退到旧的 ♀/♂ 符号。
+    actress = [i.strip() for i in actors_tag.xpath("a[contains(@class, 'actor-female')]/text()") if i.strip()]
+    if not actress:
+        all_actors = actors_tag.xpath("a/text()")
+        genders = actors_tag.xpath("strong/text()")
+        # 演员名与性别符号在页面里按顺序一一对应, 但站点偶尔缺失某个性别标记(两者数量不齐)。
+        # 原实现用 genders[all_actors.index(i)] 按下标取: ①数量不齐时越界抛 IndexError,
+        # 会让**整部影片**解析失败(实测 IPX-001 详情页正是因此全挂, 渠道监控被误报成
+        # "内容异常/内部错误"); ②重名演员 index() 只返回首次出现位置, 会错配性别。
+        # 改用 zip 顺序配对: 数量不齐时以较短的一方为准, 不会越界, 配对也不会错位。
+        actress = [name for name, gender in zip(all_actors, genders) if gender == '♀']
     magnet = container.xpath("//div[@class='magnet-name column is-four-fifths']/a/@href")
 
     movie.dvdid = dvdid
