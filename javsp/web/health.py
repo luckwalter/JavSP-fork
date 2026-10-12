@@ -1,7 +1,7 @@
 """刮削渠道健康监控与熔断 (移植自 JavBoss internal/jav/availability.go 的能力, Python 实现)
 
 ==== 为什么需要 ====
-受限出口下多个源会陆续失效(JavSP-fork v0.1.28 实证: javlib/javbus 已废、javdb 网站被
+受限出口下多个源会陆续失效(JavSP-fork v0.1.28 实证: javlib 已废、javdb 网站被
 Cloudflare 403)。旧实现的代价是**纯浪费**: 每次刮削仍会对已死站点完整跑完
 retry(默认3次) x timeout(默认10s) 的重试, 一部影片白等几十秒, 用户只看到"没刮到"。
 本模块让死源在刮削前被**自动跳过**, 同时把每个源的真实可用性与失败原因暴露给 WebUI。
@@ -118,14 +118,9 @@ SOURCE_STATUS_OVERRIDE = {
     'avwiki': ('source_defunct',
                '该站不是番号库(实测标题为"AV女優の名前が知りたい!"女优名字查询站), '
                '没有影片详情页, 搜索页返回 404, 对刮削无意义'),
-    # javbus: 站点可连通(200), 但**所有番号都返回同一个年龄/驾照验证页**
-    # (实测 <title> = "Age Verification JavBus", 链接指向 /doc/driver-verify,
-    #  不同番号响应字节数完全相同 21344)。已配置的 Cookie(PHPSESSID/existmag)
-    # 无法通过这道验证, 表现为一律 MovieNotFoundError —— 会被误判成"可达但未收录",
-    # 让主人以为是番号问题。该站已要求**驾照(driver-verify)验证**, 静态抓取过不去。
-    'javbus': ('source_defunct',
-               '站点要求驾照/年龄验证(driver-verify), 任意番号均返回同一个验证页; '
-               '已配置的 Cookie 无法通过, 建议关闭该源或改用其它源'),
+    # (javbus 已于 0.2.14 复活: 该站 2026-10 上旬更换年龄验证机制 —— age=verified
+    #  失效, 改带内置 dv=1 cookie 即可放行, 见 web/javbus.py; 此前的
+    #  source_defunct(driver-verify 墙)结论作废, 恢复常规探活。)
 }
 
 STATUS_TEXT = {
@@ -210,10 +205,10 @@ _UNUSABLE_STATUSES = frozenset({
 _UNUSABLE_HINTS = {
     'ip_banned': '当前出口 IP 被该站封禁(Error 1005/blocked), 需更换代理 IP 才能恢复',
     'geo_blocked': '该站按**IP 所在地区**做版权封锁, 需换用日本等地区的代理出口',
-    'challenge_required': '需在浏览器完成人机验证, 并为该渠道配置浏览器 Cookie',
+    'challenge_required': '需在浏览器完成人机验证(Cloudflare 等), 静态抓取无法通过',
     'client_rendered': '站点已改为前端渲染, 静态刮削无法获取数据',
     'source_defunct': '站点已失效或本就不是番号库, 建议在设置中关闭该源',
-    'credential_error': '缺少登录凭据, 需为该渠道配置 Cookie',
+    'credential_error': '缺少登录/API 凭据, 需在设置中补齐后才能使用',
 }
 
 STATE_CLOSED, STATE_OPEN, STATE_HALF_OPEN = 'closed', 'open', 'half_open'
@@ -426,6 +421,21 @@ _SAMPLE_BY_SOURCE = {
     'dl_getchu': 'GETCHU-12345',
     'gyutto': 'GYUTTO-12345',
     'fanza': 'ipx00120',        # FANZA 按 cid 查询, 形如 ipx00120(品番小写去横线); 原 ipx00001 在 FANZA 未收录, 会永远误报"未收录"
+    # mgstage / prestige 都是**プレステージ(PRESTIGE)** 发行商的收录渠道, 收录范围
+    # 偏向自有/片库系番号, 不收 IPX 这种他家厂商的通用番号 —— 用通用样本 IPX-001
+    # 去问它们必然永远"未收录", 探活形同虚设(主人手工访问发现 ABF-001 可搜到)。
+    # 实测(2026-10-11) 两站对 ABF-001 都能解析出完整字段:
+    #   mgstage  -> 'どちゃくそエロい最高級ギャルと中出ししまくった、あの夜。 04 八掛うみ'
+    #               女优=八掛うみ / 发行商=プレステージ / 发售日=2023-06-29
+    #   prestige -> 同一部片子(标题略去演员名) 女优=八掛うみ / 发售日=2023-07-06
+    # 两站发售日不同, 属**互补关系**(不同收录渠道), 不是重复源, 都应保留。
+    'mgstage': 'ABF-001',
+    'prestige': 'ABF-001',
+    # javbus: 曾因 driver-verify 年龄验证墙被标 source_defunct 并关闭; 2026-10-12
+    # 实测该站已更换验证机制 —— 内置 dv=1 cookie 即可放行(见 web/javbus.py),
+    # IPX-001 能完整解析出标题/女优/发行日期/封面, 故显式记录样本依据;
+    # 同时用 ZZZZ-999 对照确认返回的是 404 未收录而非"任何号都成功"的假 ok。
+    'javbus': 'IPX-001',
 }
 
 

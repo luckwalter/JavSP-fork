@@ -120,9 +120,12 @@ class Crawler(BaseConfig):
     use_javdb_cover: UseJavDBCover
     normalize_actress_name: bool
     max_concurrency: int = Field(5, ge=1, le=32)  # 刮削并发上限(各爬虫线程池大小), 防止瞬时全开打爆出口/代理
-    # 各渠道浏览器 cookie(供反爬墙站点携带, 如 javbus 年龄验证)。
-    # 值为 Cookie-Editor 导出的精简数组([{name, value}]), 随 config.yml 持久化;
-    # 运行时从 Cfg 读取, 保存后立即热重载生效, 无需 docker restart。
+    # 【已废弃 2026-10-12】各渠道浏览器 cookie。javbus 的年龄验证已改为内置 dv=1
+    # cookie(见 web/javbus.py), 不再需要用户手动粘贴; 前端「配置 Cookie」入口与
+    # 后端 /api/channels/{source}/cookie 接口均已删除。
+    # 字段保留仅为兼容: 挂载卷里的旧 config.yml 可能仍带 crawler.cookies 块,
+    # 删字段会让 confz 校验失败导致服务起不来(挂载卷配置不随镜像更新)。
+    # 新部署可直接从 config.yml 中移除该块。
     cookies: Dict[str, list] = {}
     # 上界 32: ThreadPoolExecutor(max_workers) 直接决定线程数, 设过大(如 10^7)会耗尽线程/内存
 

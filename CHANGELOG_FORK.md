@@ -8,6 +8,27 @@
 
 ---
 
+## v0.2.14（2026-10-12）
+
+**复活 javbus 渠道（站点更换年龄验证机制）+ 删除渠道 Cookie 手动配置功能**
+
+### javbus 复活
+
+- **根因**：javbus 于 2026-10 上旬更换年龄验证机制 —— 早期钥匙 `age=verified` 已彻底失效（实测带该 cookie 仍被 302 到 `/doc/driver-verify`，与无 cookie 完全同形），这正是 v0.2.13 将其归为"站点已失效"、以及"手动配 Cookie 也救不回来"的真因。
+- **新钥匙**：实测（2026-10-12）携带 `dv=1` 即可直接放行 —— 任意番号均返回真实详情页，首页/搜索页同样需要，无需任何登录态；该值为站点内置固定值，不过期。方案与 metatube-server-fork 的修复（commit a171425, #378）一致，但**沿用旧式路径 `/{番号}`**：页面仍为繁体中文，现有解析代码零改动。
+- **验证**：`parse_data` 实测 NANP-030 / SSIS-001 / IPX-001 均完整解析出标题、女优、发行日期、封面、分类、样本图；假 ok 对照 ZZZZ-999 正确返回 404 未收录（`MovieNotFoundError`），确认不是"任何号都成功"的假象。
+- **探活**：删除 `SOURCE_STATUS_OVERRIDE` 里 javbus 的 source_defunct 条目（结论作废），恢复常规探活；`_SAMPLE_BY_SOURCE` 显式记录 javbus → IPX-001（默认样本恰好收录，显式记录实测依据）。
+- **兜底保留**：`parse_data` 中的 Age Verification 检测保留 —— 万一日后 `dv=1` 失效，会正确识别为"未取得数据"而非 IndexError 崩溃，届时按 driver-verify 页重新找钥匙即可。
+
+### 删除渠道 Cookie 手动配置功能
+
+- javbus 不再需要用户粘贴浏览器 Cookie，整套手动输入功能删除：
+  - 后端：`server.py` 的 `COOKIE_CAPABLE`、`/api/channels/{source}/cookie` GET/PUT 端点、`ChannelCookieRequest` 模型；`/api/channels` 响应中的 `cookie_supported` 字段。
+  - 前端：`api.js` 的 `getChannelCookie` / `putChannelCookie`；`ChannelsView.vue` 的 Cookie 弹窗整套 UI、「配置 Cookie」按钮及相关文案。
+  - `javbus.py`：删除 `_resolve_javbus_cookies()`（读 `Cfg().crawler.cookies['javbus']`），改为硬编码 `AGE_COOKIES = {'dv': '1'}`。
+- **`config.py` 的 `crawler.cookies` 字段保留但废弃**：挂载卷里的旧 `config.yml` 可能仍带该块，删字段会让 confz 校验失败导致服务起不来（挂载卷配置不随镜像更新）。字段加废弃注释，新部署可从 config.yml 移除（本地 config.yml 已清理）。
+- `health.py` 的 `_UNUSABLE_HINTS` 中 challenge_required / credential_error 两条提示不再引导"配置 Cookie"。
+
 ## v0.2.13（2026-10-11）
 
 **修复：渠道状态归类细化 + 提交前 Code Review 发现的 6 个实质问题**

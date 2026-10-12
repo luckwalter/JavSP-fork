@@ -224,8 +224,8 @@ def diff_leaves(current, merged, path=()):
 def _try_insert_missing(lines, index, inserted, path, value):
     """在已存在的祖先容器内新建缺失字段（仅支持单级缺失）
 
-    例如原 config.yml 无 `crawler.cookies`, 但要写入 `crawler.cookies`(整块),
-    则在 `crawler:` 容器行之后插入 `  cookies: {javbus: [...]}`(flow 单行)。
+    例如原 config.yml 无 `crawler.required_keys`, 但要写入 `crawler.required_keys`,
+    则在 `crawler:` 容器行之后插入 `  required_keys: [title, actress]`(flow 单行)。
     成功返回 True; 若找不到合适的祖先容器则返回 False(交由调用方记 missing)。
     """
     for i in range(len(path) - 1, 0, -1):
@@ -281,7 +281,7 @@ def write_config_preserving_comments(cfg_path, changes):
             to_replace[i] = new_line + eol
         else:
             # 字段在文件中不存在: 尝试在已存在的祖先容器内新建(仅单级缺失,
-            # 如新增嵌套字段 crawler.cookies 而原 config.yml 无此块)。
+            # 如新增嵌套字段 crawler.required_keys 而原 config.yml 无此字段)。
             if not _try_insert_missing(lines, index, inserted, path, value):
                 missing.append('.'.join(path))
 

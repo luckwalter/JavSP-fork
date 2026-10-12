@@ -13,23 +13,15 @@ genre_map = GenreMap('data/genre_javbus.csv')
 permanent_url = 'https://www.javbus.com'
 base_url = permanent_url
 
-
-def _resolve_javbus_cookies() -> dict:
-    """解析 javbus 渠道配置里的浏览器 cookie（随 config.yml 持久化, 热重载即生效）
-
-    从 Cfg().crawler.cookies['javbus'] 读取 Cookie-Editor 导出数组([{name, value}]),
-    转成 requests 可用的 {name: value} 字典。未配置或读取失败时回退到默认 age=verified,
-    仍尽力取数。
-    """
-    try:
-        arr = (Cfg().crawler.cookies or {}).get('javbus') or []
-        cookies = {str(c['name']): str(c['value'])
-                   for c in arr if isinstance(c, dict) and c.get('name')}
-        if cookies:
-            return cookies
-    except Exception:
-        logger.debug('读取 javbus cookie 配置失败, 使用默认 age cookie')
-    return {'age': 'verified'}
+# JavBus 年龄验证 cookie。
+# 历史: 该站早期用 age=verified(服务端确认后下发, 约30天有效), JavSP-fork 曾支持
+# 在设置页手动粘贴浏览器 Cookie —— 但 2026-10 上旬起 age=verified 已彻底失效
+# (实测带该 cookie 仍被 302 到 /doc/driver-verify), 手动输 Cookie 也救不回来。
+# 现机制(2026-10-11 实测, 与 metatube-server-fork 的修复一致): 携带 dv=1 即可
+# 直接放行, 任意番号均返回真实详情页(首页/搜索页同样需要), 无需任何登录态。
+# 该值为站点内置固定值, 不过期; 若将来失效, parse_data 里的 Age Verification
+# 兜底会把它识别成"未取得数据"而非崩溃, 届时按 driver-verify 页重新找新钥匙即可。
+AGE_COOKIES = {'dv': '1'}
 
 
 def parse_data(movie: MovieInfo):
@@ -40,9 +32,9 @@ def parse_data(movie: MovieInfo):
     url = f'{base_url}/{movie.dvdid}'
     # JavBus 对未通过年龄验证的访客, 会把番号详情页 302 到年龄验证页(driver-verify);
     # 该页有 .container 外壳但无影片数据, 继续按影片页解析会 IndexError 崩溃。
-    # 注入年龄验证 cookie(值 'verified' 为服务端确认后下发的固定值, 约 30 天有效):
-    # 带此 cookie 的请求服务端直接放行, 等效浏览器通过年龄验证(实测可拿到真实详情页)。
-    resp = request_get(url, cookies=_resolve_javbus_cookies(), delay_raise=True)
+    # 携带 dv=1 cookie 的请求服务端直接放行(见 AGE_COOKIES 注释),
+    # 等效浏览器通过年龄验证(实测可拿到真实详情页)。
+    resp = request_get(url, cookies=AGE_COOKIES, delay_raise=True)
     html = resp2html(resp)
     page_title = html.xpath('/html/head/title/text()')
     if page_title and page_title[0].startswith('404 Page Not Found!'):
