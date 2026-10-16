@@ -69,8 +69,8 @@ def detect_special_attr(filepath: str, avid: str = None) -> str:
     match = _PATTERN.search(base)
     if match:
         result += 'U'
-    # 尝试匹配-C/-U/-UC后缀的影片
-    postfix = base.split('-')[-1]
+    # 尝试匹配-C/-U/-UC后缀的影片（兼容 '-' 与 '_' 两种分隔符，如 ABC-123_C.mp4）
+    postfix = re.split(r'[-_]', base)[-1]
     if postfix in ('U', 'C', 'UC'):
         result += postfix
     elif avid:

@@ -47,7 +47,10 @@ def parse_data(movie: MovieInfo):
     movie.title = get_list_first(title)
     movie.genre = genre
     movie.actress = actress
-    movie.duration = str(strftime_to_minutes(get_list_first(duration_str)))
+    # 页面可能缺少"収録時間"字段(改版/数据缺失), 此时留空而非崩溃, 保住其他字段
+    duration_first = get_list_first(duration_str)
+    if duration_first:
+        movie.duration = str(strftime_to_minutes(duration_first))
     movie.publish_date = get_list_first(publish_date)
     movie.publisher = get_list_first(publisher)
     movie.uncensored = uncensored
