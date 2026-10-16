@@ -14,6 +14,7 @@
 """
 import os
 import re
+import sys
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,16 +26,28 @@ _FALLBACK = '0.0.0'
 
 
 def _from_pyproject():
-    """从仓库根 pyproject.toml 读取 version, 读不到返回 None"""
+    """从 pyproject.toml 读取 version, 读不到返回 None
+
+    frozen(PyInstaller) 下 pyproject.toml 被打进 `_internal/`, 故优先从那里读;
+    否则回退到仓库根 (源码 / editable install 场景)。
+    """
     try:
-        pkg_dir = os.path.dirname(os.path.abspath(__file__))   # .../JavSP/javsp
-        root = os.path.dirname(pkg_dir)                        # .../JavSP
-        path = os.path.join(root, 'pyproject.toml')
-        if not os.path.isfile(path):
-            return None
-        with open(path, 'r', encoding='utf-8') as f:
-            m = _VERSION_RE.search(f.read())
-        return m.group(1) if m else None
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            candidates = [
+                os.path.join(exe_dir, '_internal', 'pyproject.toml'),
+                os.path.join(exe_dir, 'pyproject.toml'),
+            ]
+        else:
+            pkg_dir = os.path.dirname(os.path.abspath(__file__))   # .../JavSP/javsp
+            root = os.path.dirname(pkg_dir)                        # .../JavSP
+            candidates = [os.path.join(root, 'pyproject.toml')]
+        for path in candidates:
+            if os.path.isfile(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    m = _VERSION_RE.search(f.read())
+                return m.group(1) if m else None
+        return None
     except Exception as e:
         logger.debug(f'从 pyproject.toml 读取版本号失败: {e}')
         return None

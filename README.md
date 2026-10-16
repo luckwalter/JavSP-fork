@@ -10,7 +10,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.2.14-blue.svg)
+![Version](https://img.shields.io/badge/version-0.3.1-blue.svg)
 
 ## 功能特点
 
@@ -257,12 +257,18 @@ javsp server
   但仍建议只扫描你确实打算整理的目录。
 - **把JavSP 放在公网上是明确不支持的用法**，请只在可信网络（本地/家庭内网）使用。
 
-### 方式三：桌面程序（PyWebView 打包 exe）
+### 方式三：桌面程序（本机 exe，开箱即用）
 
+下载 Release 里的 `JavSP-<version>-windows.zip`，解压到任意目录，**双击 `JavSP.exe`** 即可：默认开一个原生窗口加载 WebUI（pywebview）；想用浏览器打开则加 `--nogui` 参数。所有配置/会话都落在 exe 同级目录，解压即用、不写系统盘。
+
+自行构建（需在已装项目依赖的 Python 环境中运行）：
 ```bash
-pip install pywebview
-python -m javsp.desktop     # 启动内嵌浏览器窗口，自动拉起本地服务
-# 用 PyInstaller 可打包为独立 exe
+python tools/build_desktop.py          # 一键：前端 build → PyInstaller 打包 → 生成 zip
+# 或分步：
+pyinstaller build/pyinstaller.spec     # 产物在 dist/JavSP/
+# 仅验证桌面端逻辑（不打包）：
+python -m javsp.desktop               # 默认 GUI 窗口
+python -m javsp.desktop --nogui       # 用浏览器打开 WebUI
 ```
 
 ### 原命令行方式（仍可用）
@@ -349,7 +355,7 @@ NFO 里用到的全部标签都对照 Jellyfin 的 NFO 解析器核对过（对�
 - 大变更（功能 / 架构改动）：第二位 +1 且第三位归 1 → `0.1.1`、`0.2.1`…（跳过 `.0` 结尾）
 - 正式稳定版：`1.0.0`
 
-当前版本：**0.2.14**
+当前版本：**0.3.1**
 
 > 完整的版本迭代记录与问题修复见 **[CHANGELOG\_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

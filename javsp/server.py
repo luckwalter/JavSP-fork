@@ -138,6 +138,10 @@ def _config_file_path() -> str:
         if path:
             return str(path)
     # 兜底: get_config_source 始终会 append 一个 FileSource, 走到这里说明结构变了
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        candidate = os.path.join(exe_dir, '_internal', 'config.yml')
+        return candidate if os.path.isfile(candidate) else os.path.join(exe_dir, 'config.yml')
     return os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
 
@@ -667,8 +671,25 @@ def api_config_runtime():
 
 
 # ----------------------------- 前端静态托管(生产构建后) -----------------------------
-_dist_dir = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'frontend', 'dist')
+def _resolve_dist_dir() -> str:
+    """解析前端静态资源目录
+
+    源码运行: 项目根/frontend/dist。
+    PyInstaller 打包后 (frozen):
+      * onefile: 临时解压目录 _MEIPASS/frontend/dist;
+      * onedir (PyInstaller >= 6.1): 可执行文件同级 _internal/frontend/dist。
+    """
+    if getattr(sys, 'frozen', False):
+        base = getattr(sys, '_MEIPASS', None)
+        if base is None:
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            candidate = os.path.join(exe_dir, '_internal')
+            base = candidate if os.path.isdir(candidate) else exe_dir
+        return os.path.join(base, 'frontend', 'dist')
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'frontend', 'dist')
+
+_dist_dir = _resolve_dist_dir()
 if os.path.isdir(_dist_dir):
     app.mount('/', StaticFiles(directory=_dist_dir, html=True), name='static')
 

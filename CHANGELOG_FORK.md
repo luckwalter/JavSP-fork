@@ -8,6 +8,30 @@
 
 ---
 
+## v0.3.1（2026-10-16）
+
+**新增本机桌面 exe 交付形态（与 Docker 部署并列的第二种使用方式）**
+
+本版本在原有 Web 服务（Docker / NAS）之外，新增一种「下载即用」的本机运行方式：把 FastAPI 后端 + 前端打包为独立 Windows 程序，解压 zip 即可运行，无需 Python 环境、无需 Docker。
+
+### 双形态入口（javsp/desktop.py）
+- **默认 GUI（C/S）**：用 pywebview 开一个原生窗口壳加载 WebUI，关闭窗口即退出；适合想要「一个程序一个窗口」体验的用户。
+- **`--nogui`（B/S）**：改用系统默认浏览器打开 WebUI（服务仍在本地 127.0.0.1:8000），关闭命令行窗口即退出；适合已在用浏览器、或需要看代理/爬虫调试日志的场景。
+- 启动时轮询 `/api/health` 做就绪检测（替代原先固定 sleep 2 秒），就绪后才开界面；frozen 下日志同时落 exe 同级 `JavSP.log`，便于无控制台时排查。
+
+### 便携数据目录（exe 同级）
+- 所有运行时数据（config.yml、登录会话、JavSP.log）全部落在 exe 同级目录，解压到任意位置即可用，不写系统目录、不污染用户目录。
+- `lib.resource_path` 的 frozen 分支改为基于 `sys.executable` 所在目录解析，无论用户从哪个工作目录启动都能正确定位配置与图片/数据资源。
+- `server._resolve_dist_dir` 与 `_config_file_path` 兜底在 frozen 下改用 `_MEIPASS` / exe 目录定位前端静态资源与配置文件（onedir / onefile 均兼容）。
+
+### 可复现构建
+- 新增 `build/pyinstaller.spec`（onedir 形态）：datas 含 `frontend/dist`、`config.yml`、`javsp/image`、`javsp/data`；hiddenimports 显式收集 `javsp.web.*`（运行时动态 import）与 `webview`。
+- 新增 `tools/build_desktop.py`：一键完成「前端 build → PyInstaller 打包 → 压缩为 `JavSP-<version>-windows.zip`」。
+- 分发形态：onedir 目录打 zip 直接发（不做 Inno Setup 安装包），与 Docker 镜像 tar 作为两个并列 Release 资产。
+
+### 说明
+- 本形态为 fork 自有 0.x 线演进（0.2.x 完成 WebUI 改造，0.3.x 开启本机桌面交付），不影响既有 Docker / NAS 部署路径。
+
 ## v0.2.14（2026-10-12）
 
 **复活 javbus 渠道（站点更换年龄验证机制）+ 删除渠道 Cookie 手动配置功能**

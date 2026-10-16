@@ -16,9 +16,22 @@ def re_escape(s: str) -> str:
 
 
 def resource_path(path: str) -> str:
-    """获取一个随代码打包的文件在解压后的路径"""
+    """获取一个随代码打包的文件在解压后的路径
+
+    - 源码运行: 相对项目根目录 (本文件的上两级)。
+    - PyInstaller 打包后 (frozen):
+      * onefile: 临时解压到 sys._MEIPASS;
+      * onedir (PyInstaller >= 6.1): 资源集合在可执行文件同级的 _internal 目录。
+      以「_MEIPASS 优先、否则 exe 同级 _internal」为基准解析,
+      保证无论用户从哪个工作目录启动, 都能正确定位 config.yml / 图片 / 数据文件。
+    """
     if getattr(sys, "frozen", False):
-        return path
+        base = getattr(sys, "_MEIPASS", None)
+        if base is None:
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            candidate = os.path.join(exe_dir, "_internal")
+            base = candidate if os.path.isdir(candidate) else exe_dir
+        return os.path.join(base, path)
     else:
         path_joined = Path(__file__).parent.parent / path
         return str(path_joined)
