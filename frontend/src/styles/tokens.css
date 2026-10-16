@@ -38,6 +38,16 @@
   --color-info:         #5b7fa8;
   --color-info-soft:    #eef2f7;
 
+  /* ---------- soft 底上的文字色 ----------
+     pill/notice 都是「soft 底 + 彩色字」结构, 深色主题下 soft 变深底,
+     这些文字色必须相应提亮(见下方 [data-theme="dark"] 块)。 */
+  --color-on-warning-soft:     #7a4d06;
+  --color-on-warning-soft-dim: #8a6d3b;
+  --color-on-danger-soft:      #96201f;
+  --color-on-info-soft:        #35506d;
+  --color-warning-border:      #f0d9a8;
+  --color-info-border:         #c9d6e4;
+
   /* ---------- 间距: 4px 基准 ---------- */
   --space-1: 4px;
   --space-2: 8px;
@@ -81,7 +91,79 @@
   --transition-fast: 120ms ease;
   --transition-base: 180ms ease;
 
+  /* 阴影: 深色主题下需要更重才可见(见 [data-theme="dark"] 覆盖) */
+  --shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-toast: 0 4px 16px rgba(0, 0, 0, 0.14);
+
   --focus-ring: 0 0 0 3px rgba(47, 111, 208, 0.18);
+}
+
+/* ============================================================================
+   深色主题
+   ----------------------------------------------------------------------------
+   设计原则:
+   1) 背景不用纯黑(眩光), 层级越高越亮 —— page < surface < subtle < hover,
+      与浅色主题的「subtle 更暗」相反, 这是深色模式表达层级的正确方向;
+   2) 正文不用纯白, 主文字 #e6e9ee 降低眩光;
+   3) 语义色全部提亮 —— 深色底上原饱和度会显得脏, 且 *-soft 底上的
+      主色文字对比度必须 ≥4.5:1 (WCAG AA);
+   4) text-inverse 在深色下翻转为深色 —— primary 提亮后白字对比仅 ~2.9:1,
+      亮蓝底配深字 ~8:1;
+   5) 辅助文字 tertiary 也保证 ≥4.5:1 (11px 小字的硬指标)。
+   ========================================================================== */
+[data-theme="dark"] {
+  /* ---------- 背景层级: 越"高"越亮 ---------- */
+  --color-bg-page:    #14171c;
+  --color-bg-surface: #1b1f26;
+  --color-bg-subtle:  #232833;
+  --color-bg-hover:   #2b313c;
+
+  /* ---------- 文字 ---------- */
+  --color-text-primary:   #e6e9ee;
+  --color-text-secondary: #a9b1bd;
+  --color-text-tertiary:  #828a96;
+  --color-text-inverse:   #101318;
+
+  /* ---------- 边框 ---------- */
+  --color-border-light:  #272c35;
+  --color-border-medium: #363c47;
+
+  /* ---------- 语义色: 提亮 ---------- */
+  --color-primary:       #6aa5f0;
+  --color-primary-hover: #85b8f5;
+  --color-primary-soft:  #1b2c46;
+
+  --color-success:      #4cba7b;
+  --color-success-soft: #16301f;
+  --color-warning:      #d9a641;
+  --color-warning-soft: #33280f;
+  --color-danger:       #e8696b;
+  --color-danger-hover: #f08587;
+  --color-danger-soft:  #3a1a1c;
+  --color-danger-border:#5a2a2c;
+  --color-info:         #7fa3cc;
+  --color-info-soft:    #1d2836;
+
+  /* soft 底(深底)上的文字色: 全部提亮, 保证 ≥4.5:1 */
+  --color-on-warning-soft:     #e3bd6a;
+  --color-on-warning-soft-dim: #c9a86a;
+  --color-on-danger-soft:      #f09294;
+  --color-on-info-soft:        #a5c2e4;
+  --color-warning-border:      #4d3d1a;
+  --color-info-border:         #2c3a4d;
+
+  --shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-toast: 0 4px 16px rgba(0, 0, 0, 0.5);
+
+  --focus-ring: 0 0 0 3px rgba(106, 165, 240, 0.28);
+}
+
+/* 主题切换瞬间禁用过渡, 避免全站属性一起渐变造成的闪烁 */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
 }
 
 /* 尊重系统「减少动态效果」偏好 —— 前庭敏感用户不应被动画干扰 */

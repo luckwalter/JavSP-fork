@@ -4,6 +4,7 @@
  *  放在常驻位置, 一眼看到「有N 个源被跳过」, 不必进监控页排查。
  */
 import { computed } from 'vue'
+import { useTheme, THEME_MODES } from '../composables/useTheme'
 
 const props = defineProps({
   version: { type: String, default: '' },
@@ -34,6 +35,29 @@ const pct = computed(() => {
   if (!t.total) return 0
   return Math.round(((t.index || 0) / t.total) * 100)
 })
+
+/* ---------- 主题快捷切换: 点一下循环 浅色→深色→自动→定时 ----------
+   详细配置(定时时段)在设置页「外观」子页。 */
+const { mode, schedule, setMode } = useTheme()
+
+const themeLabel = computed(() => {
+  return { light: '浅色', dark: '深色', auto: '自动', schedule: '定时' }[mode.value] || '浅色'
+})
+
+const themeTitle = computed(() => {
+  const tip = {
+    light: '主题: 浅色(点击切换到深色)',
+    dark: '主题: 深色(点击切换到跟随系统)',
+    auto: '主题: 跟随系统(点击切换到定时)',
+    schedule: `主题: 定时 ${schedule.value.start}-${schedule.value.end} 自动切换(点击切换到浅色)`,
+  }
+  return tip[mode.value] || tip.light
+})
+
+function cycleTheme() {
+  const i = THEME_MODES.indexOf(mode.value)
+  setMode(THEME_MODES[(i + 1) % THEME_MODES.length])
+}
 </script>
 
 <template>
@@ -57,6 +81,8 @@ const pct = computed(() => {
     </div>
 
     <div class="statusbar-right">
+      <button class="link-btn theme-btn" :title="themeTitle" :aria-label="themeTitle"
+              @click="cycleTheme">{{ themeLabel }}</button>
       <span v-if="user" class="statusbar-user">{{ user }}</span>
       <button v-if="user" class="link-btn" @click="emit('logout')">退出</button>
       <span class="statusbar-version">v{{ version || '—' }}</span>
@@ -104,6 +130,9 @@ const pct = computed(() => {
 
 .statusbar-user { color: var(--color-text-secondary); }
 .statusbar-version { color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
+
+/* 主题按钮: 固定 2 字宽, 四种模式标签都是 2 字, 切换时宽度不抖动 */
+.theme-btn { min-width: 2em; text-align: center; }
 
 .link-btn {
   padding: 0;

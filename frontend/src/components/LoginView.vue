@@ -247,7 +247,7 @@ defineExpose({ setError: (m, lock = 0) => { error.value = m; if (lock > 0) { loc
   margin-top: var(--space-3);
   padding: var(--space-2) var(--space-3);
   font-size: var(--font-xs);
-  color: #7a4d06;
+  color: var(--color-on-warning-soft);
   text-align: center;
   background: var(--color-warning-soft);
   border-radius: var(--radius-sm);
@@ -256,13 +256,13 @@ defineExpose({ setError: (m, lock = 0) => { error.value = m; if (lock > 0) { loc
 .login-hint-warn {
   display: block;
   margin-top: 2px;
-  color: #8a6d3b;
+  color: var(--color-on-warning-soft-dim);
 }
 
 .login-hint code {
   padding: 1px 4px;
   font-family: var(--font-mono);
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--color-bg-subtle);
   border-radius: 3px;
 }
 

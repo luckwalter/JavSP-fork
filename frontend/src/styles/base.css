@@ -291,20 +291,20 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 
 .notice--warning {
   background: var(--color-warning-soft);
-  border-color: #f0d9a8;
-  color: #7a4d06;
+  border-color: var(--color-warning-border);
+  color: var(--color-on-warning-soft);
 }
 
 .notice--danger {
   background: var(--color-danger-soft);
   border-color: var(--color-danger-border);
-  color: #96201f;
+  color: var(--color-on-danger-soft);
 }
 
 .notice--info {
   background: var(--color-info-soft);
-  border-color: #c9d6e4;
-  color: #35506d;
+  border-color: var(--color-info-border);
+  color: var(--color-on-info-soft);
 }
 
 /* ---------- 表格 ---------- */

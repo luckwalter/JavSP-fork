@@ -9,8 +9,10 @@
  *     translator.fields.{title,plot} 而非 translate_title/translate_plot
  *  写错字段名会让 PUT /api/config 静默不生效或写坏配置 —— 故此处逐一核对过。
  */
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import * as api from '../api'
+import NamingRuleBuilder from '../components/NamingRuleBuilder.vue'
+import { useTheme, THEME_MODES } from '../composables/useTheme'
 
 const cfg = ref(null)
 const runtime = ref(null)
@@ -18,7 +20,22 @@ const msg = ref('')
 const err = ref('')
 const saving = ref(false)
 const loading = ref(false)
-const open = ref({ scan: true, network: true, crawler: true, output: false, summarizer: false, translator: false })
+
+// 三栏布局: 左栏分类导航(当前组), 右栏只渲染当前组表单 —— 比「全部折叠堆叠」
+// 更像设置面板, 长表单也不再需要反复滚动找分组。
+const activeGroup = ref('output')
+
+// 外观: 主题四模式(浅色/深色/跟随系统/定时), 与 StatusBar 快捷切换共享同一单例。
+const { mode: themeMode, schedule: themeSchedule, resolvedDark, setMode: setThemeMode, setSchedule: setThemeSchedule } = useTheme()
+
+const themeModeLabel = { light: '浅色', dark: '深色', auto: '跟随系统', schedule: '定时切换' }
+const themeModeDesc = {
+  light: '始终使用浅色界面',
+  dark: '始终使用深色界面',
+  auto: '跟随操作系统深浅色偏好',
+  schedule: '在下方时段内自动使用深色, 其余时间浅色',
+}
+const themeEffective = computed(() => (resolvedDark.value ? '深色' : '浅色'))
 
 const GROUPS = [
   { key: 'scan', label: '扫描与识别', hint: '决定哪些文件被纳入刮削' },
@@ -26,8 +43,11 @@ const GROUPS = [
   { key: 'crawler', label: '刮削源', hint: '启用哪些站点' },
   { key: 'output', label: '输出与命名', hint: '目录结构与文件名' },
   { key: 'summarizer', label: '输出控制', hint: '不想生成的东西可以关掉' },
+  { key: 'appearance', label: '外观', hint: '主题与界面亮度' },
   { key: 'translator', label: '翻译', hint: '标题与剧情的自动翻译' },
 ]
+
+const currentGroup = computed(() => GROUPS.find((g) => g.key === activeGroup.value) || GROUPS[0])
 
 // 按选源类型(对应 core.py 的 movie.data_src)声明的「推荐源」清单。
 // 每个 crawler 实际支持的番号类型据此收敛, 设置页每个分区只显示该类支持的源:
@@ -156,34 +176,42 @@ onMounted(load)
     </div>
 
     <template v-else-if="cfg">
-      <div class="toolbar">
-        <button class="btn btn--primary" :disabled="saving" @click="save">
-          <span v-if="saving" class="spinner" aria-hidden="true"></span>
-          {{ saving ? '保存中' : '保存并生效' }}
-        </button>
-        <button class="btn" @click="load">放弃修改</button>
-        <span v-if="runtime?.crop_engine" class="pill pill--muted">
-          封面引擎: {{ runtime.crop_engine }}
-        </span>
-      </div>
+      <div class="settings-layout">
+        <!-- 左栏: 分类导航(页内级, 158px) -->
+        <nav class="settings-nav" aria-label="设置分类">
+          <button v-for="g in GROUPS" :key="g.key" type="button" class="nav-item"
+                  :class="{ 'nav-item--on': g.key === activeGroup }"
+                  :aria-current="g.key === activeGroup ? 'page' : undefined"
+                  @click="activeGroup = g.key">
+            <span class="nav-label">{{ g.label }}</span>
+            <span class="nav-hint">{{ g.hint }}</span>
+          </button>
+        </nav>
 
-      <div v-if="msg" class="notice notice--info" style="margin-bottom: var(--space-4);">{{ msg }}</div>
-      <div v-if="err" class="notice notice--danger" style="margin-bottom: var(--space-4);">{{ err }}</div>
+        <!-- 右栏: 当前组表单 -->
+        <div class="settings-main">
+          <div class="toolbar">
+            <button class="btn btn--primary" :disabled="saving" @click="save">
+              <span v-if="saving" class="spinner" aria-hidden="true"></span>
+              {{ saving ? '保存中' : '保存并生效' }}
+            </button>
+            <button class="btn" @click="load">放弃修改</button>
+            <span v-if="runtime?.crop_engine" class="pill pill--muted">
+              封面引擎: {{ runtime.crop_engine }}
+            </span>
+          </div>
 
-      <div v-for="g in GROUPS" :key="g.key" class="section group">
-        <button class="group-head" @click="open[g.key] = !open[g.key]" :aria-expanded="!!open[g.key]">
-          <span class="group-label">{{ g.label }}</span>
-          <span class="group-hint">{{ g.hint }}</span>
-          <svg class="group-caret" :class="{ open: open[g.key] }" width="16" height="16"
-               viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </button>
+          <div v-if="msg" class="notice notice--info" style="margin-bottom: var(--space-4);">{{ msg }}</div>
+          <div v-if="err" class="notice notice--danger" style="margin-bottom: var(--space-4);">{{ err }}</div>
 
-        <div v-show="open[g.key]" class="group-body">
+          <div class="section group">
+            <div class="group-head group-head--static">
+              <span class="group-label">{{ currentGroup.label }}</span>
+              <span class="group-hint">{{ currentGroup.hint }}</span>
+            </div>
+            <div class="group-body">
           <!-- 扫描 -->
-          <template v-if="g.key === 'scan'">
+          <template v-if="currentGroup.key === 'scan'">
             <div class="row-2">
               <div class="field">
                 <label class="field-label">最小文件体积</label>
@@ -206,7 +234,7 @@ onMounted(load)
           </template>
 
           <!-- 网络 -->
-          <template v-else-if="g.key === 'network'">
+          <template v-else-if="currentGroup.key === 'network'">
             <div class="field">
               <label class="field-label">出口代理</label>
               <input v-model="cfg.network.proxy_server" class="input" style="max-width: 360px;"
@@ -236,7 +264,7 @@ onMounted(load)
           </template>
 
           <!-- 刮削源: 遍历 normal/fc2/cid 三类, 每类独立勾选区(根治只暴露 normal 的坑) -->
-          <template v-else-if="g.key === 'crawler'">
+          <template v-else-if="currentGroup.key === 'crawler'">
             <div class="field" v-for="kind in CRAWLER_KINDS" :key="kind">
               <label class="field-label">{{ KIND_LABEL[kind] }}</label>
               <p class="field-hint" style="margin-bottom: var(--space-2);">
@@ -270,36 +298,44 @@ onMounted(load)
             </label>
           </template>
 
-          <!-- 输出与命名 -->
-          <template v-else-if="g.key === 'output'">
+          <!-- 输出与命名: 可视化构建器(点击/拖动拼装, 无需手打 {xxx}) -->
+          <template v-else-if="currentGroup.key === 'output'">
             <div class="field">
-              <label class="field-label">输出目录模板</label>
-              <input v-model="cfg.summarizer.path.output_folder_pattern" class="input" />
-              <p class="field-hint">
-                占位符: {num} {title} {actress} {studio} {publish_date} 等
+              <NamingRuleBuilder
+                v-model="cfg.summarizer.path.output_folder_pattern"
+                label="输出目录模板"
+                :length-max="Number(cfg.summarizer.path.length_maximum) || 0"
+                :by-byte="!!cfg.summarizer.path.length_by_byte" />
+              <p class="field-hint" style="margin-top: var(--space-2);">
+                层与层之间以 <code>/</code> 分隔形成多级目录; 多分片影片的番号会自动追加 <code>-CD1/-CD2</code> 后缀
               </p>
             </div>
             <div class="row-2">
               <div class="field">
-                <label class="field-label">文件名模板</label>
-                <input v-model="cfg.summarizer.path.basename_pattern" class="input" />
+                <NamingRuleBuilder v-model="cfg.summarizer.path.basename_pattern"
+                                   label="文件名模板" single />
               </div>
               <div class="field">
-                <label class="field-label">NFO 文件名</label>
-                <input v-model="cfg.summarizer.nfo.basename_pattern" class="input" />
+                <NamingRuleBuilder v-model="cfg.summarizer.nfo.basename_pattern"
+                                   label="NFO 文件名" single />
               </div>
             </div>
             <div class="row-2">
               <div class="field">
-                <label class="field-label">NFO 标题格式</label>
-                <input v-model="cfg.summarizer.nfo.title_pattern" class="input" />
+                <NamingRuleBuilder v-model="cfg.summarizer.nfo.title_pattern"
+                                   label="NFO 标题格式" single />
               </div>
               <div class="field">
                 <label class="field-label">目录名最大长度</label>
                 <input v-model.number="cfg.summarizer.path.length_maximum" type="number"
                        min="20" max="250" class="input" />
+                <p class="field-hint">超长时自动截断; 按字节计长时中文每字算 3</p>
               </div>
             </div>
+            <label class="switch-row">
+              <input v-model="cfg.summarizer.path.length_by_byte" type="checkbox" />
+              <span>按字节计算目录名长度(中文每字 3 字节, 兼容旧版行为)</span>
+            </label>
             <label class="switch-row">
               <input v-model="cfg.summarizer.move_files" type="checkbox" />
               <span>整理时移动文件(关闭则只写元数据, 不动原文件)</span>
@@ -307,7 +343,7 @@ onMounted(load)
           </template>
 
           <!-- 输出控制 -->
-          <template v-else-if="g.key === 'summarizer'">
+          <template v-else-if="currentGroup.key === 'summarizer'">
             <p class="field-hint" style="margin-bottom: var(--space-3);">
               元数据交给 Jellyfin 自行刮削时, 这些重复劳动可以关掉
             </p>
@@ -333,8 +369,39 @@ onMounted(load)
             </label>
           </template>
 
+          <!-- 外观: 主题四模式(与 StatusBar 快捷切换共享同一状态) -->
+          <template v-else-if="currentGroup.key === 'appearance'">
+            <div class="theme-modes" role="radiogroup" aria-label="主题模式">
+              <button v-for="m in THEME_MODES" :key="m" type="button" class="theme-card"
+                      :class="{ 'theme-card--on': themeMode === m }"
+                      role="radio" :aria-checked="themeMode === m"
+                      @click="setThemeMode(m)">
+                <span class="theme-card-name">{{ themeModeLabel[m] }}</span>
+                <span class="theme-card-desc">{{ themeModeDesc[m] }}</span>
+              </button>
+            </div>
+            <div v-if="themeMode === 'schedule'" class="schedule-row">
+              <div class="field">
+                <label class="field-label">深色开始</label>
+                <input type="time" class="input" :value="themeSchedule.start"
+                       @change="setThemeSchedule({ start: $event.target.value, end: themeSchedule.end })" />
+              </div>
+              <div class="field">
+                <label class="field-label">深色结束</label>
+                <input type="time" class="input" :value="themeSchedule.end"
+                       @change="setThemeSchedule({ start: themeSchedule.start, end: $event.target.value })" />
+              </div>
+              <p class="field-hint schedule-tip">
+                支持跨午夜(如 19:00 → 次日 07:00); 每分钟检查一次, 切换即时生效
+              </p>
+            </div>
+            <p class="field-hint">
+              当前生效: <b>{{ themeEffective }}</b> 主题 · 状态栏主题按钮可快速循环切换四种模式
+            </p>
+          </template>
+
           <!-- 翻译 -->
-          <template v-else-if="g.key === 'translator'">
+          <template v-else-if="currentGroup.key === 'translator'">
             <div class="field">
               <label class="field-label">翻译引擎</label>
               <select v-model="cfg.translator.engine" class="input" style="max-width: 240px;">
@@ -353,7 +420,7 @@ onMounted(load)
                      placeholder="留空= 不使用该引擎"
                      @input="cfg.translator.api_key = $event.target.value" />
               <p class="field-hint">
-                配置��件是 git 跟踪的, 建议改用环境变量
+                配置文件是 git 跟踪的, 建议改用环境变量
                 <code>JAVSP_TRANSLATOR.ENGINE.API_KEY</code>(点号, 双下划线会被静默忽略)
               </p>
             </div>
@@ -368,37 +435,57 @@ onMounted(load)
           </template>
         </div>
       </div>
+        </div>
+      </div>
     </template>
   </div>
 </template>
 
 <style scoped>
-.group { padding: 0; overflow: hidden; }
+/* ---------- 三栏: 左栏分类导航 + 右栏当前组表单 ---------- */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 158px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
 
-.group-head {
+.settings-nav {
+  position: sticky;
+  top: var(--space-6);
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  width: 100%;
-  padding: var(--space-4) var(--space-5);
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-2) var(--space-3);
   font-family: inherit;
   text-align: left;
-  background: none;
+  background: transparent;
   border: 0;
+  border-left: 3px solid transparent;
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition: background var(--transition-fast);
 }
+.nav-item:hover { background: var(--color-bg-subtle); }
+.nav-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.nav-item--on { background: var(--color-primary-soft); border-left-color: var(--color-primary); }
+.nav-label { font-size: var(--font-base); font-weight: 500; color: var(--color-text-primary); }
+.nav-item--on .nav-label { color: var(--color-primary); }
+.nav-hint { font-size: var(--font-xs); color: var(--color-text-tertiary); }
 
-.group-head:hover { background: var(--color-bg-subtle); }
-.group-head:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.group { padding: 0; overflow: hidden; }
 
+/* 三栏下组头是静态标题(不再点击折叠) */
+.group-head { display: flex; align-items: center; gap: var(--space-3); width: 100%; padding: var(--space-4) var(--space-5); }
+.group-head--static { cursor: default; }
 .group-label { font-size: var(--font-md); font-weight: 600; }
 .group-hint { flex: 1; font-size: var(--font-sm); color: var(--color-text-secondary); }
-
-.group-caret {
-  color: var(--color-text-tertiary);
-  transition: transform var(--transition-fast);
-}
-.group-caret.open { transform: rotate(180deg); }
 
 .group-body { padding: 0 var(--space-5) var(--space-5); }
 
@@ -441,5 +528,58 @@ code {
   font-size: var(--font-xs);
   background: var(--color-bg-subtle);
   border-radius: var(--radius-sm);
+}
+
+/* ---------- 外观: 主题模式卡片 ---------- */
+.theme-modes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  font-family: inherit;
+  text-align: left;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+.theme-card:hover { border-color: var(--color-text-tertiary); }
+.theme-card:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.theme-card--on { border-color: var(--color-primary); background: var(--color-primary-soft); }
+.theme-card-name { font-size: var(--font-base); font-weight: 500; color: var(--color-text-primary); }
+.theme-card--on .theme-card-name { color: var(--color-primary); }
+.theme-card-desc { font-size: var(--font-xs); color: var(--color-text-secondary); }
+
+.schedule-row {
+  display: grid;
+  grid-template-columns: 132px 132px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: end;
+  margin-bottom: var(--space-4);
+}
+.schedule-tip { padding-bottom: var(--space-2); }
+
+/* ---------- 窄屏: 左栏变横向滚动条 ---------- */
+@media (max-width: 860px) {
+  .settings-layout { grid-template-columns: 1fr; }
+  .settings-nav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: var(--space-2);
+  }
+  .nav-item { flex-shrink: 0; border-left: 0; border-bottom: 3px solid transparent; }
+  .nav-item--on { border-bottom-color: var(--color-primary); }
+  .theme-modes { grid-template-columns: 1fr; }
+  .schedule-row { grid-template-columns: 1fr 1fr; }
+  .schedule-tip { grid-column: 1 / -1; }
 }
 </style>

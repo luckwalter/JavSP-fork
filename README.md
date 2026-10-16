@@ -8,7 +8,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.3.2-blue.svg)
+![Version](https://img.shields.io/badge/version-0.3.3-blue.svg)
 
 ## 功能特点
 
