@@ -24,20 +24,44 @@
 - **多形态交付**：Web 服务（Docker / NAS）+ Windows 桌面程序（exe，默认 GUI 窗口壳 / `--nogui` 浏览器）
 - **可选单用户登录**：设置 `JAVSP_AUTH_PASSWORD` 即启用，未设置则免登录（默认）
 
-内置 **18 个刮削源**（`javsp/web/*`，设置页可勾选启用）：airav、avsox、avwiki、dl_getchu、fanza、fc2、fc2ppvdb、gyutto、jav321、javbus、javdatabase、javdb、javdbapi、javfree、javlib、javmenu、mgstage、njav、prestige。其中 `javdbapi` / `javdatabase` / `javmenu` / `javfree` / `gyutto` / `njav` 为本 fork 移植增强。
+内置 **19 个刮削源**（`javsp/web/*`，设置页可勾选启用）：airav、avsox、avwiki、dl_getchu、fanza、fc2、fc2ppvdb、gyutto、jav321、javbus、javdatabase、javdb、javdbapi、javfree、javlib、javmenu、mgstage、njav、prestige。其中 `javdbapi` / `javdatabase` / `javmenu` / `javfree` / `gyutto` / `njav` 为本 fork 移植增强。
 
 ## 架构
 
 ```
-┌─────────────┐   HTTP / SSE   ┌──────────────────┐   复用   ┌────────────────┐
-│  Web 前端    │ ─────────────▶ │  FastAPI 后端     │ ──────▶ │  爬虫层         │
-│ Vue3+Element │ ◀───────────── │  javsp/server.py  │         │  javsp/web/*   │
-│  (frontend/) │  进度/结果 JSON │  (javsp.server:entry)│      │  番号→MovieInfo │
-└─────────────┘                └──────────────────┘         └────────────────┘
-                                        │
-                                 ┌──────┴──────┐
-                            PyWebView 桌面壳   Docker 多阶段构建
-                            (javsp/desktop.py) (docker/Dockerfile)
+              ┌──────────────────────────────────────────────┐
+              │           前端资产 frontend/dist               │
+              │      Vue3 + Vite · 自建设计系统(无 UI 框架)     │
+              └───────────────────────┬──────────────────────┘
+                                      │ 两种形态共同加载
+        ┌─────────────────────────────┴─────────────────────────────┐
+        │                                                           │
+┌───────┴────────┐                                    ┌─────────────┴───────┐
+│ ① Docker / NAS  │                                    │ ② Windows 桌面 exe   │
+│ docker/Dockerfile│                                   │ PyInstaller onedir   │
+│ 多阶段构建镜像   │                                    │ JavSP.exe 桌面壳     │
+│ 容器内 uvicorn   │                                    │ 默认 pywebview 窗口  │
+└───────┬────────┘                                    └─────────────┬───────┘
+        │              同一 FastAPI 后端(server.py:entry)            │
+        └──────────────────────────┬─────────────────────────────────┘
+                                   ▼
+        ┌──────────────────────────────────────────────┐
+        │  FastAPI 后端 javsp/server.py                 │◀── HTTP/SSE ──▶ 浏览器
+        │  鉴权 auth.py · 配置 Web 化写回与热重载        │
+        └──────────────────────┬───────────────────────┘
+                               │ 调用
+        ┌──────────────────────┴───────────────────────┐
+        │  核心编排 javsp/core.py                       │ CLI / Web / 桌面共用
+        │  scrape_movie() / organize_movie() / ...     │
+        └──────────────────────┬───────────────────────┘
+                               │
+        ┌──────────────────────┴───────────────────────┐
+        │  爬虫层 javsp/web/*                           │ 19 源 + health.py 熔断
+        │  番号 → MovieInfo                             │
+        └──────────────────────────────────────────────┘
+
+Release 双资产：javsp-fork-<ver>-image.tar.gz（docker load 即用）
+              ＋ JavSP-<ver>-windows.zip（解压双击即用）
 ```
 
 - **爬虫层 `javsp/web/*`**：番号 → `MovieInfo`，上游纯逻辑底座 + fork 移植增强，是最稳的根基。
@@ -53,7 +77,7 @@
   | `POST /api/batch` | **批量**刮削（可选附带整理），SSE 推送逐部 + 整体进度 |
   | `GET` / `PUT /api/config` | 读取 / 写回 `config.yml`（写回后即时生效，无需重启） |
   | `GET /api/config/runtime` | 查看运行时实际生效的配置（含各爬虫出口的代理 / 超时） |
-- **前端 `frontend/`**：Vue3 + Vite + Element Plus，含扫描、单部刮削、批量任务、渠道监控、设置等页面。
+- **前端 `frontend/`**：Vue3 + Vite，自建设计系统（0.2.x 起移除 Element Plus，手写组件 + 设计令牌 CSS），含扫描、单部刮削、批量任务、渠道监控、设置等页面。
 - **渠道健康 `javsp/web/health.py`**：后台探活 + 熔断/半开恢复，详见下文。
 - **鉴权 `javsp/auth.py`**：可选单用户登录，会话落盘、登录锁定。
 
@@ -182,6 +206,8 @@ poster 与 fanart 同源，两项都关时连封面下载都不会发生，批�
 ## 开发
 
 仓库根目录附带若干**纯逻辑验证脚本**（不联网，可直接运行），改动后跑一遍可快速自查，覆盖：刮削打磨（并发限流/重试退避/genre 合并/站点透传）、批量端到端、每站点贡献透传、配置写回（保注释/换行符）、配置热重载与回滚、封面 AI 裁剪、输出开关、历史 bug 回归守卫等（`verify_*.py`）。
+
+另有 `tests/` 下的 **unittest 回归测试**（零第三方依赖，`python -m unittest discover -s tests -v` 运行），目前覆盖上游 PR 移植修复的行为守卫（下划线分隔后缀识别、fc2ppvdb 缺字段容错），新增修复时应同步补用例。
 
 ## 问题反馈
 
