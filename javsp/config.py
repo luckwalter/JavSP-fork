@@ -7,7 +7,14 @@ from pydantic_extra_types.pendulum_dt import Duration
 from pydantic_core import Url
 from pathlib import Path
 
+import os
+import sys
+import shutil
+import logging
+
 from javsp.lib import resource_path
+
+logger = logging.getLogger(__name__)
 
 class Scanner(BaseConfig):
     ignored_id_pattern: List[str]
@@ -240,7 +247,25 @@ def get_config_source():
     args, _ = parser.parse_known_args()
     sources = []
     if args.config is None:
-        args.config = resource_path('config.yml')
+        if getattr(sys, 'frozen', False):
+            # 打包形态: 配置落到 exe 同级目录(便携), 整包升级也不会被 _internal 覆盖
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            user_cfg = os.path.join(exe_dir, 'config.yml')
+            default_cfg = os.path.join(exe_dir, '_internal', 'config.yml')
+            if not os.path.isfile(user_cfg):
+                if os.path.isfile(default_cfg):
+                    # 首次运行: 从打包内置的默认模板初始化到 exe 同级
+                    try:
+                        shutil.copyfile(default_cfg, user_cfg)
+                        logger.info('已从内置模板初始化配置文件: %s', user_cfg)
+                    except OSError as e:
+                        logger.warning('初始化默认配置失败(%s), 将直接使用内置模板', e)
+                        user_cfg = default_cfg
+                else:
+                    logger.warning('未找到内置默认配置模板, 回退路径: %s', user_cfg)
+            args.config = user_cfg
+        else:
+            args.config = resource_path('config.yml')
     sources.append(FileSource(file=args.config))
     # ⚠️ EnvSource 的嵌套层级分隔符是 confz 的默认值 '.', 本项目**刻意未改**。
     # 因此嵌套环境变量必须写点号: JAVSP_NETWORK.PROXY_SERVER / JAVSP_TRANSLATOR.ENGINE.API_KEY

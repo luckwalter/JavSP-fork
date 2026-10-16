@@ -140,8 +140,8 @@ def _config_file_path() -> str:
     # 兜底: get_config_source 始终会 append 一个 FileSource, 走到这里说明结构变了
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-        candidate = os.path.join(exe_dir, '_internal', 'config.yml')
-        return candidate if os.path.isfile(candidate) else os.path.join(exe_dir, 'config.yml')
+        candidate = os.path.join(exe_dir, 'config.yml')
+        return candidate if os.path.isfile(candidate) else os.path.join(exe_dir, '_internal', 'config.yml')
     return os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yml')
 

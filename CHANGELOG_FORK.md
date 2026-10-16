@@ -8,6 +8,17 @@
 
 ---
 
+## v0.3.2（2026-10-16）
+
+**修复 Windows 本机版配置落点（升级不再丢失用户配置）**
+
+0.3.1 的 Windows 本机版把配置固化在 exe 同级的 `_internal/config.yml`，整包升级时该目录被新包整体覆盖，用户改过的配置即丢失。
+
+- `config.get_config_source()`：frozen 且未显式 `-c` 时，默认配置路径改为 **exe 同级 `config.yml`**（便携目录），首次运行从 `_internal` 内置默认模板拷贝初始化；之后所有读写、登录会话均落在 exe 同级，整包升级不受 `_internal` 覆盖影响。
+- `server._config_file_path()` 兜底分支同步为 exe 同级优先，保持一致。
+- Docker / NAS 部署（非 frozen 且走 `-c` 挂载）路径不变，镜像无需重打。
+- ⚠️ 迁移提示：从 0.3.1 升级时，旧版 `C:/JavSP/_internal/config.yml` 即你的用户配置；升级前请先备份该文件，解压新版后把其内容合并进新生成的 `C:/JavSP/config.yml`（新版不再读取 `_internal/config.yml`）。
+
 ## v0.3.1（2026-10-16）
 
 **新增本机桌面 exe 交付形态（与 Docker 部署并列的第二种使用方式）**
