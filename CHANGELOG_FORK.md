@@ -8,6 +8,42 @@
 
 ---
 
+## v0.3.7（2026-10-18）
+
+**第三轮全库审查整改：死代码清理 + `/api/movies` 500 同源缺陷修复 + 会话清理接线 + import 卫生**
+
+依据 `review_2026-10-18.md`（全库 AST 死代码扫描 + v0.3.4~0.3.6 新增代码安全/性能审查）执行，全部验证通过后提交。
+
+### 死代码清理（12 处 + 1 处 API 面函数）
+
+- `javsp/web/health.py`：删 `probe_all_background`、`_is_skippable`、`allowlist_names`、`skipped_sources`、`format_report`（均零引用；自动探活走 `start_auto_probe`，端点走 `probe_all`）
+- `javsp/task_store.py`：删 `is_active`、`stats`
+- `javsp/web/base.py`：删调试转储函数 `dump_xpath_node`
+- `javsp/web/javdb.py`：删 `get_valid_cookies` 及其连带死代码 `get_user_info`（Cookie 池实际逻辑在 `get_html_wrapper` 内联，`cookies_pool` 仍在使用故保留）
+- `javsp/web/javfree.py`：删 `_pick_number`
+- `javsp/file.py`：删上游移植的 `is_remote_drive`（内含 bug：`platform != 'win32'` 拿模块与字符串比较，恒返回 False）
+- `javsp/core.py`：删 `preview_metadata`，README 对 core 暴露函数的描述同步更新
+- `frontend/src/utils/sourceMeta.js`：删 `KIND_FULL` / `KIND_HINT`（前端构建复验无引用）
+
+### P1 修复：`_is_organized` 裸 `os.listdir`（与 v0.3.6 scan 500 同源）
+
+`server.py` 的 `_is_organized` 对整理落盘目录 `save_dir` 直接 `os.listdir` 且无异常保护：目录权限被收紧（或 `output_folder_pattern` 配了指向系统目录的绝对路径）时抛 `PermissionError`，把 `/api/movies` 与单部查询一起打成 500。现改为读不了即返回“未整理”，不再扩散成接口级故障。
+
+### 会话清理接线（`prune_sessions`）
+
+`auth.prune_sessions` 的 docstring 写明“供 lifespan 定期调用”却从未接线：过期后再无人携带的会话会无限残留在 `.sessions.json`。现在 lifespan 启动 `session-prune` daemon 线程（周期 1 小时）执行原设计意图。
+
+### 工程卫生
+
+- `_list_volumes` 中函数体内的 `import string` 提升到模块级（避开“函数体内动态 import”这一 PyInstaller 历史事故模式）
+- 清理 20 个未使用的 import（`__main__.py` 9 个，`config.py`/`fanza.py`/`javbus.py`/`translate.py`/`server.py` 各若干）
+
+### 验证
+
+全库 py_compile、14 个改动模块 import 冒烟、unittest 6/6、前端 `npm run build`、`_is_organized(PermissionError)` 实测返回 False、`session-prune` 线程随 lifespan 起停实测、`sync_version --check` 通过、15 个改动文件换行符逐一核验。
+
+---
+
 ## v0.3.6（2026-10-17）
 
 **目录选择器跨盘符/网络盘定位修复（经两次返工） + 扫描无权限目录 500 修复 + 部署收尾清理工具**
