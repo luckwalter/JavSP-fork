@@ -12,7 +12,7 @@ import threading
 import hashlib
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -205,23 +205,133 @@ class BatchRequest(BaseModel):
 # 为什么要限制: 本服务无鉴权, 若允许任意路径浏览, 等于把整个文件系统的目录结构
 # 暴露给任何能访问该端口的客户端(审查时已标记「/api/scan 无白名单」是中风险面,
 # 浏览功能会把它从「能读媒体目录」扩大到「能枚举任意目录」)。
-# 默认值: 取环境变量 JAVSP_BROWSE_ROOT; 未设置时用 '/' (即不限制, 与原先手输路径
+# 默认值: 取环境变量 JAVSP_BROWSE_ROOT; **未设置时表示不限制**(与原先手输路径
 # 的能力一致——本项目定位是单用户自用工具, 详见 README 安全说明)。
-def _browse_root() -> str:
-    return os.getenv('JAVSP_BROWSE_ROOT', '/')
+#
+# ⚠️ 2026-10-17 修正(桌面版跨盘/网盘选目录实测暴露的缺陷):
+#   原默认值是字面量 '/', 意图表达"不限制", 但它在各平台的实际含义并不相同:
+#     - Linux/容器: realpath('/') == '/' → 确实不限制;
+#     - Windows 本地: realpath('/') == 当前驱动器根(如 'C:\\') → **隐式锁死在 C 盘**,
+#       于是浏览 D 盘/其他盘符时 commonpath 抛 ValueError → 判越界 → 静默回退到 C 根,
+#       表现为"回不到上层、选不了别的盘符, 手输路径又失败"(场景 A: exe 装在 C:\JavSP);
+#     - Windows UNC: realpath('/') == 该 UNC 共享根 → 根被悄悄改成共享根,
+#       再叠加尾斜杠不一致, commonpath 抛 "Can't mix absolute and relative paths"
+#       → 子目录(如 \\HOMENAS\Downloads\Leak)被判越界 → **静默重置回根**,
+#       表现为"目录名列得出来, 但点了没反应"(场景 B: exe 装在 \\HOMENAS\Downloads\JavSP)。
+#   故改为: 未设置 JAVSP_BROWSE_ROOT 时返回 None 表示"不限制", 由 _within_browse_root
+#   显式短路; 设置了才做严格边界校验(容器 JAVSP_BROWSE_ROOT=/data 的收紧效果不变)。
+def _browse_root() -> Optional[str]:
+    """返回允许浏览的根路径; None 表示未设置限制(允许任意绝对路径)"""
+    raw = os.getenv('JAVSP_BROWSE_ROOT')
+    if raw is None or not raw.strip():
+        return None
+    return raw
+
+
+def _norm_for_compare(path: str) -> str:
+    """把路径归一化成「可直接比较」的形态, 专供根边界比较。
+
+    比较两侧必须用同一套规则, 否则同一目录会因尾斜杠/正斜杠差异被判成不同路径,
+    进而被误判为越界(2026-10-17 UNC 场景的真凶)。
+
+    跨平台要点(改动此项务必同步跑 Linux 语义测试, 见 test_linux_semantics):
+      - 盘符补斜杠要在 realpath **之前**: Windows 里 'C:' 是「驱动器相对路径」,
+        realpath('C:') 会展开成该盘当前目录而非盘符根; 该逻辑仅在 ntpath 下需要。
+      - 正斜杠统一成反斜杠只对 Windows 成立; Linux 上 '/' 本就是分隔符, 不能乱替换。
+    """
+    p = path
+    if os.name == 'nt':
+        if p.startswith('\\\\?\\'):      # 剥掉 UNC 长路径前缀, 统一形态
+            p = p[4:]
+        if len(p) == 2 and p[1] == ':':
+            p += os.sep                  # 'C:' -> 'C:\\' (否则 realpath 展开成 CWD)
+        p = p.replace('/', os.sep)      # 正斜杠统一
+    p = os.path.realpath(p)
+    stripped = p.rstrip('\\/')          # '\\host\share\' 与 '\\host\share' 须等价
+    return stripped or p[:3]
+
+
+def _split_drive(path: str) -> Tuple[str, str]:
+    """拆出 (drive, 相对部分)。drive 统一小写, 便于大小写不敏感地比较。
+
+    ntpath 规则: 本地盘符 'C:' 是 drive; **UNC 把整个 \\\\host\\share 当作 drive**
+    (这正是 commonpath 在 UNC 上抛 "Can't mix absolute and relative paths" 的原因 ——
+     它把共享名后的 '\\\\Leak' 视作相对路径)。所以 UNC 必须靠分量比较处理。
+    posixpath: 无 drive 概念, 全部归入相对部分(以 '/' 开头)。
+    """
+    drive, rest = os.path.splitdrive(path)
+    return drive.lower(), rest
+
+
+def _path_parts(path: str) -> List[str]:
+    """把路径切成可比对的分量列表(跨平台)。
+
+    ⚠️ 必须同时按两种分隔符切: Windows 上 ntpath 会把 '/' 也当分隔符,
+    Linux 上 '\\' 是合法文件名字符 —— 但作为**输入归一化**按两种都切是安全的,
+    因为 Linux 上路径里出现的反斜杠只能来自用户输入的同一路径, 切分结果一致。
+    """
+    return [p for p in path.replace('/', os.sep).split(os.sep) if p]
 
 
 def _within_browse_root(target: str) -> bool:
-    """判断 target 是否位于允许浏览的根内(realpath 消解 .. 与符号链接后再比)"""
-    root = os.path.realpath(_browse_root())
-    cand = os.path.realpath(target)
-    # 不能用 startswith(root + os.sep): root='/' 时会拼出 '//', 所有子目录都判越界
-    # (桌面版/源码运行默认 root='/' 实测中招; Docker 部署 JAVSP_BROWSE_ROOT=/data 不受影响)。
-    # commonpath 按路径分量比较, 根路径天然成立; 不同驱动器(Windows C: vs D:)抛 ValueError。
-    try:
-        return os.path.commonpath([root, cand]) == root
-    except ValueError:
+    """判断 target 是否位于允许浏览的根内(realpath 消解 .. 与符号链接后再比)
+
+    - 未设置 JAVSP_BROWSE_ROOT: 不限制(返回 True)。保持"单用户自用、原本就能手输
+      任意路径"的既有能力, 同时不再把用户隐式锁死在启动时的那个盘符上。
+      ⚠️ Docker 镜像内置 ENV JAVSP_BROWSE_ROOT=/data(docker/Dockerfile:36),
+        所以容器部署**始终走下面的严格分支**, 安全边界不因本项改动而放松。
+    - 设置了 JAVSP_BROWSE_ROOT: 严格生效(容器 /data 场景行为不变), 且 '..' 逃逸、
+      兄弟目录(/data-secret 对 /data)、兄弟共享(\\host\\share2 对 \\host\\share)、
+      跨驱动器(C: vs D:)依旧判越界。
+
+    实现说明: **不用 os.path.commonpath** —— 它在 UNC 路径上会抛
+    "Can't mix absolute and relative paths"(ntpath 把 \\\\host\\share 当 drive,
+    剩余的 '\\\\sub' 被视作相对路径), 会把合法的子目录误判成越界。改为按
+    路径分量逐级比较, 语义明确且跨平台一致。
+    """
+    root = _browse_root()
+    if root is None:
+        return True
+
+    root_n = _norm_for_compare(root)
+    cand_n = _norm_for_compare(target)
+
+    # posix 无 drive; Windows 需按 drive(含整个 UNC 共享)先分流
+    if os.name == 'nt':
+        root_drive, _ = _split_drive(root_n)
+        cand_drive, _ = _split_drive(cand_n)
+        if root_drive != cand_drive:
+            return False        # 不同盘符 / 不同 UNC 共享 → 越界
+
+    root_parts = [p.lower() for p in _path_parts(root_n)]
+    cand_parts = [p.lower() for p in _path_parts(cand_n)]
+
+    # root 覆盖整个文件系统(Windows 盘符根 / Linux '/')时不做限制
+    if not root_parts:
+        return True
+
+    # 按分量比较: cand 必须以 root 的全部分量为前缀。
+    # 用「分量列表」而非字符串 startswith, 否则 '/data' 会误匹配 '/database'。
+    if len(cand_parts) < len(root_parts):
         return False
+    return cand_parts[:len(root_parts)] == root_parts
+
+
+def _is_volume_root(path: str) -> bool:
+    """判断是否处于「可切换盘符」的根层级: 盘符根(C:\\) 或 UNC 共享根(\\\\host\\share)。
+
+    用于决定是否在目录选择器里展示盘符切换入口 —— 只有站在根层级才需要,
+    否则每翻一层都堆一排盘符反而是噪音。**仅 Windows 语义**(Linux 无盘符概念,
+    那里 /data 就是根, 不需要卷切换)。
+
+    判据: ntpath 对 UNC 把整个 '\\\\host\\share' 视作 drive, 所以共享根剩余为 ''
+    (是根), 而 '\\\\host\\share\\sub' 剩余为 '\\sub'(不是根); 本地盘符根 C:\\ 同理。
+    """
+    if os.name != 'nt':
+        return False
+    p = _norm_for_compare(path)
+    drive, rest = os.path.splitdrive(p)
+    return rest.strip('\\/') == ''
 
 
 # ----------------------------- 路由 -----------------------------
@@ -339,20 +449,33 @@ def api_browse(path: Optional[str] = None):
     """列举指定目录下的**子目录**(不列文件), 供前端目录选择器逐级导航
 
     只返回目录名与拼接后的完整路径, 不返回文件列表 —— 避免把文件名等无关信息
-    也一并暴露出去。路径必须在 JAVSP_BROWSE_ROOT 之内; 省略 path 时从该根本身开始。
+    也一并暴露出去。设置了 JAVSP_BROWSE_ROOT 时路径必须落在其内; 未设置(桌面版默认)
+    则不限制, 省略 path 时从 exe 所在目录开始。
     """
-    # 缺省/空路径时用「允许浏览的根」而不是硬编码 '/':
-    # 否则 JAVSP_BROWSE_ROOT 设成别处(如容器里的 /data)时, '/' 会落在根之外 → 403。
+    # 缺省路径的落点: 有配置根就用配置根; 未配置时用 exe 所在目录。
+    # 不用硬编码 '/' —— 那在 Windows 上等于"当前驱动器根", 会把选择器直接怼到 C 根
+    # 或(UNC 部署时)共享根, 用户一打开看到的是毫无关系的目录层级。
     if not path:
-        path = _browse_root()
+        configured_root = _browse_root()
+        if configured_root is not None:
+            path = configured_root
+        elif getattr(sys, 'frozen', False):
+            path = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            # 源码运行: 用 exe/脚本所在的项目根
+            path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.abspath(path)
     # 越界时不直接报错, 而是回退到允许浏览的根。原因: 前端会以输入框里的**残留旧值**
     # 作为起点(例如上一轮填的容器真机路径 /share/xxx), 这类值在新部署环境里必然越界,
     # 直接 403 会让「点开就是失败」——用户还得先手工清空输入框才能用。
-    # 回退到根后对话框至少能正常打开, 用户再逐级点选即可。
+    # 回退后对话框至少能正常打开, 用户再逐级点选即可。
     if not _within_browse_root(path):
-        logger.info(f'browse 请求 {path} 超出允许根, 回退到 {_browse_root()}')
-        path = os.path.abspath(_browse_root())
+        fallback = _browse_root()
+        if fallback is None:
+            # 未配置限制时理论上不该走到这(短路返回 True); 兜底回 CWD 以免 500
+            fallback = os.getcwd()
+        logger.info(f'browse 请求 {path} 超出允许根, 回退到 {fallback}')
+        path = os.path.abspath(fallback)
     if not os.path.isdir(path):
         raise HTTPException(status_code=400, detail='目录不存在或无法访问')
 
@@ -376,13 +499,35 @@ def api_browse(path: Optional[str] = None):
 
     # 排序: 目录名自然序; 并给出上级路径便于「返回上一层」
     dirs.sort(key=lambda d: d['name'].lower())
-    parent = os.path.dirname(path.rstrip(os.sep)) or path
+    # 上级: 用同一套归一化规则比较, 否则 UNC/盘符根会把自己算成自己的上级,
+    # 导致在根目录仍显示「返回上一层」而点了原地不动。
+    cur_n = _norm_for_compare(path)
+    # rstrip 只用 os.sep: Linux 上 '\\' 是合法文件名字符, 用它 strip 会误伤
+    parent_raw = os.path.dirname(path.rstrip(os.sep)) or path
+    parent_n = _norm_for_compare(parent_raw)
     # 上级若已越出允许根, 置为 None(前端隐藏「上一层」按钮)
-    parent_ok = (os.path.realpath(parent) != os.path.realpath(path)) and _within_browse_root(parent)
+    parent_ok = (parent_n != cur_n) and _within_browse_root(parent_raw)
+
+    # 未配置根时, 在「根层级」额外给出可切换的盘符入口: 否则在 C 根之下没有任何
+    # 办法走到 D 盘(主人的场景 A 就卡在这里)。只在根层级给, 避免每层都堆一排盘符。
+    volumes = []
+    if _browse_root() is None and os.name == 'nt' and _is_volume_root(path):
+        cur_drive = os.path.splitdrive(path)[0].upper()
+        try:
+            import string
+            for letter in string.ascii_uppercase:
+                d = f'{letter}:{os.sep}'
+                if d[0].upper() == cur_drive[:1]:
+                    continue
+                if os.path.exists(d):
+                    volumes.append({'name': f'{letter}:', 'path': d})
+        except OSError:
+            pass
     return {
         'current': path,
-        'parent': parent if parent_ok else None,
+        'parent': parent_raw if parent_ok else None,
         'dirs': dirs,
+        'volumes': volumes,
         'root': _browse_root(),
     }
 

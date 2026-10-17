@@ -23,6 +23,7 @@ const browseLoading = ref(false)
 const browseCurrent = ref('')
 const browseParent = ref(null)
 const browseDirs = ref([])
+const browseVolumes = ref([])
 const browseRoot = ref('')
 
 watch([scanPath, movies], () => {
@@ -92,7 +93,8 @@ async function loadBrowse(path) {
     browseCurrent.value = d.current
     browseParent.value = d.parent
     browseDirs.value = d.dirs || []
-    browseRoot.value = d.root
+    browseVolumes.value = d.volumes || []
+    browseRoot.value = d.root || ''
     if (!scanPath.value) scanPath.value = d.current
   } catch (e) {
     setMsg(`无法打开目录: ${e.message}`, 'danger')
@@ -245,24 +247,38 @@ defineExpose({ scanPath, movies, selectedGuids, doScan })
             <button v-if="browseParent" class="browser-item" @click="loadBrowse(browseParent)">
               <span class="browser-name">← 返回上一层</span>
             </button>
-            <div v-if="!browseDirs.length && !browseParent" class="empty">此目录下没有子目录</div>
+            <div v-if="!browseDirs.length && !browseParent && !browseVolumes.length" class="empty">此目录下没有子目录</div>
             <button
               v-for="d in browseDirs"
-              :key="d.name"
+              :key="d.path"
               class="browser-item"
+              :title="d.path"
               @click="loadBrowse(d.path)"
-              @dblclick="chooseDir(d.path)"
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               </svg>
               <span class="browser-name">{{ d.name }}</span>
+              <!-- 显式的「进入并选中」按钮: 双击在触屏/部分远程桌面下不触发,
+                   之前只能双击选中, 表现为"点了没反应" -->
+              <span class="browser-pick" role="button" tabindex="0"
+                    @click.stop="chooseDir(d.path)"
+                    @keydown.enter.stop="chooseDir(d.path)"
+                    @keydown.space.prevent.stop="chooseDir(d.path)">选中</span>
             </button>
           </template>
         </div>
 
-        <p class="field-hint">单击进入, 双击选中当前目录; 或直接用下方按钮确认当前路径</p>
+        <!-- 盘符/卷切换: 只在根层级由后端给出, 解决"到 C 根后无法去别的盘符" -->
+        <div v-if="browseVolumes.length" class="browser-volumes">
+          <span class="browser-volumes-label">切换到:</span>
+          <button v-for="v in browseVolumes" :key="v.path" class="browser-volume" @click="loadBrowse(v.path)">
+            {{ v.name }}
+          </button>
+        </div>
+
+        <p class="field-hint">单击进入该目录, 点右侧「选中」直接选定; 或用下方按钮选定当前路径</p>
         <div class="dialog-actions">
           <button class="btn" @click="browserVisible = false">取消</button>
           <button class="btn btn--primary" @click="confirmBrowse">选择当前目录</button>
@@ -344,7 +360,50 @@ defineExpose({ scanPath, movies, selectedGuids, doScan })
 .browser-item:last-child { border-bottom: none; }
 .browser-item:hover { background: var(--color-bg-hover); }
 .browser-item:focus-visible { outline: none; box-shadow: inset var(--focus-ring); }
-.browser-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browser-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+
+/* 「选中」显式按钮: 双击在触屏/远程桌面下不可靠, 必须有可点的显式入口 */
+.browser-pick {
+  flex: none;
+  padding: 2px var(--space-2);
+  font-size: var(--font-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+.browser-item:hover .browser-pick,
+.browser-item:focus-within .browser-pick { opacity: 1; }
+.browser-pick:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.browser-pick:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* 无障碍: 触屏/键盘用户没有 hover, 常驻显示 */
+@media (hover: none) {
+  .browser-pick { opacity: 1; }
+}
+
+.browser-volumes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.browser-volumes-label { font-size: var(--font-sm); color: var(--color-text-tertiary); }
+.browser-volume {
+  padding: 2px var(--space-3);
+  font-family: inherit;
+  font-size: var(--font-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.browser-volume:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.browser-volume:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
 </style>
