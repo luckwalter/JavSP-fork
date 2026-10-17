@@ -6,6 +6,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { persistState } from '../composables/usePersist'
 
+const emit = defineEmits(['navigate'])
+
 const log = ref(persistState('queueLog', []))
 const filter = ref('all')      // all | ok | fail
 

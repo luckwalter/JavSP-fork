@@ -8,6 +8,45 @@
 
 ---
 
+## v0.3.5（2026-10-17）
+
+**刮削源页重设计（明确总开关 + 分类归并 + 源地址显示）+ 全局任务进度常驻 + 设置页去重 + 第二批审查修复**
+
+### 刮削源页（ChannelsView）全面重设计
+
+- **加回明确的行内「启用/停用」总开关**：重设计后把开关做成「点灭类别 chip」的隐晦操作，缺少明确总开关；现每行源加一个滑动开关（与设置页同视觉语言）。总开关关 → 从 normal/fc2/cid 三类清单移除 + 整行淡化（但仍完整可见，区别于「未启用」筛选）。
+- **启用口径锚定「能力集」**：`draftEnabled` 改为「只在源真实支持的维度（SOURCE_KINDS 来自 config.py 的 CrawlerSelect 五维）被勾选才算启用」，消除「开启却不参与刮削」的自相矛盾；`offCount` 只统计有能力集的源（dl_getchu/gyutto 等不在任何维度的源不渲染开关与类别 chip，仅作只读展示，不计入启用/未启用统计）。
+- **分类归并到单一数据源**（新增 `frontend/src/utils/sourceMeta.js`）：源清单/分组/预设/站点说明集中维护，供刮削源页与设置页共用，避免两处各写一份漂移。按身份分四组——普通番号库 / FC2 专题 / 厂商官方 / CID 专题；去掉「不参与刮削」矛盾措辞，统一为中性身份描述（如 `getchu 官方下载渠道`）。
+- **加回源地址显示**：源名下方显示探活实测域名 `domain_actual`（来自 `/api/channels` 的 `domain`/`domain_actual`/`domain_mismatch`，由 `health.py` 的 `_decorate` 注入），`domain_mismatch` 为真时红字「与实测不符」+ 悬浮提示「可能改过 base_url / 走了镜像」，便于手动验证。
+- 视图筛选改为 all / abnormal（有异常）/ off（未启用）三态；类别 chip 改为真 `<button>`（roving tabindex 键盘可达），点亮 = 入该类清单；窄屏行折叠为卡片。预设（推荐方案 / 仅核心源）一键设定三类清单，进「未保存」态由用户点「保存并应用」落盘。
+
+### 全局任务进度（新增 useTask 组合式）
+
+- 新增 `frontend/src/composables/useTask.js`：模块级 `reactive` 单例，批量刮削/整理进度经 `taskStart / taskProgress / taskFinish` 上报到 App，底部状态栏常驻显示，切页面也不丢进度（QueueView / OrganizeView 接入）。start/finish 成对，中断或异常 `finally` 也清理，避免状态栏卡在假进度。
+- App 新增**离开守卫**：子页面可注册守卫，未保存选源草稿切页先问是否放弃；登出时清本标签页 `javsp:*` 会话级 UI 状态（影片库/队列/日志等），避免换账号后复现上一位用户数据。
+
+### 设置页去重（SettingsView 大改）
+
+- 把「选源能力」从设置页抽离到刮削源页 + `sourceMeta.js` 单一数据源，设置页只保留刮取行为的**高级参数**（并发/命中字段/javdb 封面策略等），消除两处维护同一份源清单导致的漂移风险。
+
+### 导航与文案
+
+- NavRail「渠道监控」→「刮削源」，hint 改「选源与状态」。
+- `api.js` 错误提示中文化（scan failed→扫描失败、health check failed→健康检查失败 等）；`getAuthStatus` 后端不可达（如 502 代理 HTML 页）不再抛 SyntaxError，统一转可读错误。
+- LookupView：抓取过程状态映射为中文短词 + 语义色（命中=绿 / 未收录=灰 / 被拦截=红 / 网络错误=黄，去掉 `javsp.web.` 前缀噪声）；整理前破坏性操作加二次确认（与整理页同文案模板）；结果区显示「来源合并自 N 个渠道」。
+- `usePersist` 增加类型一致性校验，旧版本残留/别的页面写过同键导致类型不符时回退默认值，避免模板 `v-for` 抛异常白屏。
+
+### 第二批审查修复（安全 / 并发 / 配置）
+
+- **javdb.py 安全加固**：移除写死的 `verify=False`，改走全局 TLS 策略（`JAVSP_CA_BUNDLE`/`JAVSP_TLS_VERIFY`）；javdb 重定向登录页会携带浏览器解密得到的登录 Cookie，关闭校验等于把会话凭据暴露给同链路 MITM。实测 javdb.com 证书链完整，无需放宽。
+- **auth.py 会话落盘并发安全**：原实现并发登录/滑动续期时两个线程写同一 `path+'.tmp'` → 内容交错损坏 → `os.replace` 后磁盘会话表变半截 JSON，重启静默丢失全部会话；另有线程字典迭代期间被改 → `RuntimeError(dictionary changed size during iteration)`。现改为**锁内浅拷贝快照 + `tempfile.mkstemp` 唯一临时名**，写失败 `finally` 清理垃圾临时文件。
+- **config_io.py 配置保真**：`_needs_quote` 增加「`-` 开头的块序列指示符」引用保护，避免 `key: - abc` 写回 YAML 后被解析成列表（值被静默篡改）。
+- `base.py` 注释修正（内网自签证书站点示例）。
+
+### 验证
+
+- 后端 `py_compile` 通过；前端本地 playwright 全流程实测通过（17 个开关、关→变灰+保存栏、点 chip 恢复、未启用过滤、源地址显示）；`sync_version.py --check` 门禁 EXIT=0；所有改动文件工作区保持纯 LF（无 CRLF 污染）。
+
 ## v0.3.4（2026-10-17）
 
 **全仓库审查修复（性能/安全 4 项）+ 版本对齐工具加固 + Logo / 超时 / 布局**

@@ -14,6 +14,8 @@ import * as api from '../api'
 import NamingRuleBuilder from '../components/NamingRuleBuilder.vue'
 import { useTheme, THEME_MODES } from '../composables/useTheme'
 
+const emit = defineEmits(['navigate'])
+
 const cfg = ref(null)
 const runtime = ref(null)
 const msg = ref('')
@@ -40,7 +42,7 @@ const themeEffective = computed(() => (resolvedDark.value ? '深色' : '浅色')
 const GROUPS = [
   { key: 'scan', label: '扫描与识别', hint: '决定哪些文件被纳入刮削' },
   { key: 'network', label: '网络与容错', hint: '代理、超时与重试' },
-  { key: 'crawler', label: '刮削源', hint: '启用哪些站点' },
+  { key: 'crawler', label: '刮削源', hint: '高级刮取参数(选源在刮削源页)' },
   { key: 'output', label: '输出与命名', hint: '目录结构与文件名' },
   { key: 'summarizer', label: '输出控制', hint: '不想生成的东西可以关掉' },
   { key: 'appearance', label: '外观', hint: '主题与界面亮度' },
@@ -49,30 +51,10 @@ const GROUPS = [
 
 const currentGroup = computed(() => GROUPS.find((g) => g.key === activeGroup.value) || GROUPS[0])
 
-// 按选源类型(对应 core.py 的 movie.data_src)声明的「推荐源」清单。
-// 每个 crawler 实际支持的番号类型据此收敛, 设置页每个分区只显示该类支持的源:
-//   - normal: 普通厂商番号(如 ABC-123)
-//   - fc2   : FC2-xxxx 专属(fc2/fc2ppvdb) + 跨类型能搜 FC2 的(avsox/javdb/javmenu)
-//   - cid   : CID 专属(fanza, 必须携带 cid 才能检索)
-// fanza 不含在 normal, 因为它需要 cid 而非普通番号(与上游把 fanza 放 normal 的默认不同,
-// 这里严格按能力收敛)。已勾选但不在推荐里的源仍会补显示(见 sitesForKind), 不会丢配置。
-// 注: javfree 是第 22 个番号源, 普通番号库, 归 normal(此前 ALL_SITES 遗漏, 此处补齐)。
-// 注: arzon / arzon_iv 已于 0.2.11 移除 —— 实测 www.arzon.jp 连接被重置(ConnectionReset)、
-//     直连超时, 两个源指向同一死域名, 已彻底删除(爬虫实现 + CrawlerID 枚举 + 配置 + 本列表)。
-// 注: fc2fan 已于 0.2.12 移除 —— 主站 fc2club.top 实测只返回 493 字节 'Loading...' 壳页,
-//     站点已关停(代码原本就直接抛"站点不可用")。其"本地镜像"能力一并移除。
-const SOURCE_KINDS = {
-  normal: ['airav', 'avsox', 'avwiki', 'jav321', 'javbus', 'javdb', 'javdbapi',
-           'javdatabase', 'javlib', 'javmenu', 'mgstage', 'prestige', 'dl_getchu',
-           'njav', 'gyutto', 'javfree'],
-  fc2:    ['fc2', 'fc2ppvdb', 'avsox', 'javdb', 'javmenu'],
-  cid:    ['fanza'],
-}
-// 实际参与刮削的选源类型(core.py 只按 movie.data_src 取 normal/fc2/cid)。
-// getchu/gyutto 虽在 selection 中但不被 core 使用, 故页面不渲染以免误导。
-const CRAWLER_KINDS = ['normal', 'fc2', 'cid']
-const KIND_LABEL = { normal: '普通番号源', fc2: 'FC2 番号源', cid: 'CID 番号源' }
-const KIND_HINT = { fc2: 'FC2-xxxx', cid: 'CID 番号' }
+// 选源(启用哪些源/哪些番号类别)已于 2026-10-17 迁移到「刮削源」页(ChannelsView):
+// 选源 chip + 实时健康状态合一, 避免两处可改同一字段而漂移。
+// 源能力集/分组/预设的单一数据源在 utils/sourceMeta.js, 由刮削源页消费。
+// 本页只保留刮取行为的高级参数(并发/命中字段/javdb 封面策略等)。
 
 const MASK = '***MASKED***'
 
@@ -103,37 +85,6 @@ async function save() {
   }
 }
 
-/** sites 列表在 config 里可能是字符串数组或 [{...}] 形式, 这里只取 value */
-function siteList(kind) {
-  const arr = cfg.value?.crawler?.selection?.[kind]
-  if (!Array.isArray(arr)) return []
-  return arr.map((x) => (typeof x === 'string' ? x : x?.value)).filter(Boolean)
-}
-
-function hasSite(kind, name) {
-  return siteList(kind).includes(name)
-}
-
-function toggleSite(kind, name, on) {
-  const cur = cfg.value.crawler.selection[kind] || []
-  const arr = cur.map((x) => (typeof x === 'string' ? x : x))
-  const i = arr.findIndex((x) => (typeof x === 'string' ? x : x?.value) === name)
-  if (on && i < 0) arr.push(name)
-  if (!on && i >= 0) arr.splice(i, 1)
-  cfg.value.crawler.selection[kind] = arr
-}
-
-// 某分区应渲染的源 = 推荐源 ∪ 已勾选源(去重)。
-// 这样既只显示该类支持的源, 又不丢用户在 config 里已勾选但不在推荐清单中的源(仍可取消)。
-function sitesForKind(kind) {
-  const seen = new Set()
-  const out = []
-  for (const s of [...(SOURCE_KINDS[kind] || []), ...siteList(kind)]) {
-    if (s && !seen.has(s)) { seen.add(s); out.push(s) }
-  }
-  return out
-}
-
 // Duration 字段后端用 ISO8601 字符串(如 PT1S=1秒); 前端以“秒”展示与编辑, 保存时转回 ISO。
 // 直接 v-model.number 会因 PT1S 非数字被浏览器清空, 用户改填数字保存时后端 Duration 校验失败。
 function isoToSeconds(v) {
@@ -149,15 +100,61 @@ function secondsToIso(n) {
   return 'PT' + s + 'S'
 }
 
-function siteLabel(name) {
-  const hints = {
-    javdbapi: 'javdb App API', javdatabase: 'javdatabase.com',
-    javmenu: 'javmenu.com', njav: '无码', fanza: 'FANZA',
-    airav: 'javdb 镜像',
-    avsox: '前端渲染·不可用', avwiki: '非番号库·不可用',
+// ignored_id_pattern 后端是 List[str](config.py:20), 多行文本每行一条正则。
+// 早期直接 v-model 到 <input>: 数组被 Vue 转成逗号串显示, 用户编辑后存回字符串,
+// PUT 时 confz 校验 List[str] 直接 422 —— 保存必失败。computed get/set 双向同步。
+const ignoredIdText = computed({
+  get: () => (cfg.value?.scanner?.ignored_id_pattern || []).join('\n'),
+  set: (v) => {
+    if (cfg.value?.scanner) {
+      cfg.value.scanner.ignored_id_pattern = String(v).split('\n').map((s) => s.trim()).filter(Boolean)
+    }
+  },
+})
+
+// 「刮削间隔等待」开关: sleep_after_scraping 为 0 = 不等待; 打开时回落 PT1S。
+// 秒数微调仍在「网络与容错」组, 这里只做总闸(与设计稿的开关语义一致)。
+const scrapeSleepOn = computed({
+  get: () => isoToSeconds(cfg.value?.crawler?.sleep_after_scraping) > 0,
+  set: (v) => {
+    if (cfg.value?.crawler) cfg.value.crawler.sleep_after_scraping = v ? 'PT1S' : 'PT0S'
+  },
+})
+
+// required_keys 后端是 list[MovieInfoField](config.py:90), 语义是「至少要到哪些字段
+// 才算抓取成功」。早期页面按「数量」做了数字输入 —— 数组被转成逗号串显示, 用户改完
+// 保存写回数字, confz 校验 list[MovieInfoField] 直接 422(且「字段清单」被误做成「个数」)。
+const REQUIRED_KEY_OPTS = [
+  'cover', 'title', 'actress', 'genre', 'plot', 'duration',
+  'producer', 'publisher', 'director', 'publish_date', 'serial', 'uncensored', 'score',
+]
+function requiredKeyOpts() {
+  // 推荐字段 ∪ 已配置字段: 旧配置/未来版本出现新枚举值时仍显示, 不会丢
+  const seen = new Set()
+  const out = []
+  for (const k of [...REQUIRED_KEY_OPTS, ...(cfg.value?.crawler?.required_keys || [])]) {
+    if (k && !seen.has(k)) { seen.add(k); out.push(k) }
   }
-  return hints[name] || ''
+  return out
 }
+function hasRequiredKey(k) {
+  return (cfg.value?.crawler?.required_keys || []).includes(k)
+}
+function toggleRequiredKey(k, on) {
+  const arr = [...(cfg.value?.crawler?.required_keys || [])]
+  const i = arr.indexOf(k)
+  if (on && i < 0) arr.push(k)
+  if (!on && i >= 0) arr.splice(i, 1)
+  cfg.value.crawler.required_keys = arr
+}
+
+// use_javdb_cover 是三值枚举 UseJavDBCover(config.py:116), 早期绑成 checkbox:
+// GET 的 "fallback" 真值字符串显示为勾选, 一动保存就写 true/false -> 422 存不进去。
+const JAVDB_COVER_OPTS = [
+  { value: 'fallback', label: '优先其他站', desc: '能从别的站点拿到封面就不用 javdb 的, 避开水印' },
+  { value: 'yes', label: '总是使用', desc: '任何情况下都优先使用 javdb 封面' },
+  { value: 'no', label: '从不用', desc: '不使用 javdb 封面(其他站都没有时将没有封面)' },
+]
 
 onMounted(load)
 </script>
@@ -212,25 +209,42 @@ onMounted(load)
             <div class="group-body">
           <!-- 扫描 -->
           <template v-if="currentGroup.key === 'scan'">
-            <div class="row-2">
-              <div class="field">
-                <label class="field-label">最小文件体积</label>
-                <input v-model="cfg.scanner.minimum_size" class="input" placeholder="232MiB" />
-                <p class="field-hint">带单位的字符串, 如 232MiB / 1GiB</p>
-              </div>
-              <div class="field">
-                <label class="field-label">番号识别忽略规则</label>
-                <input v-model="cfg.scanner.ignored_id_pattern" class="input" />
-              </div>
+            <div class="field">
+              <label class="field-label">最小文件体积</label>
+              <input v-model="cfg.scanner.minimum_size" class="input" style="max-width: 200px;" placeholder="232MiB" />
+              <p class="field-hint">带单位的字符串, 如 232MiB / 1GiB; 小于此体积的文件跳过</p>
             </div>
-            <label class="switch-row">
-              <input v-model="cfg.scanner.skip_nfo_dir" type="checkbox" />
-              <span>跳过已整理(nfo)目录</span>
-            </label>
-            <label class="switch-row">
-              <input v-model="cfg.summarizer.path.hard_link" type="checkbox" />
-              <span>硬链接整理(同一卷内省空间, 跨文件系统会失败)</span>
-            </label>
+            <div class="field">
+              <label class="field-label">番号识别忽略规则</label>
+              <textarea v-model="ignoredIdText" class="input input--mono" rows="4"
+                        spellcheck="false" placeholder="每行一条正则, 如 ^HD-"></textarea>
+              <p class="field-hint">
+                命中的文件不识别番号(如采样片 <code>^HD-</code>); 每行一条, 大多数情况保持默认即可
+              </p>
+            </div>
+            <div class="switch-list">
+              <label class="switch-row">
+                <input v-model="cfg.scanner.skip_nfo_dir" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">跳过已整理(nfo)目录</span>
+                  <span class="switch-desc">目录内已有 nfo 时不再重复刮削——长期运行不重复劳动的关键</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.path.hard_link" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">硬链接整理</span>
+                  <span class="switch-desc">同一卷内省空间, 跨文件系统会失败</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="scrapeSleepOn" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">刮削间隔等待</span>
+                  <span class="switch-desc">每部之间的等待秒数, 调低更快但更易触发反爬; 秒数在「网络与容错」细调</span>
+                </span>
+              </label>
+            </div>
           </template>
 
           <!-- 网络 -->
@@ -264,39 +278,73 @@ onMounted(load)
               </div>
           </template>
 
-          <!-- 刮削源: 遍历 normal/fc2/cid 三类, 每类独立勾选区(根治只暴露 normal 的坑) -->
+          <!-- 选源已迁移到「刮削源」页: 选源 chip + 实时状态合一, 避免两处可改同一字段而漂移 -->
           <template v-else-if="currentGroup.key === 'crawler'">
-            <div class="field" v-for="kind in CRAWLER_KINDS" :key="kind">
-              <label class="field-label">{{ KIND_LABEL[kind] }}</label>
-              <p class="field-hint" style="margin-bottom: var(--space-2);">
-                <template v-if="kind === 'normal'">勾选即参与刮削。已熔断的渠道会自动跳过, 可在「渠道监控」查看原因</template>
-                <template v-else>仅对 {{ KIND_HINT[kind] }} 类番号生效(其余类型番号不受影响)</template>
-              </p>
-              <div class="site-grid">
-                <label v-for="s in sitesForKind(kind)" :key="kind + '-' + s" class="site-chip">
-                  <input type="checkbox" :checked="hasSite(kind, s)"
-                         @change="toggleSite(kind, s, $event.target.checked)" />
-                  <span class="site-name">{{ s }}</span>
-                  <span v-if="siteLabel(s)" class="site-hint">{{ siteLabel(s) }}</span>
-                </label>
+            <div class="notice notice--info migrate-card">
+              <div style="flex: 1; min-width: 0;">
+                <p style="font-weight: 500; margin-bottom: 4px;">选源已迁移到「刮削源」页</p>
+                <p style="font-size: var(--font-sm); color: var(--color-text-secondary);">
+                  在那里按类别(普通 / FC2 / CID)点亮或停用每个源, 同时查看实时健康状态与熔断原因。
+                  本页只保留刮取行为的高级参数。
+                </p>
               </div>
+              <button class="btn btn--sm btn--primary" @click="emit('navigate', 'channels')">前往刮削源</button>
             </div>
             <div class="row-2">
               <div class="field">
                 <label class="field-label">并发上限</label>
                 <input v-model.number="cfg.crawler.max_concurrency" type="number" min="1" max="16"
                        class="input" />
+                <p class="field-hint">各爬虫线程池大小, 调大可提速但更易触发站点风控</p>
               </div>
               <div class="field">
-                <label class="field-label">最少命中字段数</label>
-                <input v-model.number="cfg.crawler.required_keys" type="number" min="0" class="input" />
-                <p class="field-hint">低于此数量视为抓取失败</p>
+                <label class="field-label">javdb 封面策略</label>
+                <div class="radio-row" role="radiogroup" aria-label="javdb 封面策略">
+                  <label v-for="opt in JAVDB_COVER_OPTS" :key="opt.value" class="radio-chip"
+                         :class="{ 'radio-chip--on': cfg.crawler.use_javdb_cover === opt.value }">
+                    <input type="radio" :value="opt.value" v-model="cfg.crawler.use_javdb_cover" />
+                    <span>{{ opt.label }}</span>
+                  </label>
+                </div>
+                <p class="field-hint">{{ (JAVDB_COVER_OPTS.find(o => o.value === cfg.crawler.use_javdb_cover) || JAVDB_COVER_OPTS[0]).desc }}</p>
               </div>
             </div>
-            <label class="switch-row">
-              <input v-model="cfg.crawler.use_javdb_cover" type="checkbox" />
-              <span>优先使用 javdb 封面(该源有水印)</span>
-            </label>
+            <div class="field">
+              <label class="field-label">至少命中字段</label>
+              <p class="field-hint" style="margin-bottom: var(--space-2);">
+                一部影片至少要刮到这些字段才算成功, 缺项太多的渠道结果会被丢弃
+              </p>
+              <div class="site-grid">
+                <label v-for="k in requiredKeyOpts()" :key="k" class="site-chip">
+                  <input type="checkbox" :checked="hasRequiredKey(k)"
+                         @change="toggleRequiredKey(k, $event.target.checked)" />
+                  <span class="site-name">{{ k }}</span>
+                </label>
+              </div>
+            </div>
+            <div class="switch-list">
+              <label class="switch-row">
+                <input v-model="cfg.crawler.hardworking" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">努力爬取</span>
+                  <span class="switch-desc">爬取更准确更丰富的信息, 会略微增加部分站点的耗时</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.crawler.respect_site_avid" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">以站点番号为准</span>
+                  <span class="switch-desc">使用网页番号作为最终番号, 启用时会对番号大小写等更正</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.crawler.normalize_actress_name" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">统一女优艺名</span>
+                  <span class="switch-desc">尝试将女优的多个艺名统一成一个</span>
+                </span>
+              </label>
+            </div>
           </template>
 
           <!-- 输出与命名: 可视化构建器(点击/拖动拼装, 无需手打 {xxx}) -->
@@ -333,41 +381,69 @@ onMounted(load)
                 <p class="field-hint">超长时自动截断; 按字节计长时中文每字算 3</p>
               </div>
             </div>
-            <label class="switch-row">
-              <input v-model="cfg.summarizer.path.length_by_byte" type="checkbox" />
-              <span>按字节计算目录名长度(中文每字 3 字节, 兼容旧版行为)</span>
-            </label>
-            <label class="switch-row">
-              <input v-model="cfg.summarizer.move_files" type="checkbox" />
-              <span>整理时移动文件(关闭则只写元数据, 不动原文件)</span>
-            </label>
+            <div class="switch-list">
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.path.length_by_byte" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">按字节计算目录名长度</span>
+                  <span class="switch-desc">中文每字算 3 字节, 兼容旧版行为; 关闭则按字符数计</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.move_files" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">整理时移动文件</span>
+                  <span class="switch-desc">关闭则只写元数据, 不动原文件</span>
+                </span>
+              </label>
+            </div>
           </template>
 
           <!-- 输出控制 -->
           <template v-else-if="currentGroup.key === 'summarizer'">
             <p class="field-hint" style="margin-bottom: var(--space-3);">
-              元数据交给 Jellyfin 自行刮削时, 这些重复劳动可以关掉
+              元数据交给 Jellyfin 自行刮削时, 这些重复劳动可以关掉, 整理速度明显提升
             </p>
-            <label class="switch-row">
-              <input v-model="cfg.summarizer.cover.enabled" type="checkbox" />
-              <span>封面 poster(竖版裁剪)</span>
-            </label>
-            <label class="switch-row">
-              <input v-model="cfg.summarizer.cover.highres" type="checkbox" />
-              <span>使用高清原图作为封面源</span>
-            </label>
-            <label class="switch-row">
-              <input v-model="cfg.summarizer.fanart.enabled" type="checkbox" />
-              <span>封面 fanart(横版原图)</span>
-            </label>
-            <label class="switch-row">
-              <input v-model="cfg.summarizer.extra_fanarts.enabled" type="checkbox" />
-              <span>剧照(最耗时, 关掉提升明显)</span>
-            </label>
-            <label class="switch-row">
-              <input v-model="cfg.summarizer.nfo.enabled" type="checkbox" />
-              <span>NFO 文件</span>
-            </label>
+            <div class="switch-list">
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.cover.enabled" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">封面 poster</span>
+                  <span class="switch-desc">竖版裁剪, Jellyfin 主界面显示用; 与 fanart 同源, 两者都关则完全不下载封面</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.cover.highres" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">使用高清原图作为封面源</span>
+                  <span class="switch-desc">高清封面约 8-10 MiB, 网络条件不佳时会拖慢整理</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.fanart.enabled" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">封面 fanart</span>
+                  <span class="switch-desc">横版原图, Jellyfin 详情页背景; 只想要 poster 时可关</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.extra_fanarts.enabled" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">
+                    剧照 extrafanart
+                    <span class="cost cost--slow">最耗时 · 关掉提升明显</span>
+                  </span>
+                  <span class="switch-desc">每部数张至数十张, NAS 弱机建议关闭</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.nfo.enabled" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">NFO 文件</span>
+                  <span class="switch-desc">影片元数据, 媒体库刮削的依据; 关掉后 Jellyfin 自行识别</span>
+                </span>
+              </label>
+            </div>
           </template>
 
           <!-- 外观: 主题四模式(与 StatusBar 快捷切换共享同一状态) -->
@@ -417,22 +493,34 @@ onMounted(load)
             <div class="field">
               <label class="field-label">API 密钥</label>
               <input type="password" class="input" style="max-width: 360px;"
+                     :disabled="!cfg.translator.engine"
                      :value="cfg.translator.engine && cfg.translator.api_key !== MASK ? cfg.translator.api_key : ''"
-                     placeholder="留空= 不使用该引擎"
+                     :placeholder="cfg.translator.engine ? '留空= 不使用该引擎' : '请先选择翻译引擎'"
                      @input="cfg.translator.api_key = $event.target.value" />
               <p class="field-hint">
-                配置文件是 git 跟踪的, 建议改用环境变量
-                <code>JAVSP_TRANSLATOR.ENGINE.API_KEY</code>(点号, 双下划线会被静默忽略)
+                <template v-if="!cfg.translator.engine">选好翻译引擎后才需要填写密钥</template>
+                <template v-else>
+                  配置文件是 git 跟踪的, 建议改用环境变量
+                  <code>JAVSP_TRANSLATOR.ENGINE.API_KEY</code>(点号, 双下划线会被静默忽略)
+                </template>
               </p>
             </div>
-            <label class="switch-row">
-              <input v-model="cfg.translator.fields.title" type="checkbox" />
-              <span>翻译标题</span>
-            </label>
-            <label class="switch-row">
-              <input v-model="cfg.translator.fields.plot" type="checkbox" />
-              <span>翻译剧情</span>
-            </label>
+            <div class="switch-list">
+              <label class="switch-row">
+                <input v-model="cfg.translator.fields.title" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">翻译标题</span>
+                  <span class="switch-desc">NFO 与文件名中的日文标题转为中文</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.translator.fields.plot" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">翻译剧情</span>
+                  <span class="switch-desc">简介文本翻译, 耗时随引擎而定</span>
+                </span>
+              </label>
+            </div>
           </template>
         </div>
       </div>
@@ -490,14 +578,100 @@ onMounted(load)
 
 .group-body { padding: 0 var(--space-5) var(--space-5); }
 
+/* ---------- 开关行: 滑动开关 + 标题 + 「关了会怎样」说明 ---------- */
+.switch-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-3);
+}
+
 .switch-row {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
   font-size: var(--font-base);
   cursor: pointer;
 }
+.switch-list .switch-row + .switch-row { border-top: 1px solid var(--color-border-light); }
+
+/* 滑动开关: appearance 清零后自绘, 与设计稿一致(不用浏览器原生勾选框) */
+.switch-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 36px;
+  height: 20px;
+  margin: 2px 0 0;
+  border-radius: 999px;
+  background: var(--color-bg-subtle);
+  border: 1.5px solid var(--color-border-medium);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.switch-row input[type="checkbox"]::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+.switch-row input[type="checkbox"]:checked {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.switch-row input[type="checkbox"]:checked::after {
+  transform: translateX(16px);
+  background: #fff;
+}
+.switch-row input[type="checkbox"]:focus-visible { box-shadow: var(--focus-ring); }
+
+.switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.switch-title { font-size: var(--font-base); color: var(--color-text-primary); }
+.switch-desc { font-size: var(--font-sm); line-height: 1.6; color: var(--color-text-tertiary); }
+
+/* 耗时徽标: 只在配置文档里才知道的信息, 搬到开关旁(设计稿行为分析) */
+.cost {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  margin-left: 6px;
+  font-size: var(--font-xs);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  vertical-align: 1px;
+}
+.cost--slow { color: var(--color-warning); background: var(--color-warning-soft); }
+
+/* 三选一(枚举值): 用 chip 化 radio, 比原生 select 更直观 */
+.radio-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.radio-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--font-sm);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.radio-chip:hover { background: var(--color-bg-subtle); }
+.radio-chip--on { border-color: var(--color-primary); background: var(--color-primary-soft); color: var(--color-primary); }
+.radio-chip input { width: auto; margin: 0; accent-color: var(--color-primary); }
+
+.input--mono { font-family: var(--font-mono); font-size: var(--font-sm); resize: vertical; }
+
+/* 选源迁移引导卡: 左文右按钮 */
+.migrate-card { display: flex; align-items: center; gap: var(--space-4); }
+.migrate-card p { margin: 0; }
 
 .site-grid {
   display: grid;
@@ -519,7 +693,6 @@ onMounted(load)
 .site-chip:hover { background: var(--color-bg-subtle); }
 .site-chip input { width: auto; flex-shrink: 0; }
 .site-name { font-family: var(--font-mono); }
-.site-hint { color: var(--color-text-tertiary); font-size: var(--font-xs); }
 
 .row-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-4); }
 

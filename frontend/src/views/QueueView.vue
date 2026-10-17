@@ -6,9 +6,11 @@
 import { ref, computed, watch, onMounted, inject } from 'vue'
 import * as api from '../api'
 import { persistState, saveState } from '../composables/usePersist'
+import { useTask } from '../composables/useTask'
 
 const props = defineProps({ health: { type: Object, default: () => ({}) } })
 const emit = defineEmits(['navigate'])
+const { taskStart, taskProgress, taskFinish } = useTask()
 
 // 确认对话框由 App.vue 通过 provide 注入 —— 必须用 inject 而非 emit:
 // emit 是同步的且不返回 Promise, `await emit(...)` 恒为 undefined,
@@ -66,6 +68,7 @@ async function run(withOrganize) {
   crawlers.value = []
   log.value = []
   done.value = null
+  taskStart(total.value)      // 同步全局任务进度(底部状态栏常驻可见)
 
   try {
     await api.batchStream(
@@ -74,6 +77,7 @@ async function run(withOrganize) {
         if (d.index !== undefined) index.value = d.index
         if (d.total !== undefined) total.value = d.total
         if (d.avid !== undefined) current.value = d.avid
+        taskProgress(index.value, current.value)   // 底部状态栏常驻进度
         if (d.crawlers) crawlers.value = d.crawlers
         if (d.title !== undefined) {
           log.value = [
@@ -87,6 +91,7 @@ async function run(withOrganize) {
   } catch (e) {
     log.value = [...log.value, { index: index.value, avid: current.value, ok: false, title: '失败: ' + e.message, sources: null }]
   } finally {
+    taskFinish()             // 清理全局任务进度(成功/失败/取消都要清)
     running.value = false
     emit('navigate', 'review')
   }

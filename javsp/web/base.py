@@ -91,7 +91,7 @@ class Request():
         if verify is None:
             _verify = tls_verify()
         else:
-            # 调用方显式指定 verify (如 javdb 的源站证书链不完整), 绕开全局 TLS 策略仅放宽该站
+            # 调用方显式指定 verify (如内网自签证书站点), 绕开全局 TLS 策略仅放宽该站
             logger.warning(f'Request 实例被显式指定 verify={verify}, 已绕开全局 TLS 校验策略(仅限受控场景)')
             _verify = verify
         _get = partial(requests.get, verify=_verify)

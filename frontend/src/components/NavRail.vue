@@ -23,7 +23,7 @@ const DESTRUCTIVE = [
 ]
 
 const TOOLS = [
-  { key: 'channels', label: '渠道监控', hint: '熔断状态', icon: 'M12 3v4M12 17v4M5 12h4M15 12h4', badge: true },
+  { key: 'channels', label: '刮削源', hint: '选源与状态', icon: 'M12 3v4M12 17v4M5 12h4M15 12h4', badge: true },
   { key: 'settings', label: '系统设置', hint: '刮削与网络', icon: 'M12 9a3 3 0 100 6 3 3 0 000-6zM12 2v2M12 20v2M2 12h2M20 12h2' },
 ]
 

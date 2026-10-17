@@ -13,7 +13,7 @@ const props = defineProps({
   user: { type: String, default: '' },
 })
 
-const emit = defineEmits(['logout'])
+const emit = defineEmits(['logout', 'navigate'])
 
 const summary = computed(() => props.health || {})
 const active = computed(() => summary.value.active || 0)

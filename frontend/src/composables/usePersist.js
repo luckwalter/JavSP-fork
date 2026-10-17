@@ -21,6 +21,14 @@ export function persistState(key, defaultValue) {
     data = defaultValue
   }
   if (data === null || data === undefined) return defaultValue
+  // 类型一致性校验: 存的内容与默认值类型不符(旧版本残留/别的页面写过同键/
+  // 用户手改过 sessionStorage)时回退默认值 —— 否则 movies 可能是字符串或
+  // 数字, 模板 v-for 直接抛 TypeError 把整个页面白屏。
+  const sameArray = Array.isArray(data) === Array.isArray(defaultValue)
+  const sameKind = sameArray && (typeof data === 'object'
+    ? typeof defaultValue === 'object'
+    : typeof data === typeof defaultValue)
+  if (!sameKind) return defaultValue
   return data
 }
 

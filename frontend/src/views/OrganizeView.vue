@@ -15,8 +15,10 @@
 import { ref, computed, onMounted, inject } from 'vue'
 import * as api from '../api'
 import { persistState, saveState } from '../composables/usePersist'
+import { useTask } from '../composables/useTask'
 
 const emit = defineEmits(['navigate'])
+const { taskStart, taskProgress, taskFinish } = useTask()
 const askConfirm = inject('javsp:confirm', null)
 
 const movies = ref([])
@@ -109,10 +111,17 @@ async function organizeSelected() {
     : false
   if (!ok) return
 
-  for (const m of targets) {
-    // organizeOne 返回 false = 用户在单部确认里点了取消 -> 停止后续
-    const done = await organizeOne(m)
-    if (!done) break
+  taskStart(targets.length)      // 同步全局任务进度(底部状态栏常驻可见)
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      const m = targets[i]
+      taskProgress(i + 1, m.avid || m.title || '')
+      // organizeOne 返回 false = 用户在单部确认里点了取消 -> 停止后续
+      const done = await organizeOne(m)
+      if (!done) break
+    }
+  } finally {
+    taskFinish()                 // 中断/异常也清理, 不让状态栏卡在假进度上
   }
 }
 

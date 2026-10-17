@@ -12,7 +12,12 @@ from javsp.chromium import get_browsers_cookies
 
 
 # 初始化Request实例。使用scraper绕过CloudFlare后，需要指定网页语言，否则可能会返回其他语言网页，影响解析
-request = Request(use_scraper=True, verify=False)
+# verify 不显式传 False: Request 内部 verify=None 时调 tls_verify() 走全局 TLS 策略
+# (JAVSP_CA_BUNDLE/JAVSP_TLS_VERIFY)。历史上这里写死 verify=False, 但 javdb 重定向登录页
+# 后会携带浏览器解密得到的登录 Cookie, 关闭校验等于把会话凭据暴露给同链路 MITM。
+# 2026-10-17 实测 javdb.com 证书链完整(Google Trust Services WE1, 默认 CA 校验通过),
+# 不存在必须放宽该校验的理由。
+request = Request(use_scraper=True)
 request.headers['Accept-Language'] = 'zh-CN,zh;q=0.9,zh-TW;q=0.8,en-US;q=0.7,en;q=0.6,ja;q=0.5'
 
 logger = logging.getLogger(__name__)
@@ -55,7 +60,8 @@ def get_html_wrapper(url):
             if len(cookies_pool) > 0:
                 item = cookies_pool.pop()
                 # 更换Cookies时需要创建新的request实例，否则cloudscraper会保留它内部第一次发起网络访问时获得的Cookies
-                request = Request(use_scraper=True, verify=False)
+                # verify 同样不显式传: 与模块级 request 一致走 tls_verify() (见上方说明)
+                request = Request(use_scraper=True)
                 request.cookies = item['cookies']
                 cookies_source = (item['profile'], item['site'])
                 logger.debug(f'未携带有效Cookies而发生重定向，尝试更换Cookies为: {cookies_source}')

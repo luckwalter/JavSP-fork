@@ -57,7 +57,7 @@ export async function scan(path) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
   })
-  if (!r.ok) throw new Error(await readDetail(r, 'scan failed'))
+  if (!r.ok) throw new Error(await readDetail(r, '扫描失败'))
   return r.json()
 }
 
@@ -81,27 +81,27 @@ export async function browse(path) {
 // 健康检查(同时用于获取服务端版本号, 单一版本源在后端 pyproject.toml)
 export async function getHealth() {
   const r = await request('/api/health')
-  if (!r.ok) throw new Error('health check failed')
+  if (!r.ok) throw new Error('健康检查失败')
   return r.json()
 }
 
 export async function getConfig() {
   const r = await request('/api/config')
-  if (!r.ok) throw new Error(await readDetail(r, 'config get failed'))
+  if (!r.ok) throw new Error(await readDetail(r, '配置获取失败'))
   return r.json()
 }
 
 // 运行时实际生效的配置（区别于 /api/config 的磁盘值），含封面裁剪引擎与依赖可用性
 export async function getConfigRuntime() {
   const r = await request('/api/config/runtime')
-  if (!r.ok) throw new Error(await readDetail(r, 'config runtime get failed'))
+  if (!r.ok) throw new Error(await readDetail(r, '运行时配置获取失败'))
   return r.json()
 }
 
 // 各刮削渠道的健康档案与熔断状态（覆盖全部已注册源，含未启用的）
 export async function getChannels() {
   const r = await request('/api/channels')
-  if (!r.ok) throw new Error(await readDetail(r, 'channels get failed'))
+  if (!r.ok) throw new Error(await readDetail(r, '渠道列表获取失败'))
   return r.json()
 }
 
@@ -112,7 +112,7 @@ export async function checkChannels() {
     headers: { 'Content-Type': 'application/json' },
     body: 'null',
   })
-  if (!r.ok) throw new Error(await readDetail(r, 'channels check failed'))
+  if (!r.ok) throw new Error(await readDetail(r, '渠道检查失败'))
   return r.json()
 }
 
@@ -125,7 +125,7 @@ export async function putConfig(cfg) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
   })
-  if (!r.ok) throw new Error(await readDetail(r, 'config put failed'))
+  if (!r.ok) throw new Error(await readDetail(r, '配置保存失败'))
   return r.json()
 }
 
@@ -180,7 +180,7 @@ function consumeSSE(url, body, onEvent, opts = {}) {
         }
         if (!resp.ok) {
           const e = await resp.json().catch(() => ({}))
-          throw new Error(normalizeDetail(e.detail) || 'request failed')
+          throw new Error(normalizeDetail(e.detail) || '请求失败')
         }
         reader = resp.body.getReader()
         const decoder = new TextDecoder()
@@ -243,7 +243,11 @@ function consumeSSE(url, body, onEvent, opts = {}) {
 /** 查询认证状态: 前端启动时先问这个, 决定是否显示登录页 */
 export async function getAuthStatus() {
   const r = await request('/api/auth/status')
-  return r.json()
+  if (r.ok) return r.json()
+  // 后端不可达(如 502 代理 HTML 页)时 r.json() 会抛 SyntaxError; readDetail 已做
+  // 归一化(422 数组/代理 HTML 页), 这里统一转成可读错误, 由调用方 try/catch 兜底
+  const detail = await readDetail(r, '')
+  throw new Error(detail || `认证状态查询失败(${r.status})`)
 }
 
 /** 登录。成功返回 true; 失败抛出带 detail 与 lockedFor 的错误 */

@@ -59,6 +59,9 @@ def _needs_quote(s):
         return True
     if re.match(r'^[-+]?\d', s):          # 看起来像数字
         return True
+    if s.startswith('-') and (len(s) == 1 or s[1] in ' \t'):
+        # YAML 块序列指示符: 'key: - abc' 写回后会被解析成 ['abc'](值被静默改成列表)
+        return True
     # 必须包含换行/回车/制表: 否则值里的裸换行会被原样写入 YAML,
     # 解析时折叠成一行(值被静默篡改)甚至破坏结构。多行文本一律用双引号块标量。
     if re.search(r'[\n\r\t]', s):

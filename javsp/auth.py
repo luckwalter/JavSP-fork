@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import secrets
+import tempfile
 import threading
 import time
 from typing import Dict, Optional
@@ -274,17 +275,37 @@ def _load_state() -> None:
 def _save_state() -> None:
     """把当前会话写回磁盘。失败只告警 —— 落盘只是增强, 不该让登录本身失败"""
     path = _state_path()
+    tmp = None
     try:
-        tmp = path + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump({'sessions': _sessions}, f)
+        # 锁内快照: 真实调用路径都是「持锁改 _sessions -> 锁外调 _save_state」, 两个线程
+        # 同时落盘时, json.dump 迭代 _sessions 可能被另一线程的登录/登出改字典 ->
+        # RuntimeError(dictionary changed size during iteration) -> 被下面 except 兜成
+        # 告警, 那次会话表落盘静默丢失 -> 重启后已登录用户被踢( v0.2.2 同类风险)。
+        # 浅拷贝足够: value 都是整体赋值的不可变语义 dict, 无人原地改 value 内部。
+        with _lock:
+            snapshot = dict(_sessions)
+        # 唯一临时名(mkstemp): 早期用固定 path+'.tmp', 并发登录/滑动续期时两个线程
+        # 会写同一个 tmp 文件 -> 内容交错损坏 -> os.replace 之后磁盘上的会话表变成
+        # 半截 JSON, 下次启动 _load_state 静默丢失全部会话。范式同 config_io._atomic_write。
+        # (Windows 上并发 os.replace 同一目标偶发 WinError 5, 低频且有告警兜底, 已知限制)
+        folder = os.path.dirname(os.path.abspath(path)) or '.'
+        fd, tmp = tempfile.mkstemp(prefix='.sessions-', suffix='.tmp', dir=folder)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump({'sessions': snapshot}, f)
         os.replace(tmp, path)
+        tmp = None
         try:
             os.chmod(path, 0o600)   # 仅属主可读(会话哈希亦不应外泄)
         except OSError:
             pass
     except Exception as e:      # noqa: BLE001
         logger.warning(f'会话落盘失败(不影响本次登录): {e}')
+    finally:
+        if tmp is not None and os.path.exists(tmp):
+            try:
+                os.remove(tmp)   # 写失败时清理, 不留 .sessions-*.tmp 垃圾
+            except OSError:
+                pass
 
 
 # 模块导入时读取配置(密码只在启动时进内存一次, 之后不保留明文)

@@ -1,9 +1,11 @@
 <script setup>
 /** 单部查询: 输入番号临时刮削, 不影响批量队列 */
-import { ref } from 'vue'
+import { ref, computed, inject } from 'vue'
 import * as api from '../api'
 
 const emit = defineEmits(['navigate'])
+// 确认对话框由 App.vue provide 注入(与「整理落盘」页同一实例, 文案模板也保持一致)
+const askConfirm = inject('javsp:confirm', null)
 
 const avid = ref('')
 const running = ref(false)
@@ -30,6 +32,32 @@ function rows(s) {
     }
   })
 }
+
+// 抓取过程的状态映射: 后端 progress_cb(core.py) 发的是 ('javsp.web.mgstage', 'start')
+// 这类模块路径 + 英文状态, 直接展示对用户是噪音。去掉 javsp.web. 前缀, 状态映射为
+// 中文短词 + 语义色(命中=绿/未收录=灰/被拦截=红/网络错误=黄), 与「渠道监控」页一致。
+const STATUS_MAP = {
+  start:         { text: '抓取中', cls: 'pill--info' },
+  success:       { text: '命中',   cls: 'pill--success' },
+  not_found:     { text: '未收录', cls: 'pill--muted' },
+  duplicate:     { text: '重复',   cls: 'pill--muted' },
+  blocked:       { text: '被拦截', cls: 'pill--danger' },
+  network_error: { text: '网络错误', cls: 'pill--warning' },
+  error:         { text: '出错',   cls: 'pill--danger' },
+  skipped:       { text: '已跳过', cls: 'pill--muted' },
+}
+// 提为 computed: 模板里 v-for + 插值会多次调用映射函数, 大列表下是重复构造(m6 教训)
+const steps = computed(() => progress.value.map((p, i) => {
+  const st = STATUS_MAP[p.status] || { text: p.status || '未知', cls: 'pill--muted' }
+  return {
+    key: `${p.crawler}-${p.status}-${i}`,
+    name: String(p.crawler || '').replace(/^javsp\.web\./, ''),
+    text: st.text,
+    cls: st.cls,
+  }
+}))
+const sourceRows = computed(() => rows(sources.value))
+const contributedCount = computed(() => sourceRows.value.filter((r) => r.contributed).length)
 
 async function run() {
   const q = avid.value.trim()
@@ -58,6 +86,20 @@ async function run() {
 
 async function organize() {
   if (!info.value?.guid) { msg.value = '请先成功刮削一部影片'; msgType.value = 'warning'; return }
+  // 破坏性操作二次确认(与「整理落盘」页同一文案模板): 原实现点下去就直接写磁盘,
+  // 误触代价是真实文件被改名移动, 与整理页逐部确认的策略不一致(设计稿行为分析①)
+  const ok = askConfirm
+    ? await askConfirm({
+        title: '确认写入磁盘',
+        impact: `${info.value.dvdid || info.value.cid || '—'} — 将重命名文件、移动目录并生成 NFO 与封面`,
+        detail: [
+          '原始文件位置会改变, 且不会自动回滚。',
+          '已存在的同名文件会被跳过(不会覆盖)。',
+        ],
+        confirmText: '确认写入',
+      })
+    : false
+  if (!ok) return
   running.value = true
   try {
     await api.organizeStream(info.value.guid, (d) => {
@@ -97,22 +139,26 @@ async function organize() {
           {{ running ? '查询中' : '查询' }}
         </button>
       </div>
+      <p class="field-hint" style="margin-top: var(--space-2);">
+        直接回车也可查询。CID 类番号请带 <code>cid:</code> 前缀。查询不影响队列, 也不会改动任何文件。
+      </p>
       <div v-if="msg" class="notice" :class="`notice--${msgType === 'info' ? 'info' : msgType}`"
            style="margin-top: var(--space-3);">{{ msg }}</div>
     </div>
 
-    <div v-if="progress.length" class="section">
+    <div v-if="steps.length" class="section">
       <h2 class="section-title">抓取过程</h2>
       <div class="chips">
-        <span v-for="(p, i) in progress" :key="i" class="pill pill--muted">
-          {{ p.crawler }}: {{ p.status }}
+        <span v-for="s in steps" :key="s.key" class="pill pill--dot" :class="s.cls">
+          {{ s.name }} {{ s.text }}
         </span>
       </div>
     </div>
 
     <div v-if="info" class="section">
       <div class="toolbar">
-        <h2 class="section-title" style="margin: 0;">结果</h2>
+        <h2 class="section-title" style="margin: 0;">刮削结果</h2>
+        <span class="section-hint">来源合并自 {{ contributedCount }} 个渠道</span>
         <div class="toolbar-spacer"></div>
         <button class="btn" :disabled="running" @click="organize">整理这部到磁盘</button>
       </div>
@@ -128,7 +174,7 @@ async function organize() {
       </div>
     </div>
 
-    <div v-if="rows(sources).length" class="section">
+    <div v-if="sourceRows.length" class="section">
       <h2 class="section-title">各渠道贡献</h2>
       <p class="section-hint">「已跳过」表示该渠道被熔断, 未参与本次抓取</p>
       <div class="table-wrap">
@@ -142,7 +188,7 @@ async function organize() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in rows(sources)" :key="r.site">
+            <tr v-for="r in sourceRows" :key="r.site">
               <td><code>{{ r.site }}</code></td>
               <td class="dim">{{ r.title }}</td>
               <td>

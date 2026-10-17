@@ -30,6 +30,7 @@ import ChannelsView from './views/ChannelsView.vue'
 import SettingsView from './views/SettingsView.vue'
 
 import * as api from './api'
+import { useTask } from './composables/useTask'
 
 // ---------------- 认证状态 ----------------
 const authReady = ref(false)     // 启动时先问后端要不要登录, 避免"闪一下登录页"
@@ -43,6 +44,9 @@ const active = ref('library')   // 导航项(与 NavRail 的 key 对应)
 
 // ---------------- 渠道健康(供状态栏与导航角标) ----------------
 const health = ref({ active: 0, ok: 0, tripped: 0 })
+
+// 全局任务进度(刮削/整理循环上报, 底部状态栏常驻显示, 与所在页面无关)
+const { task } = useTask()
 
 async function refreshHealth(silent = false) {
   try {
@@ -84,6 +88,15 @@ function askConfirm(opts) {
 
 provide(CONFIRM_KEY, askConfirm)
 
+// ---------------- 离开守卫(未保存更改拦截) ----------------
+// 子页面可注册一个返回 Promise<boolean> 的守卫: resolve(true)=放行 / false=中止。
+// 用于刮削源页的选源草稿 —— 用户改了 chip 没点保存就切页面时, 先问要不要放弃。
+// 登出/401 切页不拦: 会话都没了, 页面草稿保留没有意义, 直接放行更符合直觉。
+const LEAVE_GUARD_KEY = 'javsp:leave-guard'
+let leaveGuard = null
+function registerLeaveGuard(fn) { leaveGuard = fn }
+provide(LEAVE_GUARD_KEY, registerLeaveGuard)
+
 function onConfirmDone() {
   confirmState.value = { ...confirmState.value, show: false, busy: false }
   const r = confirmResolver
@@ -110,8 +123,9 @@ const VIEWS = {
 }
 const currentView = computed(() => VIEWS[active.value] || LibraryView)
 
-// 从子页面冒泡上来的事件
-function onNavigate(key) {
+// 从子页面冒泡上来的事件(导航前先过离开守卫: 有未保存更改时先问过用户)
+async function onNavigate(key) {
+  if (leaveGuard && !(await leaveGuard())) return
   active.value = key
   if (key === 'channels') refreshHealth()
 }
@@ -134,6 +148,15 @@ async function doLogout() {
     await api.logout()
   } catch (_) {
     // 即使注销请求失败也切回登录页, 避免卡在无权限状态
+  }
+  // 清掉本标签页的会话级 UI 状态(影片库/扫描目录/队列/日志等): 否则同一标签页
+  // 换账号登录后, 上一个用户的扫描结果与待整理队列会原样复现在新账号眼前。
+  try {
+    for (const k of Object.keys(sessionStorage)) {
+      if (k.startsWith('javsp:')) sessionStorage.removeItem(k)
+    }
+  } catch (_) {
+    // 隐私模式下 sessionStorage 不可访问, 忽略
   }
   loggedIn.value = false
 }
@@ -255,6 +278,7 @@ onUnmounted(() => {
       <StatusBar
         :version="version"
         :health="health"
+        :task="task"
         :user="authEnabled ? userName : ''"
         @logout="doLogout"
         @navigate="onNavigate"
