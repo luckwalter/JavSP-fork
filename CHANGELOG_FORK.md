@@ -8,6 +8,51 @@
 
 ---
 
+## v0.3.6（2026-10-17）
+
+**目录选择器跨盘符/网络盘定位修复（经两次返工） + 扫描无权限目录 500 修复 + 部署收尾清理工具**
+
+### 桌面版目录选择器（`javsp/server.py`、`frontend/src/api.js`、`frontend/src/views/LibraryView.vue`）
+
+主人实测两个场景：exe 装 `C:\JavSP` 时「回上层只能到 C 根、选不了别的盘符、手输路径报扫描失败」；exe 装 `\\HOMENAS\Downloads\JavSP` 时「目录列得出来但点了没反应，手输 Leak 才成功」。
+
+- **根因（同一个函数的平台含义不一致）**：`_browse_root()` 默认值是字面 `'/'`，意图表达"不限制"，但各平台实际含义完全不同——
+  - Windows 本地：`realpath('/')` == **当前驱动器根**，隐式锁死 C 盘；跨驱动器 `commonpath` 抛 `ValueError` → 判越界 → 静默回退；
+  - Windows UNC：`realpath('/')` == 共享根，叠加尾斜杠差异，`commonpath` 抛 `Can't mix absolute and relative paths`（ntpath 把整个 `\\host\share` 当 drive，剩下的 `\Leak` 被视作**相对路径**）→ 子目录判越界 → **静默重置回根**，这正是"点了没反应"的真相。
+- **第一次修复（01799ad）留了盲区**：只改了后端，`api.js` 的 `path || '/'` 兜底把空值变成 `'/'`，而 **`'/'` 是 truthy** → 直接绕过后端 `if not path:` 缺省分支，前端仍把选择器怼到盘符根。**教训：验证后端修复必须走真实前端请求链路，只调后端函数会漏掉"上游把空值变成 truthy"这类问题。**
+- **修复内容**：
+  - `_browse_root()` 未设置 `JAVSP_BROWSE_ROOT` 时返回 `None` 明确表示"不限制"，不再依赖 `'/'` 的平台歧义；
+  - 新增 `_norm_for_compare` / `_split_drive` / `_path_parts`：两侧同规则归一后**按路径分量逐级比较**，绕开 `commonpath` 在 UNC 上的缺陷（分量比较还天然避免 `/data` 误匹配 `/database`）；
+  - 所有 Windows 特性（盘符补斜杠、正斜杠归一、UNC 长路径前缀、盘符切换入口）收进 `os.name == 'nt'` 分支，**Linux 路径语义不受影响**；
+  - `api_browse` 缺省落点改为 exe 目录（源码运行为项目根），并把 `'/'` 也视作"未指定"（防旧版前端/手输 `?path=/`）；
+  - 新增 `_list_volumes()`：已挂载盘全列 + 空盘位最多补 3 个（不刷屏），UNC 共享根下改列同服务器的**真实共享**；
+  - 选择交互：双击选中 → **显式「选中」按钮**（双击在触屏/远程桌面不可靠），`:key` 改用完整 path；新增**路径直达输入框**（可粘 `D:\` 或 `\\主机\共享\目录` 回车进入）。
+- **安全边界未放松**（主人明确要求）：Docker 镜像内置 `ENV JAVSP_BROWSE_ROOT=/data`（`docker/Dockerfile:36`），"不限制"只对桌面版生效。`/data-secret`、`/database`、`/etc`、`/etc/passwd`、`/var/run/secrets`、`..` 逃逸、跨驱动器、兄弟共享 `\\host\share2` 全部正确拒绝。**Windows 本机 21/21 + NAS 容器内真实 Linux 15/15 全通过**（含新增的 `path='/'` 兜底后仍落 `/data`）。
+
+### 扫描无权限目录时 /api/scan 报 500（`javsp/file.py`）
+
+主人反馈"选到 C 盘其他目录还是报错"——这次报错来自**扫描**而非浏览，是独立缺陷，只测 browse 永远发现不了。
+
+- **根因**：`scan_movies` 为判断"带 nfo 的目录"会**额外 `os.listdir` 每个子目录**，这行是裸调用。Windows 上存在一批连管理员都读不了的目录（实测 `C:\Users\Default User`），`PermissionError` 冒泡中断整次扫描 → `/api/scan` 500。**注意 `os.walk` 本身对不可读目录是宽容的，是这行额外的 listdir 击穿的。**
+- **修复**：该 `listdir` 包 `try/except OSError`（跳过并从 `dirnames` 移除，避免后续遍历再踩 + debug 日志）；`os.path.getsize` 同样防护；`os.walk` 加 `onerror` 回调补日志；原 `print` 改 `logger.debug`。
+- **验证**：`scan_library('C:\Users')` 由抛异常 → 正常返回；`/api/scan` 对 `C:\Users` 200；**不存在的路径仍正确 400**（没把错误一股脑吞掉）。
+
+### 桌面 exe 构建修复（`build/pyinstaller.spec`）
+
+- v0.3.5 首次发布的 exe **启动即 `ModuleNotFoundError: No module named 'uvicorn'`**（本地部署时跑起来才暴露）：`desktop.py` 在**函数体内**动态 import `uvicorn` 与 `javsp.server`，PyInstaller 静态分析抓不到，而 spec 的 hiddenimports 只列了 `javsp.web`/`webview`。改用 `collect_submodules('uvicorn')` 并补 `javsp.server`。
+
+### 新增部署收尾清理工具（`tools/cleanup.py`）
+
+- 部署/测试收尾时把过程版本与备份在确认后一起删掉：默认 dry-run 预览清单 → `--apply` 才删（先看后删）；只删白名单（本机版备份/中转目录 + 工作区临时打包/一次性脚本）；主部署目录 guard 保护永不删。
+- 支持多部署位置（本地 `C:\JavSP` 与网盘 `\\HOMENAS\Downloads\JavSP`），从各部署位置的父目录推导扫描范围。
+
+### 已知行为（非缺陷）
+
+- 本机物理只有 C 盘时，D: 等盘符在选择器里置灰、点击提示"未插入/未挂载"，需用路径直达输入框选网盘目录。
+- `subst` 造的别名盘经 `realpath` 会解析成真实目标，别名盘**无法绕过** `JAVSP_BROWSE_ROOT` 边界（已实测：指向根外判越界、指向根内放行）；目录联接（junction）指向根外同样被拒绝。
+
+---
+
 ## v0.3.5（2026-10-17）
 
 **刮削源页重设计（明确总开关 + 分类归并 + 源地址显示）+ 全局任务进度常驻 + 设置页去重 + 第二批审查修复**
