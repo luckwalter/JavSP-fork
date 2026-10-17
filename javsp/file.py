@@ -1,11 +1,8 @@
 """与文件相关的各类功能"""
 import os
-from pathlib import Path
 import re
-import ctypes
 import logging
 import itertools
-import json
 from sys import platform
 from typing import List
 
@@ -218,17 +215,6 @@ def replace_illegal_chars(name):
     if os.pardir in name:
         name = _PARDIR_REPLACE.sub('…', name)
     return name
-
-
-def is_remote_drive(path: str):
-    """判断一个路径是否为远程映射到本地"""
-    #TODO: 当前仅支持Windows平台
-    if platform != 'win32':
-        return False
-    DRIVE_REMOTE = 0x4
-    drive = os.path.splitdrive(os.path.abspath(path))[0] + os.sep
-    result = ctypes.windll.kernel32.GetDriveTypeW(drive)
-    return result == DRIVE_REMOTE
 
 
 def get_remaining_path_len(path):

@@ -270,15 +270,6 @@ def post_html(url, data, encoding='utf-8', cookies={}):
     return html
 
 
-def dump_xpath_node(node, filename=None):
-    """将xpath节点dump到文件"""
-    if not filename:
-        filename = node.tag + '.html'
-    with open(filename, 'wt', encoding='utf-8') as f:
-        content = etree.tostring(node, pretty_print=True).decode('utf-8')
-        f.write(content)
-
-
 def is_connectable(url, timeout=3):
     """测试与指定url的连接
 

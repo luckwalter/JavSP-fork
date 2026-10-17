@@ -184,17 +184,3 @@ class TaskStore:
             with self._lock:
                 for k in keys:
                     self._active.discard(k)
-
-    def is_active(self, key) -> bool:
-        with self._lock:
-            return key in self._active
-
-    def stats(self) -> Dict[str, Any]:
-        """当前状态快照，供 `/api/health` 等观测使用。"""
-        with self._lock:
-            return {
-                'count': len(self._data),
-                'active': len(self._active),
-                'ttl_seconds': self._ttl,
-                'max_tasks': self._max,
-            }

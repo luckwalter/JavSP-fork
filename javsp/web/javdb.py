@@ -96,35 +96,6 @@ def get_html_wrapper(url):
         raise WebsiteError(f'JavDB: {r.status_code} 非预期状态码: {url}')
 
 
-def get_user_info(site, cookies):
-    """获取cookies对应的JavDB用户信息"""
-    try:
-        request.cookies = cookies
-        html = request.get_html(f'https://{site}/users/profile')
-    except Exception as e:
-        logger.info('JavDB: 获取用户信息时出错')
-        logger.debug(e, exc_info=1)
-        return
-    # 扫描浏览器得到的Cookies对应的临时域名可能会过期，因此需要先判断域名是否仍然指向JavDB的站点
-    if 'JavDB' in html.text:
-        email = html.xpath("//div[@class='user-profile']/ul/li[1]/span/following-sibling::text()")[0].strip()
-        username = html.xpath("//div[@class='user-profile']/ul/li[2]/span/following-sibling::text()")[0].strip()
-        return email, username
-    else:
-        logger.debug('JavDB: 域名已过期: ' + site)
-
-
-def get_valid_cookies():
-    """扫描浏览器，获取一个可用的Cookies"""
-    # 经测试，Cookies所发往的域名不需要和登录时的域名保持一致，只要Cookies有效即可在多个域名间使用
-    for d in cookies_pool:
-        info = get_user_info(d['site'], d['cookies'])
-        if info:
-            return d['cookies']
-        else:
-            logger.debug(f"{d['profile']}, {d['site']}: Cookies无效")
-
-
 def parse_data(movie: MovieInfo):
     """从网页抓取并解析指定番号的数据
     Args:

@@ -13,7 +13,7 @@ from hashlib import md5
 __all__ = ['translate', 'translate_movie_info']
 
 
-from javsp.config import BaiduTranslateEngine, BingTranslateEngine, Cfg, ClaudeTranslateEngine, GoogleTranslateEngine, OpenAITranslateEngine, TranslateEngine
+from javsp.config import BaiduTranslateEngine, BingTranslateEngine, Cfg, ClaudeTranslateEngine, OpenAITranslateEngine, TranslateEngine
 from javsp.datatype import MovieInfo
 from javsp.web.base import read_proxy
 

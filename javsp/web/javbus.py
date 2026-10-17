@@ -1,7 +1,6 @@
 """从JavBus抓取数据"""
 import logging
 
-from javsp.config import Cfg
 from javsp.web.base import *
 from javsp.web.exceptions import *
 from javsp.func import *

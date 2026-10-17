@@ -61,17 +61,6 @@ def _split_leading_brackets(text):
     return cands, (text or '')[len(m.group(1)):].strip()
 
 
-def _pick_number(candidates, default):
-    """取最后一个"像番号"的前缀块(如 [HD][MIDE-980] -> MIDE-980)
-
-    注意: 这里只用于回退标题里展示用的番号, 绝不写回 movie.dvdid。
-    """
-    for c in reversed(candidates):
-        if _re_number_like.match(c) and _re_has_digit.search(c):
-            return c
-    return default
-
-
 def parse_data(movie: MovieInfo):
     """从 javfree.me 抓取并解析指定番号的数据, 直接写入 movie
 

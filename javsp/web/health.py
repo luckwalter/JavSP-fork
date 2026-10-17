@@ -960,11 +960,6 @@ def _guard_against_outage(results: List[dict]) -> None:
                        f'已豁免熔断 -> {", ".join(names)}')
 
 
-def probe_all_background() -> List[dict]:
-    """供后台定时任务调用"""
-    return probe_all()
-
-
 # ---------------------------------------------------------------- 后台定时探活
 
 def _probe_loop():
@@ -1021,20 +1016,6 @@ def reset() -> None:
 
 # ---------------------------------------------------------------- 展示辅助
 
-def _is_skippable(source: str, allow: set) -> bool:
-    """**纯查询**: 该源现在会不会被刮削跳过。不改任何状态。
-
-    刻意不用 `is_tripped()` —— 它在冷却到期时会把 breaker 推进到 half_open
-    (放行一个试探请求)。而本函数服务于**展示路径**, 每部影片的结果都会调一次;
-    在这里触发状态转移等于让"渲染结果"推进了熔断状态机, 会同时放行多个试探请求,
-    破坏"半开只放一个"的并发保护, 并让 `skipped` 的取值依赖循环顺序。
-    """
-    rec = _records.get(source)
-    if rec is None:
-        return False
-    return source not in allow
-
-
 def merge_into_scrape_sources(sources: dict) -> dict:
     """把健康档案并入刮削结果的 sources, 供前端**一次渲染**
 
@@ -1064,20 +1045,6 @@ def merge_into_scrape_sources(sources: dict) -> dict:
     return out
 
 
-def allowlist_names() -> List[str]:
-    """当前参与刮削的源集合(熔断中的已剔除)。注意会触发 half_open 转移, 故单独封装"""
-    return [s for s in active_sources() if not is_tripped(s)]
-
-
-def skipped_sources() -> List[dict]:
-    """当前被熔断跳过的源(供日志与 API 顶层提示)"""
-    out = []
-    for row in overview(include_inactive=False):
-        if row['breaker'] == STATE_OPEN:
-            out.append(row)
-    return out
-
-
 def summary_for_log() -> str:
     rows = overview(include_inactive=False)
     if not rows:
@@ -1085,17 +1052,3 @@ def summary_for_log() -> str:
     ok = sum(1 for r in rows if r['status'] == 'ok')
     tripped = sum(1 for r in rows if r['breaker'] == STATE_OPEN)
     return f'渠道健康: {ok}/{len(rows)} 正常, {tripped} 熔断跳过'
-
-
-def format_report() -> str:
-    """给运维看的一段可读报告(不含 URL/凭据)"""
-    rows = overview(include_inactive=False)
-    lines = ['渠道健康报告:', f'  样本: {_sample_for("*")}  启用源: {len(rows)}']
-    for r in rows:
-        flag = '熔断' if r['breaker'] == STATE_OPEN else '正常'
-        cd = f' 冷却{r["cooldown_remaining"]}s' if r['cooldown_remaining'] else ''
-        lines.append(f'  [{flag}] {r["source"]:<12} {r["status_text"]:<22} '
-                     f'{r["elapsed_ms"]:>6}ms {r["domain"]}{cd}')
-        if r['reason']:
-            lines.append(f'        └ {r["reason"]}')
-    return '\n'.join(lines)

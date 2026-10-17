@@ -1,15 +1,10 @@
 import os
 import re
 import sys
-import json
 import time
 import logging
-from PIL import Image
 from pydantic import ValidationError
 from pydantic_extra_types.pendulum_dt import Duration
-import requests
-import threading
-from typing import Dict, List
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -23,7 +18,6 @@ pretty_errors.configure(display_link=True)
 
 
 from javsp.print import TqdmOut
-from javsp.cropper import Cropper, get_cropper
 
 # 将StreamHandler的stream修改为TqdmOut，以与Tqdm协同工作
 root_logger = logging.getLogger()
@@ -34,17 +28,16 @@ for handler in root_logger.handlers:
 logger = logging.getLogger('main')
 
 
-from javsp.lib import resource_path
 from javsp.nfo import write_nfo
 from javsp.file import *
 from javsp.func import *
 from javsp.image import *
-from javsp.datatype import Movie, MovieInfo
+from javsp.datatype import Movie
 from javsp.web.base import download
 from javsp.web.exceptions import *
 from javsp.web.translate import translate_movie_info
 
-from javsp.config import Cfg, CrawlerID
+from javsp.config import Cfg
 from javsp.prompt import prompt
 
 # 核心业务逻辑(与 CLI 解耦, Web 后端与命令行共用)

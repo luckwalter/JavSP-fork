@@ -8,11 +8,12 @@ import os
 import sys
 import json
 import queue
+import string
 import threading
 import hashlib
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -87,6 +88,12 @@ def _deep_update(base: dict, updates: dict) -> dict:
     return out
 
 
+# 过期会话定期清理周期(秒)。verify_token 只在"有人带 token 来时"顺手清过期会话,
+# "过期后再无人携带"的条目会无限残留在 .sessions.json 与内存里, 故需定时兜底
+# (auth.prune_sessions 的设计意图, 2026-10-18 接线)。
+_SESSION_PRUNE_INTERVAL = 3600
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动时初始化: 加载配置、导入爬虫、加载别名表
@@ -101,7 +108,23 @@ async def lifespan(app: FastAPI):
         channel_health.start_auto_probe()
     except Exception as e:      # noqa: BLE001
         logger.warning(f'渠道自动探活启动失败(不影响刮削): {channel_health._sanitize(str(e))}')
+    # 定期清理过期会话: daemon 线程 + 周期等待, 启动后先等一个周期(启动时刚加载
+    # 过会话, 无需立即清)。失败只记日志, 监控/清理类辅助任务都不能成为启动依赖。
+    _prune_stop = threading.Event()
+
+    def _prune_loop():
+        while not _prune_stop.wait(_SESSION_PRUNE_INTERVAL):
+            try:
+                n = auth.prune_sessions()
+                if n:
+                    logger.info(f'已清理 {n} 个过期会话')
+            except Exception as e:      # noqa: BLE001 后台线程绝不能因异常而静默死亡
+                logger.warning(f'清理过期会话失败(忽略): {e}')
+
+    _prune_thread = threading.Thread(target=_prune_loop, daemon=True, name='session-prune')
+    _prune_thread.start()
     yield
+    _prune_stop.set()
     channel_health.stop_auto_probe()
 
 
@@ -545,26 +568,22 @@ def _list_volumes(current: str) -> List[dict]:
     out = []
     # UNC 共享根下不列 A-Z 盘符(此时用户关心的是同服务器的其它共享), 只列共享
     if not in_unc:
-        try:
-            import string
-            mounted, unmounted = [], []
-            for letter in string.ascii_uppercase:
-                name = f'{letter}:'
-                if name == drive_cur.upper():
-                    continue
-                d = f'{letter}:{os.sep}'
-                try:
-                    present = os.path.exists(d)
-                except OSError:
-                    present = False
-                (mounted if present else unmounted).append(
-                    {'name': name, 'path': d, 'present': present})
+        mounted, unmounted = [], []
+        for letter in string.ascii_uppercase:
+            name = f'{letter}:'
+            if name == drive_cur.upper():
+                continue
+            d = f'{letter}:{os.sep}'
+            try:
+                present = os.path.exists(d)
+            except OSError:
+                present = False
+            (mounted if present else unmounted).append(
+                {'name': name, 'path': d, 'present': present})
             # 已挂载盘全列(可点进去); 空盘位最多补 3 个作提示 —— 全列 25 个是噪音,
             # 而主人卡住的点从来是"找不到可用的位置", 不是"看不到空盘符"
             out.extend(mounted)
             out.extend(unmounted[:3])
-        except OSError:
-            pass
     # 当前在 UNC 路径下时, 附带同服务器其它共享(存在才列)
     if in_unc:
         server = drive_cur.split(os.sep, 2)[2] if drive_cur.count(os.sep) >= 2 else ''
@@ -594,7 +613,15 @@ def _is_organized(movie) -> bool:
     if not sd or not os.path.isdir(sd):
         return False
     video_exts = ('.mp4', '.mkv', '.avi', '.wmv', '.ts', '.iso', '.rmvb', '.mov', '.m2ts')
-    for name in os.listdir(sd):
+    # save_dir 可能位于随后被收紧权限的目录(或 output_folder_pattern 配了指向
+    # 系统目录的绝对路径), 裸 os.listdir 会抛 PermissionError 把 /api/movies
+    # 与单部查询一起打挂成 500 —— 与 v0.3.6 修 scan_movies 500 同源, 读不了
+    # 就当"未整理", 绝不扩散成接口级故障。
+    try:
+        entries = os.listdir(sd)
+    except OSError:
+        return False
+    for name in entries:
         low = name.lower()
         if low.endswith('.nfo') or low in ('poster.jpg', 'fanart.jpg'):
             return True

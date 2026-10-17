@@ -69,7 +69,7 @@ Release 双资产：javsp-fork-<ver>-image.tar.gz（docker load 即用）
 ```
 
 - **爬虫层 `javsp/web/*`**：番号 → `MovieInfo`，上游纯逻辑底座 + fork 移植增强，是最稳的根基。
-- **核心层 `javsp/core.py`**：从 CLI 抽出的编排逻辑，带进度回调，对外暴露 `scrape_movie()` / `organize_movie()` / `preview_metadata()` / `scan_library()`，CLI 与 Web 共用。
+- **核心层 `javsp/core.py`**：从 CLI 抽出的编排逻辑，带进度回调，对外暴露 `scrape_movie()` / `organize_movie()` / `scan_library()`，CLI 与 Web 共用。
 - **后端 `javsp/server.py`**：FastAPI + SSE，主要接口：
   | 接口 | 说明 |
   |---|---|

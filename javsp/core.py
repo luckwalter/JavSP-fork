@@ -657,12 +657,6 @@ def scrape_movie(avid: str, progress_cb: ProgressCb = None) -> Optional[Movie]:
     return movie
 
 
-def preview_metadata(avid: str, progress_cb: ProgressCb = None) -> Optional[MovieInfo]:
-    """仅刮削并返回合并后的元数据(不落盘), 供前端预览"""
-    movie = scrape_movie(avid, progress_cb=progress_cb)
-    return movie.info if movie else None
-
-
 def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
                    translate: Optional[bool] = None,
                    move_files: Optional[bool] = None) -> dict:

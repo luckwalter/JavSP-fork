@@ -2,7 +2,7 @@ from argparse import ArgumentParser, RawTextHelpFormatter
 from enum import Enum
 from typing import Dict, List, Literal, TypeAlias, Union
 from confz import BaseConfig, CLArgSource, EnvSource, FileSource
-from pydantic import ByteSize, ConfigDict, Field, NonNegativeInt, PositiveInt
+from pydantic import ByteSize, ConfigDict, Field, PositiveInt
 from pydantic_extra_types.pendulum_dt import Duration
 from pydantic_core import Url
 from pathlib import Path

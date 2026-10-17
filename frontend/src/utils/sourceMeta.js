@@ -15,12 +15,6 @@
 /** 刮削消费的三类选源维度(与 core.py 的 movie.data_src 对应) */
 export const KINDS = ['normal', 'fc2', 'cid']
 export const KIND_LABEL = { normal: '普通', fc2: 'FC2', cid: 'CID' }
-export const KIND_FULL = { normal: '普通番号', fc2: 'FC2 番号', cid: 'CID 番号' }
-export const KIND_HINT = {
-  normal: '厂商番号(如 ABC-123)',
-  fc2: 'FC2-xxxx 专属',
-  cid: '需携带 cid 检索',
-}
 
 /**
  * 每个源实际支持的番号类型(据此收敛 chip: 只渲染源真实支持的类别)。

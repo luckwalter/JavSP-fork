@@ -1,10 +1,8 @@
 """从fanza抓取数据"""
-import os
 import re
-import sys
 import json
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 
 from javsp.web.base import Request, resp2html
