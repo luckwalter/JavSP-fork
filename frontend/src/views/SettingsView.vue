@@ -249,9 +249,10 @@ onMounted(load)
                 <input v-model.number="cfg.network.retry" type="number" min="1" max="10" class="input" />
               </div>
               <div class="field">
-                <label class="field-label">单次请求超时</label>
-                <input v-model="cfg.network.timeout" class="input" placeholder="PT10S" />
-                <p class="field-hint">ISO8601 时长, 如 PT10S = 10 秒</p>
+                <label class="field-label">单次请求超时(秒)</label>
+                <input :value="isoToSeconds(cfg.network.timeout)" type="number" min="1" max="120" class="input"
+                       @input="cfg.network.timeout = secondsToIso($event.target.value)" />
+                <p class="field-hint">单位秒, 如 10 = PT10S; 站点响应慢可适当调大(保存时自动转回 ISO8601 时长)</p>
               </div>
             </div>
               <div class="field">

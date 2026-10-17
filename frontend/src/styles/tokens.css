@@ -85,7 +85,6 @@
   /* ---------- 布局尺寸 ---------- */
   --nav-width: 196px;
   --statusbar-height: 40px;
-  --content-max: 1240px;
 
   /* ---------- 动效 ---------- */
   --transition-fast: 120ms ease;

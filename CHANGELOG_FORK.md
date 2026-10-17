@@ -8,6 +8,32 @@
 
 ---
 
+## v0.3.4（2026-10-17）
+
+**全仓库审查修复（性能/安全 4 项）+ 版本对齐工具加固 + Logo / 超时 / 布局**
+
+### 全仓库代码审查修复（第一批）
+
+- **修复目录浏览根路径判断缺陷**（`javsp/server.py`）：原实现用 `startswith(root + os.sep)` 做边界比较，`root='/'` 时拼出 `'//'`，所有子目录都被判越界——源码运行 / Windows 桌面版（默认 `root='/'`）的目录选择器点任何子目录都回落根目录。改用 `os.path.commonpath` 按路径分量比较；不同驱动器（Windows `C:`/`D:`）安全返回 False。Docker 部署（`JAVSP_BROWSE_ROOT=/data`）不受此影响。
+- **修复 `--nogui` 形态在无 Chrome 环境打不开浏览器**（`javsp/web/base.py`）：`open_in_chrome` 原先硬编码 Chrome 路径、以 `shell=True` 字符串拼接启动，还被模块级全局覆盖到 `webbrowser.open`——未安装 Chrome 的机器上桌面版浏览器形态直接失效。现改为存在性检查 + 回退系统默认浏览器 + 列表参数启动（同时消除 url 经 shell 解释的面）。
+- **修复 SSE 读取超时后连接悬挂**（`frontend/src/api.js`）：`consumeSSE` 超时 reject 时不断开底层连接，HTTP/1.1 同域 6 连接被逐次占满后全站请求排队（与 v0.2.2「点了没反应」同机理）。现超时/出错路径必定 `abort()` 断开并安全释放 reader。
+- **修复单部查询整理结果无反馈**（`frontend/src/views/LookupView.vue`）：前端等待的 `d.done`/`d.error` 字段与后端实际协议（`type:'result'` / `type:'error', msg`）错配——整理（移动/重命名文件，破坏性操作）成功与失败均静默无提示。已对齐协议，并补充「正在整理…」阶段提示。
+
+### 版本对齐工具加固
+
+- **修复 README「当前版本」长期静默漂移**（`sync_version.py`）：`_CURRENT_RE` 只匹配 `当前版本：**x**` 旧格式，而 README 实际写法是 `**当前版本：x**`，该处从 0.3.2 起停在旧版本，`--check` 还被「徽章匹配即放行」的逻辑洗白成 OK。现正则兼容两种格式，且徽章 /「当前版本」两个标记任一缺失或写法变化都会显式报错，不再静默放行。
+- README 版本规则段补充跨环境校验（`--check-target`）与防呆行为说明。
+
+### Logo / 超时 / 布局（v0.3.3 发版后累积）
+
+- 左上角新增 Logo：上游 `image/JavSP.svg` 是 foreignObject 内嵌 HTML 的假 svg（Chromium 渲染空白，不可用），弃用；改用 `image/JavSP.ico` 提取 SP 橙块放大生成 `frontend/public/logo.png`，favicon 同步更新（32/48 双尺寸）。
+- 修复 `network.timeout` 设置项退回 ISO8601 文本输入的回归（v0.1.11 做过按秒编辑，v0.2.3 重写设置页时丢失）：恢复按秒编辑（输入 10 = PT10S）。
+- 修复宽屏下内容区整体居中导致的大片空白：第一二栏之间 242px 空白带、无第二栏的页面内容也被挤在中间；内容区改为贴左占满，1920 宽屏下两侧各剩正常 padding。
+
+### 验证
+
+- 后端 `py_compile` 通过；前端 `npm run build` 通过；路径边界逻辑自测 8/8（含 `/database` 前缀陷阱、不同驱动器）；`sync_version.py` 边界自测 7/7（两种格式检出 / 标记缺失报错 / 双向同步）；`--check` 门禁 EXIT=0。
+
 ## v0.3.3（2026-10-17）
 
 **命名规则可视化重构（告别手打 {xxx}）+ 全站深色模式**

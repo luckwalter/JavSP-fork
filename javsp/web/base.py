@@ -362,12 +362,20 @@ def download(url, output_path, desc=None):
 
 
 def open_in_chrome(url, new=0, autoraise=True):
-    """使用指定的Chrome Profile打开url，便于调试"""
+    """使用指定的Chrome Profile打开url，便于调试; 未安装Chrome时回退系统默认浏览器"""
     import subprocess
-    chrome = R'C:\Program Files\Google\Chrome\Application\chrome.exe'
-    subprocess.run(f'"{chrome}" --profile-directory="Profile 2" {url}', shell=True)
+    chrome = os.path.join(os.environ.get('PROGRAMFILES', R'C:\Program Files'),
+                          'Google', 'Chrome', 'Application', 'chrome.exe')
+    if not os.path.isfile(chrome):
+        # 无 Chrome: 回退覆盖前的原生实现, 否则 desktop.py --nogui 形态在本机
+        # 打不开浏览器(2026-10-17 全仓库审查 M2)
+        return _orig_webbrowser_open(url, new, autoraise)
+    # 列表参数 + 无 shell=True: url 可能来自远端页面, 不经 shell 解释
+    subprocess.run([chrome, '--profile-directory=Profile 2', url])
 
 import webbrowser
+# 覆盖前保存原生实现, 供 open_in_chrome 在无 Chrome 环境回退
+_orig_webbrowser_open = webbrowser.open
 webbrowser.open = open_in_chrome
 
 

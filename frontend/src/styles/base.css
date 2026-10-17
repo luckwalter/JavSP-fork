@@ -74,9 +74,13 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   padding: var(--space-6);
 }
 
+/* 内容区贴左占满: 原先 max-width+居中会在宽屏上于导航栏与内容之间
+   留出一条空白带(1920 下实测 242px), 且无页内分类栏的页面内容也挤在
+   中间不展开。现在内容从导航右缘开始铺满可用宽度; 有页内第二栏的页面
+   (如设置页)自然占据其位, 没有的页面则由内容用满整片区域。 */
 .content-inner {
-  max-width: var(--content-max);
-  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
 }
 
 /* ---------- 区块 ---------- */

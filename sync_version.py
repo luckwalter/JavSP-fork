@@ -36,8 +36,11 @@ README = os.path.join(ROOT, 'README.md')
 _VERSION_RE = re.compile(r'^version\s*=\s*["\']([^"\']+)["\']', re.M)
 # README 中的版本徽章: ![Version](https://img.shields.io/badge/version-0.1.8-blue.svg)
 _BADGE_RE = re.compile(r'(badge/version-)([0-9][0-9.]*)(-blue\.svg)')
-# README 中的「当前版本：**0.1.8**」
-_CURRENT_RE = re.compile(r'(当前版本：\*\*)([0-9][0-9.]*)(\*\*)')
+# README 中的「当前版本」标记。兼容两种写法:
+#   `当前版本：**0.3.3**` 与 `**当前版本：0.3.3**`
+# (0.3.2 起 README 实际是后者, 旧正则只匹配前者 —— 静默失配导致该处从 0.3.2
+#  起漂移, 且 check 被徽章的值洗白成 OK, 2026-10-17 全库版本审查发现)
+_CURRENT_RE = re.compile(r'((?:\*\*)?当前版本[：:]\s*(?:\*\*)?)([0-9][0-9.]*)')
 
 
 def read_pyproject_version():
@@ -146,11 +149,17 @@ def check_readme(ver):
         text = f.read()
     badge = _BADGE_RE.search(text)
     cur = _CURRENT_RE.search(text)
-    if not badge and not cur:
-        return None, '未找到版本徽章或「当前版本」标记'
-    found = {badge.group(2) if badge else None, cur.group(2) if cur else None}
-    got = found.pop() if len(found) == 1 else '/'.join(sorted(i for i in found if i))
-    return got, None
+    # 两个标记都必须存在: 任一缺失都说明同步面破损(如 README 改了写法),
+    # 必须显式报错。旧实现把未匹配的标记过滤成 None 后「有一处就放行」,
+    # 导致「当前版本」处从 0.3.2 起静默漂移而 check 仍报 OK(2026-10-17 审查)
+    if not badge:
+        return None, '未找到版本徽章(badge/version-x.y.z-blue.svg), README 写法可能已变'
+    if not cur:
+        return None, '未找到「当前版本」标记, README 写法可能已变'
+    if badge.group(2) != cur.group(2):
+        # 两处不一致: 如实回报, 让 sync 修复
+        return f'{badge.group(2)}/{cur.group(2)}', None
+    return badge.group(2), None
 
 
 def sync_readme(ver):
@@ -158,7 +167,7 @@ def sync_readme(ver):
     with open(README, 'r', encoding='utf-8', newline='') as f:
         text = f.read()
     text = _BADGE_RE.sub(lambda m: m.group(1) + ver + m.group(3), text)
-    text = _CURRENT_RE.sub(lambda m: m.group(1) + ver + m.group(3), text)
+    text = _CURRENT_RE.sub(lambda m: m.group(1) + ver, text)
     with open(README, 'w', encoding='utf-8', newline='') as f:
         f.write(text)
 

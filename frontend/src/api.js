@@ -161,6 +161,8 @@ function consumeSSE(url, body, onEvent, opts = {}) {
       opts.signal.addEventListener('abort', () => controller.abort())
     }
     ;(async () => {
+      // reader 提前到 try 外声明: fetch 阶段(拿到 reader 之前)失败时, catch 里也要能安全引用
+      let reader = null
       try {
         const resp = await fetch(url, {
           method: 'POST',
@@ -180,7 +182,7 @@ function consumeSSE(url, body, onEvent, opts = {}) {
           const e = await resp.json().catch(() => ({}))
           throw new Error(normalizeDetail(e.detail) || 'request failed')
         }
-        const reader = resp.body.getReader()
+        reader = resp.body.getReader()
         const decoder = new TextDecoder()
         let buf = ''
         while (true) {
@@ -194,7 +196,11 @@ function consumeSSE(url, body, onEvent, opts = {}) {
           })
           let res
           try {
-            res = await Promise.race([reader.read(), timer])
+            const readPromise = reader.read()
+            // 超时 race 落选时该 read 仍处于 pending, 之后 abort 会让它 reject;
+            // 预先挂 no-op catch, 防止 rejection 逃逸成 unhandled rejection
+            readPromise.catch(() => {})
+            res = await Promise.race([readPromise, timer])
           } finally {
             if (timerId) clearTimeout(timerId)
           }
@@ -220,6 +226,12 @@ function consumeSSE(url, body, onEvent, opts = {}) {
         // 正常读完也 resolve: 上游可能没发终止事件(如代理截断), 调用方应能正常收尾
         done(resolve, undefined)
       } catch (e) {
+        // 超时/读取出错: 必须 abort 断开底层 TCP, 否则该连接悬挂,
+        // HTTP/1.1 同域 6 连接被累积占满 → 全站请求排队(v0.2.2 同机理, 2026-10-17 审查 M4)
+        controller.abort()
+        if (reader) {
+          try { reader.releaseLock() } catch (_) { /* 已释放 */ }
+        }
         done(reject, e)
       }
     })()

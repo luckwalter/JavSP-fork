@@ -215,7 +215,13 @@ def _within_browse_root(target: str) -> bool:
     """判断 target 是否位于允许浏览的根内(realpath 消解 .. 与符号链接后再比)"""
     root = os.path.realpath(_browse_root())
     cand = os.path.realpath(target)
-    return cand == root or cand.startswith(root + os.sep)
+    # 不能用 startswith(root + os.sep): root='/' 时会拼出 '//', 所有子目录都判越界
+    # (桌面版/源码运行默认 root='/' 实测中招; Docker 部署 JAVSP_BROWSE_ROOT=/data 不受影响)。
+    # commonpath 按路径分量比较, 根路径天然成立; 不同驱动器(Windows C: vs D:)抛 ValueError。
+    try:
+        return os.path.commonpath([root, cand]) == root
+    except ValueError:
+        return False
 
 
 # ----------------------------- 路由 -----------------------------

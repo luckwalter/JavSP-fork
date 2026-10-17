@@ -43,7 +43,8 @@ async function run() {
     await api.scrapeStream({ avid: q }, (d) => {
       if (d.crawler) progress.value = [...progress.value, d]
       if (d.info) { info.value = d.info; sources.value = d.sources || null }
-      if (d.error) { msg.value = d.error; msgType.value = 'danger' }
+      // 后端错误事件是 {type:'error', msg}, 没有 d.error 字段(2026-10-17 审查 M5)
+      if (d.type === 'error') { msg.value = d.msg; msgType.value = 'danger' }
     })
     if (info.value) { msg.value = '刮削完成'; msgType.value = 'info' }
     else if (!msg.value) { msg.value = '未获取到数据(该番号可能未被收录)'; msgType.value = 'warning' }
@@ -60,8 +61,11 @@ async function organize() {
   running.value = true
   try {
     await api.organizeStream(info.value.guid, (d) => {
-      if (d.done) { msg.value = '已整理到磁盘'; msgType.value = 'info' }
-      if (d.error) { msg.value = d.error; msgType.value = 'danger' }
+      // 后端 organize 协议: {type:'stage'}/{type:'result', result}/{type:'error', msg},
+      // 没有 d.done/d.error 字段(2026-10-17 审查 M5)
+      if (d.type === 'stage') { msg.value = '正在整理…'; msgType.value = 'info' }
+      if (d.type === 'result') { msg.value = '已整理到磁盘'; msgType.value = 'info' }
+      if (d.type === 'error') { msg.value = d.msg || '整理失败'; msgType.value = 'danger' }
     })
   } catch (e) {
     msg.value = `整理失败: ${e.message}`

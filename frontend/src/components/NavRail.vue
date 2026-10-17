@@ -35,8 +35,11 @@ function go(key) {
 <template>
   <nav class="nav" aria-label="主导航">
     <div class="nav-brand">
-      <span class="nav-brand-name">JavSP</span>
-      <span class="nav-brand-sub">刮削管理台</span>
+      <img class="nav-brand-logo" src="/logo.png" alt="JavSP" width="22" height="19" />
+      <span class="nav-brand-text">
+        <span class="nav-brand-name">JavSP</span>
+        <span class="nav-brand-sub">刮削管理台</span>
+      </span>
     </div>
 
     <div class="nav-group">
@@ -118,8 +121,19 @@ function go(key) {
 }
 
 .nav-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3) 0;
 }
+
+.nav-brand-logo {
+  width: 22px;
+  height: 19px;
+  flex-shrink: 0;
+}
+
+.nav-brand-text { display: flex; flex-direction: column; min-width: 0; }
 
 .nav-brand-name {
   display: block;
