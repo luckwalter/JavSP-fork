@@ -32,14 +32,42 @@ def scan_movies(root: str) -> List[Movie]:
     dic = {}    # avid: [abspath1, abspath2...]
     small_videos = {}
     ignore_folder_name_pattern = re.compile('|'.join(Cfg().scanner.ignored_folder_name_pattern))
-    for dirpath, dirnames, filenames in os.walk(root):
+
+    def _on_walk_error(e: OSError) -> None:
+        """os.walk 遇到无法进入的目录时的回调(默认静默跳过)。
+
+        这里只是补一条 debug 日志便于排查(如扫描 C:\\Users 时跳过的系统目录),
+        行为仍沿用"跳过并继续", 绝不中断整次扫描。
+        """
+        logger.debug(f"扫描跳过无法访问的路径: {getattr(e, 'filename', e)} ({e})")
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_on_walk_error):
         for name in dirnames.copy():
             if ignore_folder_name_pattern.match(name):
                 dirnames.remove(name)
             # 移除有nfo的文件夹
             if Cfg().scanner.skip_nfo_dir:
-                if any(file.lower().endswith(".nfo") for file in os.listdir(os.path.join(dirpath, name)) if isinstance(file, str)):
-                    print(f"skip file {name}")
+                # ⚠️ 这里必须自己吞掉访问错误: os.walk 对**不可读的目录**是宽容的
+                # (会跳过并继续), 但本行会**额外 listdir 每个子目录**去找 nfo,
+                # 而 Windows 上有一批连管理员都读不了的目录(如 C:\Users\Default User,
+                # 还可能有断连的网络盘/联接点), 裸 listdir 抛 PermissionError/
+                # OSError 会直接中断整次扫描 —— 实测选 C:\Users 扫描时 /api/scan
+                # 直接 500(2026-10-17 主人报障)。
+                # 单个子目录读不到不该影响整个扫描: 跳过它, 继续处理其它目录。
+                try:
+                    has_nfo = any(
+                        f.lower().endswith(".nfo")
+                        for f in os.listdir(os.path.join(dirpath, name))
+                        if isinstance(f, str)
+                    )
+                except OSError as e:
+                    # 记一笔便于排查, 但不中断扫描
+                    logger.debug(f"跳过无法访问的目录 '{os.path.join(dirpath, name)}': {e}")
+                    # 同时不要继续深入这个不可读目录, 避免后续遍历再踩
+                    dirnames.remove(name)
+                    continue
+                if has_nfo:
+                    logger.debug(f"skip dir (has nfo): {name}")
                     dirnames.remove(name)
 
         for file in filenames:
@@ -47,7 +75,12 @@ def scan_movies(root: str) -> List[Movie]:
             if ext in Cfg().scanner.filename_extensions:
                 fullpath = os.path.join(dirpath, file)
                 # 忽略小于指定大小的文件
-                filesize = os.path.getsize(fullpath)
+                try:
+                    filesize = os.path.getsize(fullpath)
+                except OSError as e:
+                    # 文件可能已被删除/无权限读取, 跳过即可, 不应中断整次扫描
+                    logger.debug(f"跳过无法读取大小的文件 '{fullpath}': {e}")
+                    continue
                 if filesize < Cfg().scanner.minimum_size:
                     small_videos.setdefault(file, []).append(fullpath)
                     continue
