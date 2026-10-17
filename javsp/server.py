@@ -455,7 +455,13 @@ def api_browse(path: Optional[str] = None):
     # 缺省路径的落点: 有配置根就用配置根; 未配置时用 exe 所在目录。
     # 不用硬编码 '/' —— 那在 Windows 上等于"当前驱动器根", 会把选择器直接怼到 C 根
     # 或(UNC 部署时)共享根, 用户一打开看到的是毫无关系的目录层级。
-    if not path:
+    #
+    # ⚠️ 2026-10-17 补: 前端历史上用 `path || '/'` 兜底, 导致 **'/' 是 truthy,
+    # 直接绕过下面整个缺省分支**, 于是选择器一打开就停在 C 根(主人实测)。
+    # 前端已改为原样传空; 这里再把 '/' 也视作"未指定"兜底, 防止旧版前端/手输
+    # 直接访问 /api/browse?path=/ 时复现同一现象。
+    # 注意: Docker 部署不受影响 —— 那里 JAVSP_BROWSE_ROOT 已设, 命中第一个分支。
+    if not path or path == '/':
         configured_root = _browse_root()
         if configured_root is not None:
             path = configured_root
@@ -508,21 +514,12 @@ def api_browse(path: Optional[str] = None):
     # 上级若已越出允许根, 置为 None(前端隐藏「上一层」按钮)
     parent_ok = (parent_n != cur_n) and _within_browse_root(parent_raw)
 
-    # 未配置根时, 在「根层级」额外给出可切换的盘符入口: 否则在 C 根之下没有任何
-    # 办法走到 D 盘(主人的场景 A 就卡在这里)。只在根层级给, 避免每层都堆一排盘符。
+    # 未配置根时, 在「根层级」给出可切换的位置入口: 否则在 C 根之下没有任何办法
+    # 走到别的盘符/网络位置(主人的场景 A 就卡在这里: 本机只有 C 盘, 列表全空,
+    # 连"有没有别的盘"都看不出来)。只在根层级给, 避免每翻一层都堆一排盘符。
     volumes = []
     if _browse_root() is None and os.name == 'nt' and _is_volume_root(path):
-        cur_drive = os.path.splitdrive(path)[0].upper()
-        try:
-            import string
-            for letter in string.ascii_uppercase:
-                d = f'{letter}:{os.sep}'
-                if d[0].upper() == cur_drive[:1]:
-                    continue
-                if os.path.exists(d):
-                    volumes.append({'name': f'{letter}:', 'path': d})
-        except OSError:
-            pass
+        volumes = _list_volumes(path)
     return {
         'current': path,
         'parent': parent_raw if parent_ok else None,
@@ -530,6 +527,60 @@ def api_browse(path: Optional[str] = None):
         'volumes': volumes,
         'root': _browse_root(),
     }
+
+
+def _list_volumes(current: str) -> List[dict]:
+    """列出可切换的盘符与网络位置(仅根层级调用, 且仅 Windows)。
+
+    设计取舍: **已挂载的盘符**列为可直接进入的入口; 其余盘符字母也一并返回并
+    标记 ``present=False`` —— 因为「本机只有 C 盘」时若只列存在的盘符, 列表会是空的,
+    用户完全看不出还有别的盘可选(2026-10-17 主人实测卡在这里)。点不存在的盘符
+    由前端给出「盘不可用」提示, 而不是让列表空着让人以为没别的盘。
+
+    网络位置: 列出已映射的网络驱动器(有 ROOT 的盘符), 以及从当前 UNC 路径
+    推出同服务器的其它共享(需真实存在才列)。
+    """
+    drive_cur, _ = os.path.splitdrive(current)
+    in_unc = drive_cur.startswith('\\\\')
+    out = []
+    # UNC 共享根下不列 A-Z 盘符(此时用户关心的是同服务器的其它共享), 只列共享
+    if not in_unc:
+        try:
+            import string
+            mounted, unmounted = [], []
+            for letter in string.ascii_uppercase:
+                name = f'{letter}:'
+                if name == drive_cur.upper():
+                    continue
+                d = f'{letter}:{os.sep}'
+                try:
+                    present = os.path.exists(d)
+                except OSError:
+                    present = False
+                (mounted if present else unmounted).append(
+                    {'name': name, 'path': d, 'present': present})
+            # 已挂载盘全列(可点进去); 空盘位最多补 3 个作提示 —— 全列 25 个是噪音,
+            # 而主人卡住的点从来是"找不到可用的位置", 不是"看不到空盘符"
+            out.extend(mounted)
+            out.extend(unmounted[:3])
+        except OSError:
+            pass
+    # 当前在 UNC 路径下时, 附带同服务器其它共享(存在才列)
+    if in_unc:
+        server = drive_cur.split(os.sep, 2)[2] if drive_cur.count(os.sep) >= 2 else ''
+        if server:
+            parent = os.path.dirname(drive_cur.rstrip('\\/')) or drive_cur
+            try:
+                for entry in os.scandir(parent if os.path.isdir(parent) else drive_cur):
+                    if entry.name.lower() == server.lower():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        p = '\\\\' + os.path.join(server, entry.name)
+                        out.append({'name': entry.name, 'path': p, 'present': True,
+                                    'unc': True})
+            except OSError:
+                pass
+    return out
 
 
 def _is_organized(movie) -> bool:

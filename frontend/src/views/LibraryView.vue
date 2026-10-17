@@ -25,6 +25,7 @@ const browseParent = ref(null)
 const browseDirs = ref([])
 const browseVolumes = ref([])
 const browseRoot = ref('')
+const jumpPath = ref('')
 
 watch([scanPath, movies], () => {
   saveState('scanPath', scanPath.value)
@@ -107,6 +108,23 @@ async function loadBrowse(path) {
 function chooseDir(p) {
   scanPath.value = p
   browserVisible.value = false
+}
+
+// 切换盘符/网络位置: 不存在的盘给出明确提示, 而不是让用户对着空列表猜
+async function gotoVolume(v) {
+  if (v.present === false) {
+    setMsg(`${v.name} 盘当前不可用(未插入/未挂载)`, 'danger')
+    return
+  }
+  await loadBrowse(v.path)
+}
+
+// 直接输入路径跳转(盘符列表覆盖不到的场景: 网络共享 \\主机\共享、未挂载的盘)
+async function jumpToPath() {
+  const p = (jumpPath.value || '').trim()
+  if (!p) return
+  jumpPath.value = ''
+  await loadBrowse(p)
 }
 
 function confirmBrowse() {
@@ -273,10 +291,28 @@ defineExpose({ scanPath, movies, selectedGuids, doScan })
         <!-- 盘符/卷切换: 只在根层级由后端给出, 解决"到 C 根后无法去别的盘符" -->
         <div v-if="browseVolumes.length" class="browser-volumes">
           <span class="browser-volumes-label">切换到:</span>
-          <button v-for="v in browseVolumes" :key="v.path" class="browser-volume" @click="loadBrowse(v.path)">
-            {{ v.name }}
-          </button>
+          <button
+            v-for="v in browseVolumes"
+            :key="v.path"
+            class="browser-volume"
+            :class="{ 'browser-volume--off': v.present === false }"
+            :title="v.present === false ? '该盘当前不可用(未插入/未挂载)' : v.path"
+            @click="gotoVolume(v)"
+          >{{ v.name }}</button>
         </div>
+
+        <!-- 直接输入路径: 盘符列表给不了的情况(网络共享 \\主机\共享、未挂载的盘)
+             用它一步到位, 回车即进入 -->
+        <form class="browser-jump" @submit.prevent="jumpToPath">
+          <input
+            v-model="jumpPath"
+            class="input browser-jump-input"
+            placeholder="直接输入路径, 如 D:\ 或 \\主机\共享\目录"
+            aria-label="直接输入目录路径"
+            spellcheck="false"
+          />
+          <button type="submit" class="btn">转到</button>
+        </form>
 
         <p class="field-hint">单击进入该目录, 点右侧「选中」直接选定; 或用下方按钮选定当前路径</p>
         <div class="dialog-actions">
@@ -404,6 +440,28 @@ defineExpose({ scanPath, movies, selectedGuids, doScan })
 }
 .browser-volume:hover { color: var(--color-primary); border-color: var(--color-primary); }
 .browser-volume:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* 不可用的盘符: 保留可见(让用户知道有这个盘), 但弱化且不加 hover 高亮 */
+.browser-volume--off {
+  color: var(--color-text-tertiary);
+  opacity: 0.55;
+  border-style: dashed;
+}
+.browser-volume--off:hover {
+  color: var(--color-text-tertiary);
+  border-color: var(--color-border-medium);
+}
+
+/* 路径直达输入框 */
+.browser-jump {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.browser-jump-input {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-sm);
+}
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
 </style>

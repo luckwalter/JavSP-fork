@@ -72,8 +72,13 @@ export async function getMovies() {
 }
 
 // 列举目录下的子目录(不列文件), 供目录选择器逐级导航
+// ⚠️ path 为空时必须**原样传空**, 不能用 `path || '/'` 兜底:
+// '/' 到了后端是 truthy, 会绕过 api_browse 的缺省分支, 被 abspath('/') 解析成
+// 「当前驱动器根」(Windows 上即 C:\), 于是选择器一打开就停在盘符根,
+// 部署目录/其它盘符都到不了(2026-10-17 主人实测)。空值才是"让后端决定落点"。
 export async function browse(path) {
-  const r = await request('/api/browse?path=' + encodeURIComponent(path || '/'))
+  const q = path ? '?path=' + encodeURIComponent(path) : ''
+  const r = await request('/api/browse' + q)
   if (!r.ok) throw new Error(await readDetail(r, '读取目录失败'))
   return r.json()
 }
