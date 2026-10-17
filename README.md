@@ -4,7 +4,11 @@
 
 **汇总多站点数据的 AV 元数据刮削器，并提供 Web 界面**
 
+> **本项目是 [Yuukiy/JavSP](https://github.com/Yuukiy/JavSP) 的派生分支。** 原项目是一个非常优秀的命令行刮削器，但自 **2025 年 2 月起已停止更新**（大量 issue 与 PR 无人处理，多个站点改版后失效无人修复）。本 fork 完整保留它的爬虫与元数据能力，并补上了社区呼声最高的**图形界面**，同时持续跟进站点适配 —— 详细差异见**[与原项目的关系](#与原项目的关系)**。
+
 本项目基于 [Yuukiy/JavSP](https://github.com/Yuukiy/JavSP) 派生改造。原项目是一个命令行工具，本 fork 在其成熟的爬虫与元数据能力之上，**新增了 Web 界面与桌面程序**：打开浏览器（或桌面窗口）即可扫描影片目录、刮削元数据、预览信息并整理入库（生成 Emby / Jellyfin / Kodi 所需的 NFO 与封面）。
+
+代码**完全开源**（GPL-3.0），Docker 镜像与 Windows exe 均提供本地构建脚本，可自行审阅和打包。
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
@@ -141,7 +145,7 @@ javsp -h        # 原 CLI 参数（逻辑已抽到 core，行为不变）
 3. **整理**：预览确认后一键生成 NFO、下载封面并按规则重命名整理到媒体库目录（默认移到 `#整理完成/{actress}/...`，可关）。
 4. **配置**：「设置」页调整刮削源、代理、重试/超时、命名规则、输出开关等。保存采用**只替换变更字段**写入，中文注释与排版不丢失；保存后**即时生效、无需重启**（重载运行时配置并刷新各爬虫网络出口），坏配置会自动回滚。
 
-更详细的刮削源与命名规则见原项目 [JavSP Wiki](https://github.com/Yuukiy/JavSP/wiki)。
+更详细的刮削源说明可参考原项目 [JavSP Wiki](https://github.com/Yuukiy/JavSP/wiki)；但命名规则的**变量请以本项目「设置」页的构建器为准**（写法与上游不同，见[迁移注意](#从原项目迁移过来请注意)）。
 
 ### 输出控制：不想生成的东西可以关掉
 
@@ -199,9 +203,29 @@ poster 与 fanart 同源，两项都关时连封面下载都不会发生，批�
 
 ## 与原项目的关系
 
-- 派生自 [Yuukiy/JavSP](https://github.com/Yuukiy/JavSP)，保留其全部爬虫与元数据能力。
-- 新增 `javsp/core.py`、`javsp/server.py`、`javsp/desktop.py`、`javsp/auth.py`、`javsp/web/health.py`、`frontend/` 等 Web / 桌面 / 健康 / 鉴权层代码；`upstream` 仍指向原仓库，便于后续同步上游更新。
-- 配置格式沿用原 `config.yml`，CLI 入口 `javsp` 行为不变。
+本 fork 派生自 [Yuukiy/JavSP](https://github.com/Yuukiy/JavSP)，**爬虫层与元数据逻辑全部沿用上游**（那是它最稳的根基，我们尽量少动），在其之上新增了编排 / Web / 桌面 / 健康 / 鉴权几层：`javsp/core.py`、`javsp/server.py`、`javsp/desktop.py`、`javsp/auth.py`、`javsp/web/health.py`、`frontend/`。`upstream` 仍指向原仓库，便于继续同步；配置格式沿用原 `config.yml`，CLI 入口 `javsp` 行为不变。
+
+### 差异一览
+
+| 能力 | 上游 Yuukiy/JavSP | 本 fork |
+|---|---|---|
+| 交互方式 | 命令行 | **Web 界面** + **Windows 桌面 exe**（CLI 仍原样可用） |
+| 维护状态 | 2025-02 起停止更新 | 持续维护：站点改版适配、失效源复活 / 退役持续跟进 |
+| 刮削源 | 13 个 | **19 个**（新增 javdbapi / javdatabase / javmenu / javfree / gyutto / njav 的移植增强） |
+| 渠道健康 | 无 | `health.py` 后台探活 + 自动熔断 + 冷却半开自愈，死源不再白等 |
+| 过程可见性 | CLI 输出 | SSE 实时进度、**每个站点分别贡献了哪些字段**透传、失败原因可见 |
+| 配置方式 | 手改 `config.yml` | 「设置」页分组表单写回（**保留中文注释与排版**）+ 保存即时生效 + 坏配置自动回滚 |
+| 输出控制 | 固定生成 | poster / fanart / 剧照 / NFO 各自独立开关 |
+| 交付形态 | pip / 源码 | Docker 镜像、NAS、**Windows 桌面 exe**、源码（Release 双资产） |
+| 访问控制 | 无 | 可选单用户密码登录（会话落盘 + 登录锁定） |
+| 版本记录 | — | 独立版本号 + **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)**，不覆盖上游 `CHANGELOG.md` |
+
+### 从原项目迁移过来请注意
+
+1. **`config.yml` 基本可直接沿用**：格式未变。但如果旧配置里含有本 fork 已移除的字段（例如 `network.proxy_free` 按站免代理地址），配置校验会**直接拒绝启动**，删掉该字段即可。
+2. **⚠️ 命名规则的变量写法与上游 wiki 不同**：本 fork 使用**花括号风格 `{title}`**，上游 wiki 里的**美元风格 `$title` 在这里不适用**（会原样输出成文本）。变量全集 14 个，比上游多一个 `{genre}`（标签）；**填了不存在的占位符会在整理时直接报错**。建议在「设置」页的**命名规则构建器**中点选变量，不要手写。
+
+更详细的刮削源说明仍可参考原项目 [JavSP Wiki](https://github.com/Yuukiy/JavSP/wiki)，但**以本文档与构建器中的变量列表为准**。
 
 ## 开发
 
