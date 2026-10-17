@@ -20,8 +20,14 @@ import sys
 import glob
 import shutil
 
-# 本机版部署主目录(受保护, 永不删除)
-DEPLOY_MAIN = r'C:\JavSP'
+# 本机版部署主目录(受保护, 永不删除)。桌面版可能同时部署在多处, 逐个列出。
+DEPLOY_MAINS = [
+    r'C:\JavSP',
+    '\\\\HOMENAS\\Downloads\\JavSP',
+]
+
+# 备份/中转目录的前缀(在部署目录的父目录下匹配)
+BACKUP_PREFIXES = ['JavSP.bak', 'JavSP.tmp_']
 
 # 工作区(仓库上级)的一次性过程产物
 WORKSPACE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -49,14 +55,30 @@ def _size_of(path):
 def collect():
     """收集待清理项: (path, kind)。"""
     items = []
-    # 1. 本机版备份/中转: 直接列 C:\ 根按前缀过滤(不用 glob, Windows 绝对路径+通配不可靠)
-    root = os.path.dirname(DEPLOY_MAIN) or DEPLOY_MAIN
-    try:
-        for n in sorted(os.listdir(root)):
-            if n.startswith('JavSP.bak') or n.startswith('JavSP.tmp_'):
-                items.append((os.path.join(root, n), '本机版备份/中转'))
-    except OSError as e:
-        print(f'[warn] 无法列出 {root}: {e}')
+    # 1. 本机版备份/中转: 列出部署目录的**父目录**按前缀过滤
+    # (不用 glob, Windows 绝对路径+通配不可靠; 曾漏匹配过)。
+    # 部署位置可能不止一处(本地 C:\JavSP 与网盘 \\HOMENAS\Downloads\JavSP),
+    # 所以父目录也要从已知部署位置推导, 而不是写死 'C:\'。
+    deploy_parents = set()
+    for main in DEPLOY_MAINS:
+        parent = os.path.dirname(main.rstrip('\\/')) or main
+        deploy_parents.add(parent)
+    # 兼容历史命名(裸 'JavSP.bakNNN' 位于 C 盘根)
+    deploy_parents.add('C:\\')
+
+    for root in sorted(deploy_parents):
+        if not root:
+            continue
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for n in names:
+            for prefix in BACKUP_PREFIXES:
+                if n.startswith(prefix):
+                    items.append((os.path.join(root, n), '本机版备份/中转'))
+                    break
+
     # 2. 工作区过程产物
     for pat in WORKSPACE_PATTERNS:
         for p in sorted(glob.glob(os.path.join(WORKSPACE, pat))):
@@ -65,8 +87,12 @@ def collect():
 
 
 def guard(path):
-    """删除前保护: 主部署目录本身永不删。"""
-    return os.path.normcase(os.path.abspath(path)) != os.path.normcase(os.path.abspath(DEPLOY_MAIN))
+    """删除前保护: 所有部署主目录本身永不删(与具体部署位置无关)。"""
+    target = os.path.normcase(os.path.abspath(path))
+    for main in DEPLOY_MAINS:
+        if target == os.path.normcase(os.path.abspath(main)):
+            return False
+    return True
 
 
 def main():
