@@ -16,9 +16,13 @@ from PyInstaller.utils.hooks import collect_submodules
 ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
 # 爬虫子模块为运行时动态 import, PyInstaller 无法静态收集, 需显式列出
-hiddenimports = collect_submodules('javsp.web') + [
-    'webview',            # pywebview (默认 GUI 形态按需 import)
-]
+# uvicorn 在 desktop.py 函数体内部 import (第49行), 静态分析抓不到, 必须显式收集
+hiddenimports = (
+    collect_submodules('javsp.web')
+    + collect_submodules('uvicorn')   # 桌面版 server 启动按需 import, 含全部子模块
+    + ['webview',                     # pywebview (默认 GUI 形态按需 import)
+       'javsp.server']                # server 模块经函数内 import 引入, 显式列出防漏收集
+)
 
 a = Analysis(
     [os.path.join(ROOT, 'javsp', 'desktop.py')],
