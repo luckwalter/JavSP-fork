@@ -9,6 +9,19 @@ __all__ = ['get_id', 'get_cid', 'guess_av_type']
 
 from javsp.config import Cfg
 
+def normalize_number(num: str) -> str:
+    """去掉番号数字部分的前导零，并保留至少 3 位（对齐 JavBoss normalizeNumber）。
+
+    例：'00035' -> '035'，'001' -> '001'，'05' -> '005'。
+    用于无分隔符兜底分支，避免 'cawb00035' 被误解析为 'CAWB-00035'。
+    """
+    num = num.lstrip('0')
+    if not num:
+        num = '0'
+    if len(num) < 3:
+        num = num.zfill(3)
+    return num
+
 def get_id(filepath_str: str) -> str:
     """从给定的文件路径中提取番号（DVD ID）"""
     filepath = Path(filepath_str)
@@ -71,9 +84,10 @@ def get_id(filepath_str: str) -> str:
         if match:
             return match.group(1)
         # 然后再将影片视作缺失了-分隔符来匹配
+        # 数字部分需做前导零归一化（如 '00035' -> '035'），否则会变成 'CAWB-00035'
         match = re.search(r'([A-Z]{2,})(\d{2,5})', norm, re.I)
         if match:
-            return match.group(1) + '-' + match.group(2)
+            return match.group(1) + '-' + normalize_number(match.group(2))
     # 尝试匹配TMA制作的影片（如'T28-557'，他家的番号很乱）
     match = re.search(r'(T[23]8[-_]\d{3})', norm)
     if match:
@@ -85,7 +99,9 @@ def get_id(filepath_str: str) -> str:
     # 尝试匹配R18-XXX的番号
     match = re.search(r'R18-?\d{3}', norm, re.I)
     if match:
-        return match.group(1)
+        # 该正则没有捕获组，历史代码写 group(1) 会抛 IndexError: no such group，
+        # 导致 R18-XXX 影片在 CLI 整理时直接崩溃（commit 4374e43 引入）。
+        return match.group(0)
     # 尝试匹配纯数字番号（无码影片）
     match = re.search(r'(\d{6}[-_]\d{2,3})', norm)
     if match:
