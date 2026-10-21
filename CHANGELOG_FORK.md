@@ -34,7 +34,9 @@ jav321 是 DMM 数据镜像站（封面 hotlink `pics.dmm.co.jp`），影片页�
 
 - `sync_version.py --check` 门禁通过：pyproject / package.json / package-lock.json / README 四处版本一致为 0.3.9
 - 改动文件换行符逐一核验（CRLF=0，未被同步脚本污染）
-- NAS 部署与 jav321 双维度探活实测见任务 #230，全绿后回填结论
+- 桌面 exe 实跑验证：`dist/JavSP/JavSP.exe --nogui` 起服务，`/api/health` 回 `{"status":"ok","version":"0.3.9"}`，日志确认 Uvicorn 在跑（exe 11.5MB > 10MB，uvicorn 确认打包）
+- NAS 部署实测全绿：`javsp-fork:0.3.9` 重建容器（含 `-e JAVSP_TLS_VERIFY=0` 全局放宽 TLS）→ `/api/health` 报 `0.3.9`；前端资产自洽（容器内提取首页 `/assets/index-Bys7euhJ.js` 再 GET 200）；
+  jav321 CID 双维度 + 探活双路径代码标记（`movie.dvdid or movie.cid` / `_samples_for`）确认在镜像内；旧容器已删、新容器 `javsp-fork:0.3.9` 运行
 
 ---
 
