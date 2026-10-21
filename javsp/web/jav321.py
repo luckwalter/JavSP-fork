@@ -1,4 +1,13 @@
-"""从jav321抓取数据"""
+"""从jav321抓取数据
+
+jav321 是第三方中文聚合站, 全盘镜像 DMM/FANZA 的商品页数据: 影片页 cid 直接
+沿用 DMM Content ID(品番小写去横线、数字左侧补零到 5 位, 如 IPX-001 ->
+ipx00001); 封面图更是直接 hotlink pics.dmm.co.jp(实测 IPX-001 的封面即
+http://pics.dmm.co.jp/digital/video/ipx00001/ipx00001pl.jpg), 因此常被
+当作 DMM 的免代理替代源(mdcx 等项目即采用 dmm -> jav321 兜底链)。
+2026-10-21 实测: 站点已恢复开放(2024 年曾整体宕机), 但服务器 TLS 证书
+已过期, requests 默认严格校验会报 SSLCertVerificationError。
+"""
 import re
 import logging
 
@@ -13,14 +22,26 @@ base_url = 'https://www.jav321.com'
 
 
 def parse_data(movie: MovieInfo):
-    """解析指定番号的影片数据"""
-    html = post_html(f'{base_url}/search', data={'sn': movie.dvdid})
+    """解析指定番号的影片数据
+
+    支持两种入参: dvdid(普通番号, 如 IPX-001)或 cid(DMM Content ID, 如
+    ipx00001, 来自 'cid:xxx' 手动指定或 cid 维度刮削)。jav321 搜索接口对两种
+    形式返回同一影片页(2026-10-21 实测 sn=IPX-001 与 sn=ipx00001 字段一致),
+    故共用作战: 优先 dvdid, 缺失时退 cid。
+    """
+    query = movie.dvdid or movie.cid
+    if not query:
+        raise MovieNotFoundError(__name__, 'dvdid 与 cid 均为空')
+    html = post_html(f'{base_url}/search', data={'sn': query})
     page_url = html.xpath("//ul[@class='dropdown-menu']/li/a/@href")[0]
-    #TODO: 注意cid是dmm的概念。如果影片来自MGSTAGE，这里的cid很可能是jav321自己添加的，例如 345SIMM-542
+    # cid 是 DMM 的概念(Content ID: 品番小写去横线、数字补足 5 位), jav321
+    # 镜像 DMM 商品数据时直接沿用, 所以这里拿到的就是 DMM 风格 cid。
+    # 非 DMM 体系的番号(如 MGSTAGE 345SIMM-542)此处的 cid 是 jav321 自己
+    # 编造的, 不对应任何 DMM 商品。
     cid = page_url.split('/')[-1]   # /video/ipx00177
     # 如果从URL匹配到的cid是'search'，说明还停留在搜索页面，找不到这部影片
     if cid == 'search':
-        raise MovieNotFoundError(__name__, movie.dvdid)
+        raise MovieNotFoundError(__name__, query)
     title = html.xpath("//div[@class='panel-heading']/h3/text()")[0]
     info = html.xpath("//div[@class='col-md-9']")[0]
     # jav321的不同信息字段间没有明显分隔，只能通过url来匹配目标标签

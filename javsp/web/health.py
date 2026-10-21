@@ -92,7 +92,10 @@ DOMAIN_HINTS = {
     'fc2': 'adult.contents.fc2.com',
     'fc2ppvdb': 'fc2ppvdb.com',
     'gyutto': 'gyutto.com',
-    'jav321': 'www.jav321.com',
+    # jav321 是 DMM 商品数据的镜像聚合站(cid 沿用 DMM Content ID, 封面 hotlink
+    # pics.dmm.co.jp), 不是自建番号库。2026-10-21 实测: 站点已恢复开放(2024 年
+    # 曾整体宕机), 但服务器证书过期, 严格 TLS 校验下探活报 tls_error。
+    'jav321': 'www.jav321.com (DMM 数据镜像站)',
     'javbus': 'www.javbus.com',
     'javdb': 'javdb.com',
     # javdbapi 走的是 javdb 手机 App 私有 API, 与主站 javdb.com 是同一份数据、不同入口
@@ -136,7 +139,10 @@ STATUS_TEXT = {
     'source_defunct': '站点已失效/非番号库',
     'timeout': '超时',
     'dns_error': 'DNS 解析失败',
-    'tls_error': 'TLS/证书校验失败',
+    # tls_error 两类常见根因, 文案要点出来: ①目标站证书过期/配置错误(实测
+    # jav321 2026-10-21 即此: 站点已恢复但证书没人续) ②链路被 MITM 代理重签。
+    # 具体是哪类看 reason 列的异常原文(certificate has expired 等)。
+    'tls_error': 'TLS/证书校验失败(站点证书过期或被重签)',
     'network_error': '网络不可达',
     'http_error': 'HTTP 错误',
     'blocked': '被反爬拦截',
@@ -442,6 +448,23 @@ _SAMPLE_BY_SOURCE = {
 def _sample_for(source: str) -> str:
     """挑一个该源必然支持的样本查询串"""
     return _SAMPLE_BY_SOURCE.get(source, DEFAULT_SAMPLE)
+
+
+def _samples_for(source: str) -> List[tuple]:
+    """探活样本清单: [(查询串, 是否按 cid 查询), ...]
+
+    大多数源只认 dvdid; FANZA 只认 cid; jav321 两条路径都支持(普通番号 +
+    DMM Content ID), 必须都测 —— 刮削页给了它 CID 类别 chip, 探活若只验
+    dvdid 路径, cid 路径挂了页面照样显示 ok, 就是在骗人。
+    """
+    if source == 'fanza':
+        return [(_sample_for(source), True)]
+    if source == 'jav321':
+        # ipx00001 即 IPX-001(品番小写去横线、数字补零到 5 位的 DMM Content ID),
+        # 2026-10-21 实测 jav321 对该 cid 可完整解析(标题/发行商/9 genre/封面),
+        # 且 sn=ipx00001 与 sn=IPX-001 返回同一影片页、字段一致。
+        return [('IPX-001', False), ('ipx00001', True)]
+    return [(_sample_for(source), False)]
 
 
 # ---------------------------------------------------------------- 实际站点捕获
@@ -818,7 +841,6 @@ def _commit(source: str, seq: int, status: str, reason: str,
 def probe(source: str, timeout: float = PROBE_TIMEOUT) -> dict:
     """对单个源做主动探活: 走**真实 parse_data**, 与实际刮削完全同路径"""
     seq = _begin_check(source)
-    sample = _sample_for(source)
     started = time.perf_counter()
     status, reason, status_code = 'unknown', '', 0
     hosts = []
@@ -830,21 +852,42 @@ def probe(source: str, timeout: float = PROBE_TIMEOUT) -> dict:
     _prev_timeout = _probe_timeout.set(timeout)
     try:
         mod = __import__('javsp.web.' + source, fromlist=['parse_data'])
-        movie = MovieInfo(sample)
-        # FANZA 不按番号查询, 走 cid(形如 ipx00001)。只设 dvdid 的话它拿空 cid 去拼
-        # 详情页 URL, 拿到的是非详情页 -> xpath 取不到标题 -> IndexError, 会被误判成
-        # "内部错误"并计入熔断(实测 fanza 就是这么被扣上内部错误的)。
-        if source == 'fanza':
-            movie.cid = sample
-        mod.parse_data(movie)
-        # 不能只看"没抛异常": 很多死站返回 200 + 壳页/跳转页, 传输层毫无异常。
-        # 判定标准必须是**真的解析出了有效标题**, 且标题不能就是番号本身。
-        title = (getattr(movie, 'title', '') or '').strip()
-        if title and title.upper() != sample.upper():
+        samples = _samples_for(source)
+        failures = []              # [(样本, 是否cid路径, 状态, 原因, 状态码)]
+        for sample, as_cid in samples:
+            # cid 路径必须 dvdid=None: parse_data 里 dvdid 优先, 若 dvdid 也填了
+            # 样本值就永远走不到 cid 分支, 测的等于还是 dvdid 路径。
+            # (FANZA 只按 cid 查询, 形如 ipx00001; 早期只设 dvdid 时它拿空 cid
+            # 去拼详情页 URL, 拿到非详情页 -> xpath 取不到标题 -> IndexError,
+            # 被误判成"内部错误"并计入熔断, 实测 fanza 就是这么被扣上内部错误的)
+            movie = MovieInfo(cid=sample) if as_cid else MovieInfo(sample)
+            try:
+                mod.parse_data(movie)
+                # 不能只看"没抛异常": 很多死站返回 200 + 壳页/跳转页, 传输层毫无异常。
+                # 判定标准必须是**真的解析出了有效标题**, 且标题不能就是番号本身。
+                title = (getattr(movie, 'title', '') or '').strip()
+                if title and title.upper() != sample.upper():
+                    continue
+                failures.append((sample, as_cid, 'invalid_response',
+                                 '未解析出有效标题(疑似壳页/跳转页)', 0))
+            except BaseException as e:      # noqa: BLE001 单样本失败绝不影响整体与其他源
+                st = _classify(e)
+                rs = _sanitize(f'{type(e).__name__}: {e}')
+                resp = getattr(e, 'response', None)
+                sc = getattr(resp, 'status_code', 0)
+                sc = sc if isinstance(sc, int) else 0
+                if st in ('not_found', 'invalid_response') and sc >= 400:
+                    st = 'http_error'
+                failures.append((sample, as_cid, st, rs, sc))
+        if not failures:
             status = 'ok'
         else:
-            status = 'invalid_response'
-            reason = '未解析出有效标题(疑似壳页/跳转页)'
+            # 多样本源(如 jav321)任一维度的路径不通即报; reason 标注是哪个样本
+            # 哪条路径失败的, 避免主人看到"证书过期"却以为是普通番号路径的问题。
+            sample, as_cid, status, reason, status_code = failures[0]
+            if len(samples) > 1:
+                path = 'cid' if as_cid else 'dvdid'
+                reason = f'[{path} 样本 {sample}] {reason}'
     except BaseException as e:      # noqa: BLE001 单源失败绝不影响整体与其他源
         status = _classify(e)
         reason = _sanitize(f'{type(e).__name__}: {e}')

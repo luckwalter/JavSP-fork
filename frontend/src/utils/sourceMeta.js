@@ -21,12 +21,15 @@ export const KIND_LABEL = { normal: '普通', fc2: 'FC2', cid: 'CID' }
  * 来源: SettingsView 历史推荐清单, 与 config.yml 默认 selection 对齐;
  * dl_getchu/gyutto 不在任何维度(它们是 getchu/gyutto 维度专属), 故不会出现在
  * 任何类别 chip 里, 归入常规分组作只读展示。
+ * jav321 双维度: 除普通番号外, 其影片页寻址即 DMM Content ID(镜像 DMM 商品
+ * 数据), 2026-10-21 实测 sn=ipx00001 与 sn=IPX-001 返回同一影片页且字段一致,
+ * 故 cid-only 影片(dvdid 为空)也能刮 —— parse_data 用 dvdid or cid 作查询词。
  */
 export const SOURCE_KINDS = {
   normal: ['airav', 'avsox', 'avwiki', 'jav321', 'javbus', 'javdb', 'javdbapi',
            'javdatabase', 'javlib', 'javmenu', 'mgstage', 'prestige', 'njav', 'javfree'],
   fc2: ['fc2', 'fc2ppvdb', 'avsox', 'javdb', 'javmenu'],
-  cid: ['fanza'],
+  cid: ['fanza', 'jav321'],
 }
 
 /** 有能力集的源全集(normal/fc2/cid 任一维度支持的源); 之外的源(如 dl_getchu/gyutto)
@@ -62,7 +65,7 @@ export const SITE_LABELS = {
   javdb: 'javdb.com 番号库',
   javbus: 'javbus.com 番号库',
   javlib: 'javlib.com 番号库',
-  jav321: 'jav321.com(源站整体宕机, 无法复活)',
+  jav321: 'jav321.com(DMM 数据镜像站)',
   airav: 'airav.io(按 hid 寻址)',
   avsox: '前端渲染·不可用',
   avwiki: '女优资料站（av-wiki.net，非番号库）',
