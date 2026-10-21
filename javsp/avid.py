@@ -76,7 +76,10 @@ def get_id(filepath_str: str) -> str:
         # 普通番号，优先尝试匹配带分隔符的（如ABC-123）
         match = re.search(r'([A-Z]{2,10})[-_](\d{2,5})', norm, re.I)
         if match:
-            return match.group(1) + '-' + match.group(2)
+            # 数字部分同样做前导零归一化，与下面的无分隔符分支保持一致：
+            # 'CAWB-00035' -> 'CAWB-035'。否则同一影片的两种文件名
+            # (cawb00035 与 CAWB-00035)会解析出不同番号，多源交叉时对不上
+            return match.group(1) + '-' + normalize_number(match.group(2))
         # 普通番号，运行到这里时表明无法匹配到带分隔符的番号
         # 先尝试匹配东热的red, sky, ex三个不带-分隔符的系列
         # （这三个系列已停止更新，因此根据其作品编号将数字范围限制得小一些以降低误匹配概率）
