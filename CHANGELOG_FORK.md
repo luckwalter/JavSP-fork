@@ -8,6 +8,36 @@
 
 ---
 
+## v0.3.9（2026-10-21）
+
+**jav321 支持 CID 维度双源刮削 + 渠道探活覆盖两条路径；部署固化 TLS 全局放宽**
+
+f216f0a 的改动此前只停留在本地工作区、从未随 v0.3.8 进入 tag，运行态也被一次镜像重建冲掉。本次正式纳入发版。
+
+### jav321 支持 CID 维度（双维度源）
+
+jav321 是 DMM 数据镜像站（封面 hotlink `pics.dmm.co.jp`），影片页寻址即 DMM Content ID，天然适合承担 CID 维度兜底。`javsp/web/jav321.py` 的 `parse_data` 查询词由「仅 dvdid」改为「dvdid or cid」：此前 cid-only 影片（手动指定 `cid:ipx00001`）因 `sn=None` 必然 `MovieNotFoundError`，现可正常刮削。2026-10-21 NAS 实测 `sn=ipx00001` 与 `sn=IPX-001` 返回同一影片页且字段一致。
+
+### 渠道探活覆盖两条路径（health.py）
+
+`javsp/web/health.py` 新增 `_samples_for` 支持多样本：jav321 双维度各测一次（dvdid `IPX-001` + cid `ipx00001`），任一不通即报，reason 标注样本与路径，避免只验 dvdid 路径时 cid 挂了页面仍显示 ok 的假绿。
+
+### 前端刮削页双类别渲染
+
+`frontend/src/utils/sourceMeta.js` 的 `SOURCE_KINDS.cid` 增加 jav321，刮削页该行渲染「普通 + CID」两个类别 chip，CID 维度可独立启用/停用。
+
+### 部署固化 TLS 全局放宽
+
+全局 TLS 校验开关 `JAVSP_TLS_VERIFY=0`（由 `javsp/web/base.py` 的 `tls_verify()` 读取，驱动 Request / request_get / request_post / is_connectable / urlretrieve 的 `verify` 参数）此前作为容器运行时环境变量生效，但重建脚本 `docker run` 漏配会丢配置。现部署脚本统一带上 `-e JAVSP_TLS_VERIFY=0`，容器重建不再回退到严格校验（NAS 出网经 squid 代理，自签/中间证书场景需要）。
+
+### 验证
+
+- `sync_version.py --check` 门禁通过：pyproject / package.json / package-lock.json / README 四处版本一致为 0.3.9
+- 改动文件换行符逐一核验（CRLF=0，未被同步脚本污染）
+- NAS 部署与 jav321 双维度探活实测见任务 #230，全绿后回填结论
+
+---
+
 ## v0.3.8（2026-10-21）
 
 **番号还原修复：无分隔符/带分隔符前导零归一化 + R18-XXX 整理崩溃**
