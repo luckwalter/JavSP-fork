@@ -503,9 +503,19 @@ def generate_names(movie: Movie):
             if remaining > 0:
                 movie.save_dir = save_dir
                 movie.basename = basename
-                movie.nfo_file = os.path.join(save_dir, Cfg().summarizer.nfo.basename_pattern.format(**copyd) + '.nfo')
-                movie.fanart_file = os.path.join(save_dir, Cfg().summarizer.fanart.basename_pattern.format(**copyd) + '.jpg')
-                movie.poster_file = os.path.join(save_dir, Cfg().summarizer.cover.basename_pattern.format(**copyd) + '.jpg')
+                if Cfg().summarizer.move_files:
+                    # 整理文件: 元数据文件名按各自模板(可含番号/标题)
+                    meta_base = Cfg().summarizer.nfo.basename_pattern.format(**copyd)
+                    fanart_base = Cfg().summarizer.fanart.basename_pattern.format(**copyd)
+                    poster_base = Cfg().summarizer.cover.basename_pattern.format(**copyd)
+                else:
+                    # 不移动文件: 元数据文件名与视频原名保持一致, 兼容 Jellyfin/Emby/Kodi 本地图片/元数据命名
+                    meta_base = basename
+                    fanart_base = basename + '-fanart'
+                    poster_base = basename + '-poster'
+                movie.nfo_file = os.path.join(save_dir, meta_base + '.nfo')
+                movie.fanart_file = os.path.join(save_dir, fanart_base + '.jpg')
+                movie.poster_file = os.path.join(save_dir, poster_base + '.jpg')
                 return legalize_info()
     else:
         # 以防万一，当整理路径非常深或者标题起始很长一段没有标点符号时，硬性截短生成的名称
@@ -523,9 +533,17 @@ def generate_names(movie: Movie):
         movie.save_dir = save_dir
         movie.basename = basename
 
-        movie.nfo_file = os.path.join(save_dir, Cfg().summarizer.nfo.basename_pattern.format(**copyd) + '.nfo')
-        movie.fanart_file = os.path.join(save_dir, Cfg().summarizer.fanart.basename_pattern.format(**copyd) + '.jpg')
-        movie.poster_file = os.path.join(save_dir, Cfg().summarizer.cover.basename_pattern.format(**copyd) + '.jpg')
+        if Cfg().summarizer.move_files:
+            meta_base = Cfg().summarizer.nfo.basename_pattern.format(**copyd)
+            fanart_base = Cfg().summarizer.fanart.basename_pattern.format(**copyd)
+            poster_base = Cfg().summarizer.cover.basename_pattern.format(**copyd)
+        else:
+            meta_base = basename
+            fanart_base = basename + '-fanart'
+            poster_base = basename + '-poster'
+        movie.nfo_file = os.path.join(save_dir, meta_base + '.nfo')
+        movie.fanart_file = os.path.join(save_dir, fanart_base + '.jpg')
+        movie.poster_file = os.path.join(save_dir, poster_base + '.jpg')
 
         return legalize_info()
 
@@ -613,8 +631,7 @@ def download_cover(covers, fanart_path, big_covers=[]):
             except Exception as e:
                 logger.debug(e, exc_info=True)
                 continue
-    logger.error(f"下载封面图片失败")
-    logger.debug('big_covers:' + str(big_covers) + ', covers' + str(covers))
+    logger.debug(f"下载封面图片失败: big_covers={big_covers}, covers={covers}")
     return None
 
 
@@ -686,25 +703,36 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
 
     # 下载封面。poster 与 fanart 同源：任一项启用才需要下载，两者都关闭时完全跳过（省下整次下载）
     cover_dl = None
+    _covers = movie.info.covers or []
+    _big_covers = movie.info.big_covers or []
     if output_enabled('poster') or output_enabled('fanart'):
-        if Cfg().summarizer.cover.highres:
-            cover_dl = download_cover(movie.info.covers, movie.fanart_file, movie.info.big_covers)
+        if not _covers and not _big_covers:
+            # 所有源都没提供封面 URL —— 不是下载失败, 对齐上游 #316: 只做 nfo/整理,
+            # 不报错、不标记为失败(否则会产生"无封面却报下载失败"的误导噪音)
+            result['skipped'].append('cover')
         else:
-            cover_dl = download_cover(movie.info.covers, movie.fanart_file)
-        if not cover_dl:
-            result['status'] = 'cover_failed'
-            result['errors'].append('下载封面图片失败')
-        else:
-            cover, pic_path = cover_dl
-            # 确保实际下载的封面的url与即将写入到movie.info中的一致
-            if cover != movie.info.cover:
-                movie.info.cover = cover
-            # 根据实际下载的封面的格式更新fanart/poster等图片的文件名
-            if pic_path != movie.fanart_file:
-                movie.fanart_file = pic_path
-                actual_ext = os.path.splitext(pic_path)[1]
-                movie.poster_file = os.path.splitext(movie.poster_file)[0] + actual_ext
-            result['steps'].append('cover_download')
+            if Cfg().summarizer.cover.highres:
+                cover_dl = download_cover(_covers, movie.fanart_file, _big_covers)
+            else:
+                cover_dl = download_cover(_covers, movie.fanart_file)
+            if not cover_dl:
+                # 真下载失败: 降级为警告, 不阻断下方 nfo/重命名(流程继续);
+                # 不覆盖 status 为 'cover_failed', 避免上层/前端把"已整理但缺封面"
+                # 误判成整部整理失败(文件其实已生成 nfo 并完成了重命名)
+                logger.warning('下载封面图片失败(已跳过封面, 其余照常整理)')
+                result['errors'].append('下载封面图片失败')
+                result['cover'] = 'failed'
+            else:
+                cover, pic_path = cover_dl
+                # 确保实际下载的封面的url与即将写入到movie.info中的一致
+                if cover != movie.info.cover:
+                    movie.info.cover = cover
+                # 根据实际下载的封面的格式更新fanart/poster等图片的文件名
+                if pic_path != movie.fanart_file:
+                    movie.fanart_file = pic_path
+                    actual_ext = os.path.splitext(pic_path)[1]
+                    movie.poster_file = os.path.splitext(movie.poster_file)[0] + actual_ext
+                result['steps'].append('cover_download')
     else:
         result['skipped'].append('cover')
 

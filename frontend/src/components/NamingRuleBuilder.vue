@@ -1,5 +1,5 @@
 <template>
-  <div class="naming-builder">
+  <div class="naming-builder" :class="{ 'naming-builder--disabled': disabled }">
     <!-- 头部: 字段标签 + 可视化/源码 分段切换 -->
     <div class="builder-head">
       <span class="builder-label">{{ label }}</span>
@@ -152,6 +152,7 @@ const props = defineProps({
   single: { type: Boolean, default: false },   // true: 单层模式(文件名/NFO), false: 多层层级(目录)
   lengthMax: { type: Number, default: 0 },     // 目录名最大长度, 0 = 不限制
   byByte: { type: Boolean, default: false },   // 按 UTF-8 字节计长
+  disabled: { type: Boolean, default: false }, // 整体禁用(置灰 + 禁交互), 如关闭『整理时移动文件』时
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -558,6 +559,9 @@ onBeforeUnmount(() => {
 .layer-op:disabled { opacity: 0.3; cursor: not-allowed; }
 .layer-op--del:hover:not(:disabled) { color: var(--color-danger); background: var(--color-danger-soft); }
 .layer-op:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* 整体禁用态: 关闭『整理时移动文件』时由父级传入 disabled 触发 */
+.naming-builder--disabled { opacity: 0.45; pointer-events: none; filter: grayscale(1); cursor: not-allowed; }
 
 .layer-add {
   align-self: flex-start;

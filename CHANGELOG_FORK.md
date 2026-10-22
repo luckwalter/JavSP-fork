@@ -8,6 +8,38 @@
 
 ---
 
+## v0.3.10（2026-10-22）
+
+**设置页「整理时移动文件」开关置顶 + 关闭时窄提示条；关闭移动后元数据文件名跟随视频原名；封面下载容错（缺封面 / 下载失败不再整部整理失败）**
+
+### 方案A：关闭「整理时移动文件」时元数据文件名跟随视频原名
+
+此前关闭移动、只做整理时，NFO / 封面 / 背景图仍按命名模板生成（如 `番号-标题.nfo`），与视频文件不同名，Jellyfin / Emby / Kodi 无法按本地命名约定自动匹配元数据与图片。`javsp/core.py` 的 `generate_names(movie)` 两处（循环内 early-return + 循环外 fallback）改为：`move_files=False` 时，NFO 文件名用视频原名（`原名.nfo`），封面 / 背景图用 `原名-poster.jpg` / `原名-fanart.jpg`；`move_files=True` 时仍按模板生成。
+
+### P0-2：封面下载容错（不再因缺封面整部整理失败）
+
+- `download_cover` 失败日志由 `error` 降级为 `debug`，避免无封面影片刷屏误报。
+- `organize_movie` 封面分支重构为两路：
+  - 所有源都没提供封面 URL（`covers` 与 `big_covers` 皆空）→ 标记 `skipped cover`，**不报失败**（对齐上游 #316：只做 nfo / 整理）；
+  - 真有封面 URL 但下载失败 → `status` **维持 `ok`**（不再覆盖为 `cover_failed`），记 `result['cover']='failed'` + `errors` + `warning`，流程继续完成 nfo / 重命名，避免被误判成整部整理失败（文件其实已生成 nfo 并完成重命名）。
+
+### UI：设置页「整理时移动文件」置顶 + 关闭时窄提示条
+
+`frontend/src/views/SettingsView.vue`「输出与命名」区块重构：`整理时移动文件` 开关置顶并高亮（带引导文案）；关闭时下方三个文件命名控件（输出目录模板 / 文件名模板 / NFO 文件名）整体替换为一条很窄的虚线提示条（高度压缩到不超过 1/3 页高），避免遮挡下方的 NFO 标题格式设置；NFO 标题格式始终可用并置于窄条下方。`frontend/src/components/NamingRuleBuilder.vue` 新增 `disabled` prop（默认 false），根元素加 `.naming-builder--disabled` 置灰样式（`pointer-events:none`），供关闭移动时整体禁用。
+
+### 依赖清理
+
+前端移除遗留未使用的 `element-plus` 及其图标依赖（`@element-plus/icons-vue`），相关 UI 组件此前已重写为原生 / 轻量实现，`frontend/package-lock.json` 同步清理。
+
+### 验证
+
+- `sync_version.py --check` 门禁通过：pyproject / package.json / package-lock.json / README 四处版本一致为 0.3.10
+- 改动文件换行符逐一核验（CRLF=0，未被同步脚本污染）
+- 单测覆盖：P0-2 三场景（无封面源 / 真失败 / 成功）全过；方案A 8 项（关移动→原名 / 开移动→模板）全过
+- 桌面 exe 与 NAS 部署热更实测由主人在 WebUI 验收通过（设置页开关置顶 + 窄提示条、关闭移动后元数据原名、缺封面不再报错）
+
+---
+
 ## v0.3.9（2026-10-21）
 
 **jav321 支持 CID 维度双源刮削 + 渠道探活覆盖两条路径；部署固化 TLS 全局放宽**

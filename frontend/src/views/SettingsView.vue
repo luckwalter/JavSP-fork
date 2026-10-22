@@ -349,30 +349,49 @@ onMounted(load)
 
           <!-- 输出与命名: 可视化构建器(点击/拖动拼装, 无需手打 {xxx}) -->
           <template v-else-if="currentGroup.key === 'output'">
-            <div class="field">
-              <NamingRuleBuilder
-                v-model="cfg.summarizer.path.output_folder_pattern"
-                label="输出目录模板"
-                :length-max="Number(cfg.summarizer.path.length_maximum) || 0"
-                :by-byte="!!cfg.summarizer.path.length_by_byte" />
-              <p class="field-hint" style="margin-top: var(--space-2);">
-                层与层之间以 <code>/</code> 分隔形成多级目录; 多分片影片的番号会自动追加 <code>-CD1/-CD2</code> 后缀
-              </p>
+            <!-- 核心开关置顶: 整理时移动文件(突出) + 按字节(依赖移动, 关闭时禁用) -->
+            <p class="field-hint" style="margin-bottom: var(--space-3);">
+              整理的核心开关: 决定要不要动你的原文件。关闭后仅生成元数据(NFO/封面), 文件与目录保持原样; 下方文件命名/目录相关配置不生效, 元数据文件名将使用视频原名(原名.nfo / 原名-poster.jpg / 原名-fanart.jpg)以便 Jellyfin/Emby/Kodi 直接识别
+            </p>
+            <div class="switch-list">
+              <label class="switch-row switch-row--primary">
+                <input v-model="cfg.summarizer.move_files" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">整理时移动文件</span>
+                  <span class="switch-desc">关闭则只写元数据, 不动原文件</span>
+                </span>
+              </label>
+              <label class="switch-row">
+                <input v-model="cfg.summarizer.path.length_by_byte" type="checkbox"
+                       :disabled="!cfg.summarizer.move_files" />
+                <span class="switch-text" :class="{ 'is-muted': !cfg.summarizer.move_files }">
+                  <span class="switch-title">按字节计算目录名长度</span>
+                  <span class="switch-desc">中文每字算 3 字节, 兼容旧版行为; 关闭则按字符数计</span>
+                </span>
+              </label>
             </div>
-            <div class="row-2">
+
+            <!-- 移动开启: 完整命名配置可用 -->
+            <template v-if="cfg.summarizer.move_files">
               <div class="field">
-                <NamingRuleBuilder v-model="cfg.summarizer.path.basename_pattern"
-                                   label="文件名模板" single />
+                <NamingRuleBuilder
+                  v-model="cfg.summarizer.path.output_folder_pattern"
+                  label="输出目录模板"
+                  :length-max="Number(cfg.summarizer.path.length_maximum) || 0"
+                  :by-byte="!!cfg.summarizer.path.length_by_byte" />
+                <p class="field-hint" style="margin-top: var(--space-2);">
+                  层与层之间以 <code>/</code> 分隔形成多级目录; 多分片影片的番号会自动追加 <code>-CD1/-CD2</code> 后缀
+                </p>
               </div>
-              <div class="field">
-                <NamingRuleBuilder v-model="cfg.summarizer.nfo.basename_pattern"
-                                   label="NFO 文件名" single />
-              </div>
-            </div>
-            <div class="row-2">
-              <div class="field">
-                <NamingRuleBuilder v-model="cfg.summarizer.nfo.title_pattern"
-                                   label="NFO 标题格式" single />
+              <div class="row-2">
+                <div class="field">
+                  <NamingRuleBuilder v-model="cfg.summarizer.path.basename_pattern"
+                                     label="文件名模板" single />
+                </div>
+                <div class="field">
+                  <NamingRuleBuilder v-model="cfg.summarizer.nfo.basename_pattern"
+                                     label="NFO 文件名" single />
+                </div>
               </div>
               <div class="field">
                 <label class="field-label">目录名最大长度</label>
@@ -380,22 +399,23 @@ onMounted(load)
                        min="20" max="250" class="input" />
                 <p class="field-hint">超长时自动截断; 按字节计长时中文每字算 3</p>
               </div>
+            </template>
+
+            <!-- 移动关闭: 压缩为一条窄提示, 不再渲染禁用控件, 避免大块灰区挡住下方设置 -->
+            <div v-else class="disabled-note">
+              <span class="disabled-note__icon">⊘</span>
+              <span>
+                整理时移动文件已关闭, 以下文件命名配置不生效:
+                <b>输出目录模板</b> / <b>文件名模板</b> / <b>NFO 文件名</b>(固定为视频原名 <code>原名.nfo</code>) / <b>目录名最大长度</b>;
+                元数据文件名统一使用视频原名(原名.nfo / 原名-poster.jpg / 原名-fanart.jpg), 便于 Jellyfin/Emby/Kodi 直接识别
+              </span>
             </div>
-            <div class="switch-list">
-              <label class="switch-row">
-                <input v-model="cfg.summarizer.path.length_by_byte" type="checkbox" />
-                <span class="switch-text">
-                  <span class="switch-title">按字节计算目录名长度</span>
-                  <span class="switch-desc">中文每字算 3 字节, 兼容旧版行为; 关闭则按字符数计</span>
-                </span>
-              </label>
-              <label class="switch-row">
-                <input v-model="cfg.summarizer.move_files" type="checkbox" />
-                <span class="switch-text">
-                  <span class="switch-title">整理时移动文件</span>
-                  <span class="switch-desc">关闭则只写元数据, 不动原文件</span>
-                </span>
-              </label>
+
+            <!-- NFO 标题格式始终可用(仅影响 nfo 内部标题文本, 与文件改名无关) -->
+            <div class="field">
+              <NamingRuleBuilder v-model="cfg.summarizer.nfo.title_pattern"
+                                 label="NFO 标题格式" single />
+              <p class="field-hint">关闭『整理时移动文件』后仍生效(只影响 nfo 内部标题文本)</p>
             </div>
           </template>
 
@@ -732,6 +752,36 @@ code {
 .theme-card--on .theme-card-name { color: var(--color-primary); }
 .theme-card-desc { font-size: var(--font-xs); color: var(--color-text-secondary); }
 
+/* ---------- 关闭移动文件时的窄提示条(替代大块灰色禁用区) ---------- */
+.disabled-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0;
+  border: 1px dashed var(--color-border-light);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+.disabled-note__icon {
+  flex: none;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+.disabled-note code {
+  font-family: monospace;
+  font-size: .92em;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+}
+.disabled-note b { color: var(--color-text-secondary); font-weight: 600; }
+
 .schedule-row {
   display: grid;
   grid-template-columns: 132px 132px minmax(0, 1fr);
@@ -755,5 +805,16 @@ code {
   .theme-modes { grid-template-columns: 1fr; }
   .schedule-row { grid-template-columns: 1fr 1fr; }
   .schedule-tip { grid-column: 1 / -1; }
+}
+/* 关闭『整理时移动文件』时, 依赖移动的字段整体置灰 + 禁交互 */
+.is-disabled { opacity: 0.5; pointer-events: none; }
+.is-disabled .field-label,
+.is-disabled .field-hint { color: var(--color-text-muted); }
+.is-muted { opacity: 0.5; }
+.switch-row--primary {
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--color-primary-soft);
 }
 </style>
