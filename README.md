@@ -1,5 +1,7 @@
 ![JavSP](./image/JavSP.svg)
 
+> 语言 / Language: **[English](README.en.md)** | [简体中文](README.md)
+
 # JavSP-fork（带 WebUI 的 AV 元数据刮削器）
 
 **汇总多站点数据的 AV 元数据刮削器，并提供 Web 界面**

@@ -4,6 +4,7 @@
   1. frontend/package.json        -> version
   2. frontend/package-lock.json   -> version 与 packages[""].version
   3. README.md                    -> 版本徽章 `badge/version-x.y.z-blue.svg` 与「当前版本：**x.y.z**」
+  4. README.en.md                 -> 英文版同结构版本徽章与「Current version: x.y.z」
 
 背景：曾出现 pyproject 已是 0.1.8，而 README 徽章 / package-lock 仍停在 0.1.1。
 本脚本把这三处纳入机械同步，避免靠人记忆。
@@ -32,6 +33,7 @@ PYPROJECT = os.path.join(ROOT, 'pyproject.toml')
 PKG_JSON = os.path.join(ROOT, 'frontend', 'package.json')
 PKG_LOCK = os.path.join(ROOT, 'frontend', 'package-lock.json')
 README = os.path.join(ROOT, 'README.md')
+README_EN = os.path.join(ROOT, 'README.en.md')
 
 _VERSION_RE = re.compile(r'^version\s*=\s*["\']([^"\']+)["\']', re.M)
 # README 中的版本徽章: ![Version](https://img.shields.io/badge/version-0.1.8-blue.svg)
@@ -41,6 +43,8 @@ _BADGE_RE = re.compile(r'(badge/version-)([0-9][0-9.]*)(-blue\.svg)')
 # (0.3.2 起 README 实际是后者, 旧正则只匹配前者 —— 静默失配导致该处从 0.3.2
 #  起漂移, 且 check 被徽章的值洗白成 OK, 2026-10-17 全库版本审查发现)
 _CURRENT_RE = re.compile(r'((?:\*\*)?当前版本[：:]\s*(?:\*\*)?)([0-9][0-9.]*)')
+# 英文版 README.en.md 的「Current version」标记（兼容 ** 加粗包裹与中英冒号）
+_CURRENT_EN_RE = re.compile(r'((?:\*\*)?Current version[：:]\s*(?:\*\*)?)([0-9][0-9.]*)')
 
 
 def read_pyproject_version():
@@ -172,10 +176,37 @@ def sync_readme(ver):
         f.write(text)
 
 
+def check_readme_en(ver):
+    if not os.path.isfile(README_EN):
+        return None, '文件不存在'
+    with open(README_EN, 'r', encoding='utf-8') as f:
+        text = f.read()
+    badge = _BADGE_RE.search(text)
+    cur = _CURRENT_EN_RE.search(text)
+    if not badge:
+        return None, '未找到版本徽章(badge/version-x.y.z-blue.svg), README.en.md 写法可能已变'
+    if not cur:
+        return None, '未找到「Current version」标记, README.en.md 写法可能已变'
+    if badge.group(2) != cur.group(2):
+        return f'{badge.group(2)}/{cur.group(2)}', None
+    return badge.group(2), None
+
+
+def sync_readme_en(ver):
+    # 与 sync_readme 同策略：newline='' 保持英文版自身换行符，不污染
+    with open(README_EN, 'r', encoding='utf-8', newline='') as f:
+        text = f.read()
+    text = _BADGE_RE.sub(lambda m: m.group(1) + ver + m.group(3), text)
+    text = _CURRENT_EN_RE.sub(lambda m: m.group(1) + ver, text)
+    with open(README_EN, 'w', encoding='utf-8', newline='') as f:
+        f.write(text)
+
+
 TARGETS = [
     ('frontend/package.json', check_package_json, sync_package_json),
     ('frontend/package-lock.json', check_package_lock, sync_package_lock),
     ('README.md', check_readme, sync_readme),
+    ('README.en.md', check_readme_en, sync_readme_en),
 ]
 
 
