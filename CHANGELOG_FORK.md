@@ -8,6 +8,34 @@
 
 ---
 
+## v0.3.11（2026-10-24）
+
+**修复 Windows 10 下桌面版 exe 启动后空白窗口（缺失 WebView2 Runtime / .NET Framework 过旧时，pywebview 会静默回退 IE 内核）；桌面壳新增环境预检与自动降级；前端产物语法基线下调至 es2017**
+
+### 问题根因（对应 issue #2）
+
+桌面版默认用 pywebview 开原生窗口加载 WebUI。pywebview 5.4 在 Windows 上通过**注册表**判定能否使用 Chromium 内核：
+- 查 `Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` 的 `pv`（Edge / WebView2 Runtime 版本）；
+- 查 `HKLM\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full` 的 `Release`（.NET Framework 4.x 版本）。
+
+任一不满足即**静默回退到 IE 内核（MSHTML）**（`webview/platforms/winforms.py` 的 `_is_chromium()` → `renderer = 'mshtml'`），既不抛异常也无任何提示。而本项目前端是 Vue3 + Vite 产物（ES2020 级语法），在 IE11 下必然无法渲染 → 用户只看到一个**空白窗口**。
+
+Win11 系统自带 WebView2 Runtime 与 .NET Framework 4.8，因此正常；Win10 需另行安装 WebView2 Runtime（Edge 被卸载 / 长期未更新 / 企业策略禁用 Edge 的机器上不存在），故复现。
+
+`--nogui` 同样白屏，是因为它用 `webbrowser.open` 打开**系统默认浏览器**——Win10 的默认浏览器常为 IE 或旧版 EdgeHTML，内核同样过旧。
+
+### 修复
+
+1. **桌面壳环境预检**（`javsp/desktop.py`）：新增 `_webview2_version()` / `_netfx_release()` / `_check_gui_env()`，开窗口前主动检测 WebView2 Runtime 与 .NET Framework（需 4.7.2+）。不满足时不再静默白屏，而是弹窗给出**明确原因与修复指引**（WebView2 官方下载地址 / 改用 `--nogui`），并**自动降级为浏览器模式**（打印访问地址，功能仍可用）。
+2. **杜绝 IE 回退与可观测性**：窗口模式显式设置 `PYWEBVIEW_GUI=edgechromium`；pywebview 调试日志接入 `JavSP.log`，渲染层异常可直接查日志定位。
+3. **前端产物基线下调**（`frontend/vite.config.js`）：`build.target` 由 Vite 默认（es2020 / modules，≈Chrome 87）显式设为 `es2017`，兼容 Win10 上版本较旧的 WebView2 内核（Chrome 60+）。
+
+### 用户侧临时解法（升级前）
+
+安装 Microsoft Edge WebView2 Runtime（https://developer.microsoft.com/microsoft-edge/webview2/），或用 Chrome / Edge 打开 `http://127.0.0.1:8000`。
+
+---
+
 ## v0.3.10（2026-10-22）
 
 **设置页「整理时移动文件」开关置顶 + 关闭时窄提示条；关闭移动后元数据文件名跟随视频原名；封面下载容错（缺封面 / 下载失败不再整部整理失败）**

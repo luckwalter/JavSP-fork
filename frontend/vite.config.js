@@ -11,6 +11,9 @@ export default defineConfig({
     }
   },
   build: {
-    outDir: 'dist'
+    outDir: 'dist',
+    // 下调产物语法基线: Win10 上 WebView2 Runtime 可能长期停留在旧版(Chromium 8x),
+    // 用 es2017 而非默认的 es2020/modules, 可覆盖更旧的内核(Chrome 60+)
+    target: 'es2017'
   }
 })

@@ -66,6 +66,76 @@ def _configure_logging():
             root.setLevel(logging.INFO)
 
 
+def _webview2_version() -> str:
+    """检测 Microsoft Edge WebView2 Runtime 是否安装, 返回版本号; 未装返回空串"""
+    if not sys.platform.startswith('win'):
+        return 'n/a'
+    import winreg
+    key = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'  # WebView2 Runtime 客户端 GUID
+    paths = (
+        (winreg.HKEY_CURRENT_USER, rf'SOFTWARE\Microsoft\EdgeUpdate\Clients\{key}'),
+        (winreg.HKEY_LOCAL_MACHINE, rf'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{key}'),
+        (winreg.HKEY_LOCAL_MACHINE, rf'SOFTWARE\Microsoft\EdgeUpdate\Clients\{key}'),
+    )
+    for hive, path in paths:
+        try:
+            with winreg.OpenKey(hive, path) as k:
+                pv, _ = winreg.QueryValueEx(k, 'pv')
+                if pv:
+                    return str(pv)
+        except Exception:
+            continue
+    return ''
+
+
+def _netfx_release() -> int:
+    """检测 .NET Framework 4.x 的 Release 号; 未找到返回 0"""
+    if not sys.platform.startswith('win'):
+        return 0
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r'SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full') as k:
+            v, _ = winreg.QueryValueEx(k, 'Release')
+            return int(v)
+    except Exception:
+        return 0
+
+
+def _check_gui_env():
+    """检查窗口模式所需的浏览器内核环境, 返回 (是否可用, 失败原因)。
+
+    pywebview 在缺少 WebView2 Runtime 或 .NET Framework 过旧时, 会**静默**回退到
+    IE 内核 (MSHTML)。我们的前端是 Vue3/ES2020 产物, 在 IE 下必然白屏,
+    用户只能看到一个空白窗口。因此这里提前拦住并给出明确原因。
+    """
+    if not sys.platform.startswith('win'):
+        return True, ''
+    wv2 = _webview2_version()
+    if not wv2:
+        return False, ('未检测到 Microsoft Edge WebView2 Runtime。\n\n'
+                       '缺少该运行时时窗口内核会退化为 IE, 导致界面空白。\n'
+                       '请安装: https://developer.microsoft.com/microsoft-edge/webview2/\n'
+                       '或改用浏览器模式 (命令行加 --nogui)。')
+    release = _netfx_release()
+    if release and release < 461808:  # .NET Framework 4.7.2
+        return False, (f'.NET Framework 版本过低 (Release {release}, 需要 4.7.2 及以上)。\n\n'
+                       '请升级 .NET Framework 后重试, 或改用浏览器模式 (命令行加 --nogui)。')
+    logger.info(f'窗口环境检查通过: WebView2 Runtime {wv2}, .NET Release {release or "未知"}')
+    return True, ''
+
+
+def _show_error_dialog(message: str) -> None:
+    """弹出系统消息框提示用户; 失败则静默忽略 (日志已记录)"""
+    if not sys.platform.startswith('win'):
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, 'JavSP', 0x10)  # MB_ICONERROR
+    except Exception:
+        pass
+
+
 def main(gui: bool = True):
     _configure_logging()
     host, port = _resolve_host_port()
@@ -81,17 +151,33 @@ def main(gui: bool = True):
         sys.exit(1)
 
     if gui:
-        import webview
-        logger.info('以窗口形态启动 (pywebview)')
-        webview.create_window(
-            'JavSP',
-            url,
-            width=1200,
-            height=820,
-            min_size=(960, 640),
-        )
-        webview.start()
-    else:
+        ok, reason = _check_gui_env()
+        if not ok:
+            logger.error(f'窗口模式不可用: {reason}')
+            _show_error_dialog(reason + '\n\n已自动切换到浏览器模式。')
+            gui = False
+        else:
+            try:
+                # 明确要求使用 Chromium 内核 (pywebview 5.x 在缺 WebView2 时会静默回退 IE)
+                os.environ['PYWEBVIEW_GUI'] = 'edgechromium'
+                import webview
+                # 打开 pywebview 调试日志, 便于把渲染层报错写进 JavSP.log
+                logging.getLogger('pywebview').setLevel(logging.DEBUG)
+                logger.info('以窗口形态启动 (pywebview)')
+                webview.create_window(
+                    'JavSP',
+                    url,
+                    width=1200,
+                    height=820,
+                    min_size=(960, 640),
+                )
+                webview.start()
+            except Exception as e:
+                logger.exception(f'窗口模式启动失败: {e}')
+                _show_error_dialog(f'窗口模式启动失败: {e}\n\n已自动切换到浏览器模式。')
+                gui = False
+
+    if not gui:
         logger.info(f'已在浏览器打开 {url}；关闭命令行窗口即可退出')
         try:
             webbrowser.open(url)
