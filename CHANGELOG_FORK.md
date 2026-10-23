@@ -34,6 +34,13 @@ Win11 系统自带 WebView2 Runtime 与 .NET Framework 4.8，因此正常；Win1
 
 安装 Microsoft Edge WebView2 Runtime（https://developer.microsoft.com/microsoft-edge/webview2/），或用 Chrome / Edge 打开 `http://127.0.0.1:8000`。
 
+### 验证
+
+- 桌面 exe 实跑：`/api/health` 回 `{"status":"ok","version":"0.3.11"}`；日志确认新预检生效（`窗口环境检查通过: WebView2 Runtime 155.0.4283.62, .NET Release 534296`），pywebview 走 Chromium 内核（`Using WinForms / Chromium`）且页面 `loaded` 事件正常触发（非白屏）。
+- NAS 部署实测全绿：`javsp-fork:0.3.11`（`31a36423979e`）重建容器（含 `-e JAVSP_TLS_VERIFY=0`）→ `/api/health` 报 `0.3.11`；挂载源校验为真实卷 `/share/CACHEDEV1_DATA/javsp_config`；前端资产自洽（容器内提取首页引用 `/assets/index-Bez_nPwM.js` 再 GET 200）；代码标记校验（方案A / P0-2 / v0.3.11 桌面预检）全部 OK；旧容器已删。
+- Windows 桌面版本次仅部署本机 `C:\JavSP`（实跑 0.3.11 通过，旧目录备份 `C:\JavSP.bak20261024`）；网盘部署位置待 NAS 卷恢复后再同步。
+- GitHub Release：镜像 + exe 双资产上传成功（镜像 sha256 `b55c50bb94ff0898235bbb1d30c50203cda27f08e543d16624d10dc2d86c5632`，exe sha256 `b1f27cd9b0636ff74ad543c457760ae46e60c93607b75e57f1bde5a38d133600`）。
+
 ---
 
 ## v0.3.10（2026-10-22）
