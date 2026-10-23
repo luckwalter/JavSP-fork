@@ -123,7 +123,13 @@ javsp server                                      # 或 python -m javsp server
 
 下载 Release 里的 `JavSP-<version>-windows.zip`，解压到任意目录，**双击 `JavSP.exe`** 即可：默认开一个原生窗口加载 WebUI（pywebview）；想用浏览器打开则加 `--nogui`。所有配置/会话都落在 **exe 同级目录**（便携，不写系统盘）；自 0.3.2 起配置文件为 exe 同级 `config.yml`，整包升级不会覆盖你的配置。
 
-> 默认 GUI 壳依赖系统 **WebView2 运行时**（Win10/11 一般自带）。若双击后窗口没出来或闪退，装一下 Edge WebView2 Runtime，或用 `--nogui` 走浏览器（功能完全一致）。
+> **Windows 10 必看**：默认 GUI 壳依赖系统 **Microsoft Edge WebView2 运行时**。Win11 系统自带；**Win10 并不保证自带**（Edge 被卸载 / 长期未更新 / 企业策略禁用 Edge 的机器上就没有）。缺失时旧版本会退回 IE 内核渲染，而本项目前端是 Vue3 现代产物 → 表现为**双击后空白窗口**。
+>
+> 解决办法任选其一：
+> 1. 安装 WebView2 Runtime（约 130MB，一次性）：https://developer.microsoft.com/microsoft-edge/webview2/ ——装完重新双击即可；
+> 2. 或走浏览器模式：`JavSP.exe --nogui` 让服务在后台运行，再用 **Chrome / Edge** 打开 `http://127.0.0.1:8000`（功能与窗口模式完全一致）。
+>
+> 自 **v0.3.11** 起，程序会在开窗前自检 WebView2 与 .NET Framework，缺失时**弹窗明确告知原因并自动切换到浏览器模式**，不再出现「双击没反应 / 白屏」；渲染层日志同时写入 exe 同级 `JavSP.log`，排查问题可直接查看。
 
 自行构建（需在已装项目依赖的 Python 3.10~3.12 环境中运行）：
 

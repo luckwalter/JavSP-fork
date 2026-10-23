@@ -124,7 +124,13 @@ javsp server                                      # or python -m javsp server
 
 Download `JavSP-<version>-windows.zip` from Releases, extract anywhere, and **double-click `JavSP.exe`**: it opens a native window loading the WebUI by default (pywebview); add `--nogui` to use a browser instead. All config/sessions land in the **exe's own directory** (portable, doesn't touch the system drive); since 0.3.2 the config file is `config.yml` next to the exe, so a full-package upgrade won't overwrite your config.
 
-> The default GUI shell depends on the system **WebView2 Runtime** (usually preinstalled on Win10/11). If double-clicking shows no window or crashes, install Edge WebView2 Runtime, or use `--nogui` to go through the browser (identical functionality).
+> **Windows 10 note**: the default GUI shell relies on the **Microsoft Edge WebView2 Runtime**. Win11 ships with it; **Win10 does not necessarily** (it is absent on machines where Edge was removed, has not been updated for a long time, or is blocked by enterprise policy). When it is missing, older versions fall back to the IE engine, while our frontend is a modern Vue3 bundle — the symptom is a **blank window after double-click**.
+>
+> Pick either fix:
+> 1. Install the WebView2 Runtime (~130 MB, one-off): https://developer.microsoft.com/microsoft-edge/webview2/ — then double-click again;
+> 2. Or use browser mode: run `JavSP.exe --nogui` to keep the service in the background and open `http://127.0.0.1:8000` in **Chrome / Edge** (identical to the window mode).
+>
+> Since **v0.3.11** the app pre-checks WebView2 and .NET Framework before opening the window; when something is missing it **pops up a clear explanation and automatically falls back to browser mode**, so no more "nothing happens / blank window". Renderer logs are written to `JavSP.log` next to the exe for troubleshooting.
 
 Build it yourself (run in a Python 3.10~3.12 environment with project deps installed):
 
