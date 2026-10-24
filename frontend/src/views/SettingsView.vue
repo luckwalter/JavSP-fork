@@ -9,11 +9,10 @@
  *     translator.fields.{title,plot} 而非 translate_title/translate_plot
  *  写错字段名会让 PUT /api/config 静默不生效或写坏配置 —— 故此处逐一核对过。
  */
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import * as api from '../api'
 import NamingRuleBuilder from '../components/NamingRuleBuilder.vue'
 import { useTheme, THEME_MODES } from '../composables/useTheme'
-import { persistLocal, saveLocal } from '../composables/usePersist'
 
 const emit = defineEmits(['navigate'])
 
@@ -39,11 +38,6 @@ const themeModeDesc = {
   schedule: '在下方时段内自动使用深色, 其余时间浅色',
 }
 const themeEffective = computed(() => (resolvedDark.value ? '深色' : '浅色'))
-
-// 批量整理的确认方式(前端本地偏好, **不写入 config.yml** —— 它是交互习惯而不是刮削行为配置;
-//   与「整理落盘」页读取同一个键, 改完立即生效, 无需点保存)
-const organizeConfirmAllAtOnce = ref(persistLocal('organizeConfirmAllAtOnce', true))
-watch(organizeConfirmAllAtOnce, (v) => saveLocal('organizeConfirmAllAtOnce', v))
 
 const GROUPS = [
   { key: 'scan', label: '扫描与识别', hint: '决定哪些文件被纳入刮削' },
@@ -501,18 +495,6 @@ onMounted(load)
             <p class="field-hint">
               当前生效: <b>{{ themeEffective }}</b> 主题 · 状态栏主题按钮可快速循环切换四种模式
             </p>
-
-            <!-- 交互偏好: 仅存本机浏览器(localStorage), 不写入 config.yml, 改完立即生效 -->
-            <label class="switch-row" style="margin-top: var(--space-4);">
-              <input v-model="organizeConfirmAllAtOnce" type="checkbox" />
-              <span class="switch-text">
-                <span class="switch-title">批量整理时一次确认完成</span>
-                <span class="switch-desc">
-                  开启: 批量入口确认一次后连续处理全部选中影片, 处理中可点「停止」中断;
-                  关闭: 每部影片单独确认。立即生效, 无需点保存
-                </span>
-              </span>
-            </label>
           </template>
 
           <!-- 翻译 -->

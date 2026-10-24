@@ -5,7 +5,7 @@
  */
 import { ref, computed, watch, onMounted, inject } from 'vue'
 import * as api from '../api'
-import { persistState, saveState } from '../composables/usePersist'
+import { persistState, saveState, persistLocal, saveLocal } from '../composables/usePersist'
 import { useTask } from '../composables/useTask'
 
 const props = defineProps({ health: { type: Object, default: () => ({}) } })
@@ -18,6 +18,12 @@ const { taskStart, taskProgress, taskFinish } = useTask()
 const askConfirm = inject('javsp:confirm', null)
 
 const guids = ref(persistState('queueGuids', []))
+
+// 批量整理的确认方式(与「整理落盘」页共享同一个 localStorage 键, 两边始终一致):
+//   true  = 一次确认完成(默认) —— 整理选中项只确认一次, 处理中可随时停止
+//   false = 逐部确认(谨慎模式) —— 每部影片单独问一次
+const confirmAllAtOnce = ref(persistLocal('organizeConfirmAllAtOnce', true))
+watch(confirmAllAtOnce, (v) => saveLocal('organizeConfirmAllAtOnce', v))
 const running = ref(false)
 const index = ref(0)
 const total = ref(0)
@@ -178,6 +184,19 @@ function summary(sources) {
         <button class="btn" :disabled="!guids.length || running" @click="clearQueue">清空队列</button>
       </div>
 
+      <!-- 批量整理的确认方式: 放这里是因为它属于「批量任务」的一部分, 与队列操作同处一屏,
+           不用再跑到设置页里找(开关名与实际生效位置一致: 在「整理落盘」页点整理时生效) -->
+      <label class="confirm-mode">
+        <input v-model="confirmAllAtOnce" type="checkbox" />
+        <span class="confirm-mode-text">
+          <span class="confirm-mode-title">批量整理一次确认</span>
+          <span class="confirm-mode-hint">
+            开启: 在「整理落盘」页整理选中项时只确认一次, 处理中可随时点「停止」中断;
+            关闭: 每部影片单独确认。改完立即生效
+          </span>
+        </span>
+      </label>
+
       <p v-if="!guids.length" class="field-hint">
         队列为空。请到「影片库」选择要刮削的影片。
         <button class="link" @click="emit('navigate', 'library')">前往影片库 →</button>
@@ -243,6 +262,32 @@ function summary(sources) {
 
 <style scoped>
 .crawler-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-3); }
+
+/* 批量整理的确认方式开关: 独占一行, 标题加粗, 让人一眼看到并知道在哪生效 */
+.confirm-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  font-size: var(--font-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.confirm-mode-title {
+  display: block;
+  font-size: var(--font-base);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.confirm-mode-hint {
+  display: block;
+  margin-top: 2px;
+  line-height: 1.6;
+}
 .title-cell { color: var(--color-text-secondary); }
 .dim { color: var(--color-text-tertiary); }
 .link {
