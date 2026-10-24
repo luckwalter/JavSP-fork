@@ -69,6 +69,7 @@ async function refreshHealth(silent = false) {
 const CONFIRM_KEY = 'javsp:confirm'
 const confirmState = ref({
   show: false, title: '', impact: '', detail: '', confirmText: '确认', busy: false,
+  option: null,   // 可选复选框: { label, checked } —— 用于「本次不再逐部确认」这类一次性选择
 })
 let confirmResolver = null
 
@@ -82,6 +83,7 @@ function askConfirm(opts) {
       impact: opts.impact || '',
       detail: opts.detail || '',
       confirmText: opts.confirmText || '确认',
+      option: opts.option || null,
     }
   })
 }
@@ -97,11 +99,14 @@ let leaveGuard = null
 function registerLeaveGuard(fn) { leaveGuard = fn }
 provide(LEAVE_GUARD_KEY, registerLeaveGuard)
 
-function onConfirmDone() {
+function onConfirmDone(payload) {
+  const hadOption = !!confirmState.value.option
   confirmState.value = { ...confirmState.value, show: false, busy: false }
   const r = confirmResolver
   confirmResolver = null
-  if (r) r(true)
+  // 带复选框时回传勾选状态({ option: bool }); 不带时保持 resolve(true) ——
+  // 现有调用点全是 truthy 判断, 两种形态都安全。
+  if (r) r(hadOption ? { option: !!(payload && payload.option) } : true)
 }
 
 function onConfirmCancel() {
@@ -292,6 +297,7 @@ onUnmounted(() => {
     :impact="confirmState.impact"
     :detail="confirmState.detail"
     :confirm-text="confirmState.confirmText"
+    :option="confirmState.option"
     :busy="confirmState.busy"
     @confirm="onConfirmDone"
     @cancel="onConfirmCancel"

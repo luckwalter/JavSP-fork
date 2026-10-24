@@ -15,14 +15,18 @@ const props = defineProps({
   detail: { type: [String, Array], default: '' },
   confirmText: { type: String, default: '确认' },
   busy: { type: Boolean, default: false },
+  // 可选复选框: { label, checked } —— 用于「本次不再逐部确认」这类一次性选择
+  option: { type: Object, default: null },
 })
 const emit = defineEmits(['confirm', 'cancel'])
 
 const cancelRef = ref(null)
+const optionChecked = ref(false)
 
 // 打开时把焦点放到「取消」上 —— 避免用户习惯性回车直接执行危险操作
 watch(() => props.show, async (v) => {
   if (v) {
+    optionChecked.value = !!(props.option && props.option.checked)
     await nextTick()
     cancelRef.value?.focus()
   }
@@ -51,11 +55,16 @@ function onKey(e) {
         <p v-for="(line, i) in (Array.isArray(detail) ? detail : [detail])" :key="i">{{ line }}</p>
       </div>
 
+      <label v-if="option" class="dialog-option">
+        <input type="checkbox" v-model="optionChecked" />
+        <span>{{ option.label }}</span>
+      </label>
+
       <div class="dialog-actions">
         <button ref="cancelRef" class="btn" :disabled="busy" @click="emit('cancel')">
           取消
         </button>
-        <button class="btn btn--danger" :disabled="busy" @click="emit('confirm')">
+        <button class="btn btn--danger" :disabled="busy" @click="emit('confirm', { option: optionChecked })">
           <span v-if="busy" class="spinner" aria-hidden="true"></span>
           {{ busy ? '执行中' : confirmText }}
         </button>
@@ -119,6 +128,16 @@ function onKey(e) {
 }
 
 .dialog-detail p { margin: 0; }
+
+.dialog-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  font-size: var(--font-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
 
 .dialog-actions {
   display: flex;

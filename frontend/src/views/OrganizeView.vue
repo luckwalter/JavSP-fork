@@ -9,12 +9,19 @@
  *
  *  ⚠️ 这是全应用唯一会真正改动文件的地方, 因此:
  *    - 独立成页, 让用户有单独的心智步骤去核对
- *    - 每部都需确认, 明示后果
+ *    - 明示后果; 批量时**一次确认后连续处理**, 不再逐部弹框(见下)
  *    - 默认不预选任何影片, 必须主动勾选
+ *
+ *  批量确认方式(v0.3.12, 依据 issue #3: 批量整理时逐部弹「确认写入磁盘」太啰嗦):
+ *    - 默认「一次确认完成」: 批量入口确认一次后连续处理全部选中影片;
+ *      护栏由**「停止」按钮**承担(处理中可随时中断, 剩余的不再执行)。
+ *    - 可在设置页切回「逐部确认」(谨慎模式), 或在批量确认框里临时勾选
+ *      「本次不再逐部确认」—— 一次性覆盖, 不改长期偏好。
+ *    - 单部「整理」按钮**始终**逐次确认(防手滑)。
  */
-import { ref, computed, onMounted, inject } from 'vue'
+import { ref, computed, onMounted, inject, watch } from 'vue'
 import * as api from '../api'
-import { persistState, saveState } from '../composables/usePersist'
+import { persistState, saveState, persistLocal, saveLocal } from '../composables/usePersist'
 import { useTask } from '../composables/useTask'
 
 const emit = defineEmits(['navigate'])
@@ -29,6 +36,16 @@ const results = ref({})      // guid -> {ok, path, error}
 const msg = ref('')
 const msgType = ref('info')
 const filter = ref('scraped')  // scraped=已刮削待整理 / all=全部
+
+// 批量整理的确认方式(长期偏好, 存 localStorage —— 这是用户的操作习惯, 不是会话内临时结果):
+//   true  = 一次确认完成(默认)
+//   false = 逐部确认(谨慎模式; 批量确认框里可临时勾选「本次不再逐部确认」)
+const confirmAllAtOnce = ref(persistLocal('organizeConfirmAllAtOnce', true))
+watch(confirmAllAtOnce, (v) => saveLocal('organizeConfirmAllAtOnce', v))
+
+const batchRunning = ref(false)    // 批量整理进行中
+const stopRequested = ref(false)   // 用户点了「停止」—— 当前这部做完即止
+const batchProgress = ref({ done: 0, total: 0 })
 
 async function load() {
   loading.value = true
@@ -58,21 +75,30 @@ function toggleAll() {
   saveState('organizeSelection', selected.value)
 }
 
-async function organizeOne(movie) {
-  const ok = askConfirm
-    ? await askConfirm({
-        title: '确认写入磁盘',
-        impact: `${movie.dvdid || movie.cid} — 将重命名文件、移动目录并生成 NFO 与封面`,
-        detail: [
-          '原始文件位置会改变, 且不会自动回滚。',
-          '已存在的同名文件会被跳过(不会覆盖)。',
-        ],
-        confirmText: '确认写入',
-      })
-    : false
-  if (!ok) return false
+/**
+ * 整理单部影片。
+ * opts.skipConfirm   —— 上层已确认过, 直接落盘(批量一次确认模式)
+ * opts.manageRunning —— 是否由本函数管理 running 标志(批量时由上层统一管理)
+ * 返回 false = 用户取消(未执行), 上层据此停止后续
+ */
+async function organizeOne(movie, opts = {}) {
+  const { skipConfirm = false, manageRunning = true } = opts
+  if (!skipConfirm) {
+    const ok = askConfirm
+      ? await askConfirm({
+          title: '确认写入磁盘',
+          impact: `${movie.dvdid || movie.cid} — 将重命名文件、移动目录并生成 NFO 与封面`,
+          detail: [
+            '原始文件位置会改变, 且不会自动回滚。',
+            '已存在的同名文件会被跳过(不会覆盖)。',
+          ],
+          confirmText: '确认写入',
+        })
+      : false
+    if (!ok) return false
+  }
 
-  running.value = true
+  if (manageRunning) running.value = true
   try {
       await api.organizeStream(movie.guid, (d) => {
       // 后端 organize 完成事件是 {type:'result'}, 错误是 {type:'error'} —— 没有 d.done 字段
@@ -90,39 +116,63 @@ async function organizeOne(movie) {
     results.value = { ...results.value, [movie.guid]: { ok: false, error: e.message } }
     return true
   } finally {
+    if (manageRunning) running.value = false
+  }
+}
+
+/**
+ * 批量整理选中项: 一次确认后连续处理(v0.3.12 改, 依据 issue #3)
+ *  - 默认「一次确认完成」: 不再逐部弹「确认写入磁盘」; 护栏改为处理中的「停止」按钮
+ *  - 谨慎模式(设置页关闭): 仍逐部确认; 确认框里可临时勾选「本次不再逐部确认」
+ */
+async function organizeSelected() {
+  const targets = list.value.filter((m) => selected.value.includes(m.guid))
+  if (!targets.length) return
+  const perItem = !confirmAllAtOnce.value
+  const res = askConfirm
+    ? await askConfirm({
+        title: `确认整理 ${targets.length} 部影片`,
+        impact: '将重命名文件、移动目录并生成 NFO 与封面',
+        detail: [
+          '原始文件位置会改变, 且不会自动回滚。',
+          perItem
+            ? '每部会再次单独确认, 可随时中断。'
+            : '将一次性处理全部选中影片, 过程中可随时点「停止」中断。',
+        ],
+        confirmText: '开始整理',
+        option: perItem ? { label: '本次不再逐部确认（一次处理全部）', checked: false } : null,
+      })
+    : false
+  if (!res) return
+  // 逐部模式下, 勾了复选框则本次不再逐部问; 一次确认模式本来就跳过单部确认
+  const skipPerItem = perItem ? !!(res.option) : true
+
+  batchRunning.value = true
+  stopRequested.value = false
+  batchProgress.value = { done: 0, total: targets.length }
+  running.value = true             // 批量期间禁用行内按钮, 避免并发落盘
+  taskStart(targets.length)        // 同步全局任务进度(底部状态栏常驻可见)
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      if (stopRequested.value) break
+      const m = targets[i]
+      taskProgress(i + 1, m.avid || m.title || '')
+      // organizeOne 返回 false = 用户在单部确认里点了取消 -> 停止后续
+      const done = await organizeOne(m, { skipConfirm: skipPerItem, manageRunning: false })
+      if (!done) break
+      batchProgress.value = { done: i + 1, total: targets.length }
+    }
+  } finally {
+    taskFinish()                   // 中断/异常也清理, 不让状态栏卡在假进度上
+    batchRunning.value = false
+    stopRequested.value = false
     running.value = false
   }
 }
 
-/** 批量整理选中项: 逐部处理, 每部单独确认(可在中途叫停, 避免一次性误操作大量文件) */
-async function organizeSelected() {
-  const targets = list.value.filter((m) => selected.value.includes(m.guid))
-  if (!targets.length) return
-  const ok = askConfirm
-    ? await askConfirm({
-        title: `确认整理 ${targets.length} 部影片`,
-        impact: '将逐部重命名文件、移动目录并生成 NFO 与封面',
-        detail: [
-          '原始文件位置会改变, 且不会自动回滚。',
-          '每部会再次单独确认, 可随时中断。',
-        ],
-        confirmText: '开始整理',
-      })
-    : false
-  if (!ok) return
-
-  taskStart(targets.length)      // 同步全局任务进度(底部状态栏常驻可见)
-  try {
-    for (let i = 0; i < targets.length; i++) {
-      const m = targets[i]
-      taskProgress(i + 1, m.avid || m.title || '')
-      // organizeOne 返回 false = 用户在单部确认里点了取消 -> 停止后续
-      const done = await organizeOne(m)
-      if (!done) break
-    }
-  } finally {
-    taskFinish()                 // 中断/异常也清理, 不让状态栏卡在假进度上
-  }
+/** 用户点「停止」: 当前这部做完即止, 剩余的不再执行 */
+function stopBatch() {
+  stopRequested.value = true
 }
 
 const doneCount = computed(() => Object.values(results.value).filter((r) => r.ok).length)
@@ -197,8 +247,14 @@ onMounted(load)
           <div class="toolbar-spacer"></div>
           <button class="btn btn--danger" :disabled="!selected.length || running" @click="organizeSelected">
             <span v-if="running" class="spinner" aria-hidden="true"></span>
-            整理选中项
+            {{ running ? '处理中…' : '整理选中项' }}
           </button>
+        </div>
+
+        <!-- 批量进行中: 显示进度并提供「停止」—— 替代原先"逐部确认"承担的护栏 -->
+        <div v-if="batchRunning" class="notice notice--info batch-bar">
+          <span>正在整理 {{ batchProgress.done }}/{{ batchProgress.total }} 部…</span>
+          <button class="btn btn--sm" @click="stopBatch">停止</button>
         </div>
 
         <div class="table-wrap">
@@ -280,6 +336,13 @@ onMounted(load)
 
 .file-cell { color: var(--color-text-secondary); }
 .dim { color: var(--color-text-tertiary); }
+
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
 
 .segmented {
   display: inline-flex;
