@@ -34,6 +34,13 @@
 - Playwright + mock API 端到端三场景全过：一次确认模式弹窗**仅 1 次**且 3 部全部处理；处理中点「停止」后剩余不再处理（organize 仅调用 1 次）；逐部模式确认框带复选框、勾选后不再逐部弹框。console / page 错误 0。
 - 开关跨页一致性：队列页切换写入 `localStorage`，「整理落盘」页的确认框随之在「一次确认（无复选框）」与「逐部确认（带复选框）」间正确切换；设置页「外观」组已无该开关。
 
+### 发版实测（2026-10-24）
+
+- NAS 部署全绿：`javsp-fork:0.3.12`（`b50ee6483570`，235MB）重建容器（含 `-e JAVSP_TLS_VERIFY=0`）→ `/api/health` 报 `0.3.12`；挂载源校验为真实卷 `/share/CACHEDEV1_DATA/javsp_config`；前端资产自洽（容器内提取首页引用 `/assets/index-BcWfs5p-.js` 再 GET 200）；代码标记校验通过；旧容器已删。
+- 桌面 exe 实跑：`/api/health` 回 `{"status":"ok","version":"0.3.12"}`；日志确认环境预检生效（`窗口环境检查通过: WebView2 Runtime 155.0.4283.62`）、pywebview 走 Chromium 内核且页面 `loaded`。
+- 本次仅部署本机 `C:\JavSP`（旧版备份 `C:\JavSP.bak20261024.1`）；网盘部署位置待 NAS 卷恢复后再同步。
+- GitHub Release：镜像 + exe 双资产上传成功（镜像 sha256 `9fb5e46120d5b28d31a5c58e8c31c5654b9034a1c7869db877a4858c892a47f5`，exe sha256 `60a370860cf84af53778e98c9cfeaab0dfe0a7845a3975d152e54693b74f4856`）；对应 issue #3 已关闭。
+
 ---
 
 ## v0.3.11（2026-10-24）
