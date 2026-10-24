@@ -185,14 +185,16 @@ function summary(sources) {
       </div>
 
       <!-- 批量整理的确认方式: 放这里是因为它属于「批量任务」的一部分, 与队列操作同处一屏,
-           不用再跑到设置页里找(开关名与实际生效位置一致: 在「整理落盘」页点整理时生效) -->
+           不用再跑到设置页里找。⚠️ 作用域写清楚 —— 它只管「整理落盘」页的「整理选中项」;
+           队列页的「仅刮削」不改文件(本就无确认), 「刮削并整理」本就是一次确认(后端 SSE
+           连续执行, 没有逐部批准的插点), 两者都不受此开关影响。 -->
       <label class="confirm-mode">
         <input v-model="confirmAllAtOnce" type="checkbox" />
         <span class="confirm-mode-text">
-          <span class="confirm-mode-title">批量整理一次确认</span>
+          <span class="confirm-mode-title">整理落盘: 批量一次确认</span>
           <span class="confirm-mode-hint">
             开启: 在「整理落盘」页整理选中项时只确认一次, 处理中可随时点「停止」中断;
-            关闭: 每部影片单独确认。改完立即生效
+            关闭: 每部影片单独确认。队列页的「刮削并整理」本就是一次确认, 不受此开关影响
           </span>
         </span>
       </label>
