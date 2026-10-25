@@ -240,7 +240,7 @@ $bak = '{backup_dir}'
 $newExe = '{new_exe}'
 $log = Join-Path (Split-Path $zip) 'apply_update.log'
 $keep = @({keep_list})
-function Log($m) {{ Add-Content -Path $log -Value ("[" + (Get-Date -Format 'HH:mm:ss') + "] " + $m) }}
+function Log($m) {{ Add-Content -Path $log -Value ("[" + (Get-Date -Format 'HH:mm:ss') + "] " + $m) -Encoding UTF8 }}
 try {{
     Log "开始应用更新"
     if (Test-Path $tmp) {{ Remove-Item $tmp -Recurse -Force }}
@@ -284,6 +284,21 @@ try {{
     return path
 
 
+def _wait_helper_started(helper: str, timeout: float = 2.0) -> bool:
+    """观察 helper 是否真的跑起来(以它写入的第一行日志为准)
+
+    PS 宿主在部分启动标志下会"起了进程却不执行脚本", 这里返回可诊断信号:
+    False 说明根本没起来, 便于区分"已启动但失败"与"压根没启动"。
+    """
+    log = os.path.join(os.path.dirname(os.path.abspath(helper)), 'apply_update.log')
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.isfile(log):
+            return True
+        time.sleep(0.1)
+    return os.path.isfile(log)
+
+
 def apply_windows_update(zip_path: str) -> dict:
     """启动 helper 进程, 在主进程退出后覆盖升级并重启
 
@@ -294,10 +309,14 @@ def apply_windows_update(zip_path: str) -> dict:
     exe_dir = _exe_dir()
     new_exe = os.path.join(exe_dir, 'JavSP.exe')
     helper = _helper_script(os.path.abspath(zip_path), exe_dir, new_exe)
-    # 以独立进程组启动, 不随主进程退出而被杀; 隐藏 PowerShell 窗口
-    flags = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) | getattr(subprocess, 'DETACHED_PROCESS', 0)
+    # 实测坑(2026-10-26 修): DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP 下 PS 宿主
+    # **不会执行脚本** —— Popen 正常返回 pid, 但脚本静默不运行, 连第一行日志都不写,
+    # 表现为"点了立即升级, 程序关了却没升级"。矩阵实测: 无 flags / CREATE_NO_WINDOW
+    # 均能执行, 上述组合必失败。故改用 CREATE_NO_WINDOW(隐藏控制台且能真正执行)。
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
     proc = subprocess.Popen(
         ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', helper],
         creationflags=flags, close_fds=True,
     )
-    return {'helper': helper, 'pid': proc.pid}
+    started = _wait_helper_started(helper)
+    return {'helper': helper, 'pid': proc.pid, 'started': started}

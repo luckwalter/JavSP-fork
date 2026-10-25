@@ -1073,7 +1073,8 @@ def api_update_apply(req: 'UpdateApplyRequest'):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'启动更新助手失败: {e}')
     # 给 HTTP 响应留出发送时间, 然后退出主进程(由 helper 接手覆盖与重启)
-    threading.Timer(1.5, lambda: os._exit(0)).start()
+    # 需晚于 helper 的启动观察(2s), 否则主进程先退出、观察被截断
+    threading.Timer(3.0, lambda: os._exit(0)).start()
     return {'ok': True, 'helper_pid': res['pid']}
 
 
