@@ -88,7 +88,9 @@ async function run(withOrganize) {
         if (d.title !== undefined) {
           log.value = [
             ...log.value,
-            { index: d.index, avid: d.avid, ok: d.ok, title: d.title, sources: d.sources },
+            { index: d.index, avid: d.avid, ok: d.ok, title: d.title, sources: d.sources,
+              // 刮削阶段预翻译的原文/译文(未配置翻译时均为 undefined), 供结果审阅页展示
+              ori_title: d.ori_title, plot: d.plot, ori_plot: d.ori_plot },
           ]
         }
         if (d.type === 'all_done') done.value = { success: d.success, fail: d.fail, total: d.total }

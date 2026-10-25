@@ -52,6 +52,25 @@ function effective(s) {
   return r.filter((x) => x.contributed).length
 }
 
+// ---- 翻译预览: 刮削阶段已按配置预翻译, 用户在此确认是否落盘 ----
+// 关闭某部的"落盘时使用此翻译"后, 该部在整理时传 use_translate=false,
+// 后端把 title/plot 还原为 ori_title/ori_plot 原文再写 NFO。
+// 记录按 avid 存 localStorage; "刮削并整理"路径不经过此处, 按默认翻译直接落盘。
+const noTranslate = ref(new Set())
+try {
+  noTranslate.value = new Set(JSON.parse(localStorage.getItem('javsp:reviewNoTranslate') || '[]'))
+} catch { noTranslate.value = new Set() }
+
+function usesTranslation(r) {
+  return !!r && !noTranslate.value.has(r.avid)
+}
+
+function toggleTranslate(r, ev) {
+  if (ev.target.checked) noTranslate.value.delete(r.avid)
+  else noTranslate.value.add(r.avid)
+  localStorage.setItem('javsp:reviewNoTranslate', JSON.stringify([...noTranslate.value]))
+}
+
 onMounted(() => {
   // 队列日志在别处产生, 这里只读; 若为空则提示去刮削
   log.value = persistState('queueLog', [])
@@ -119,6 +138,32 @@ onMounted(() => {
           </div>
         </div>
         <p class="review-title">{{ r.title || '（无标题）' }}</p>
+
+        <!-- 翻译预览: 已配置翻译时, 刮削阶段就地生成译文, 在此确认是否落盘;
+             未配置翻译(无 ori_title/ori_plot)时整块不显示 -->
+        <div v-if="r.ori_title || r.ori_plot" class="review-trans">
+          <div class="trans-head">
+            <span class="trans-flag">翻译预览</span>
+            <label class="trans-toggle">
+              <input type="checkbox" :checked="usesTranslation(r)"
+                     @change="toggleTranslate(r, $event)" />
+              <span>落盘时使用此翻译</span>
+            </label>
+          </div>
+          <div v-if="r.ori_title" class="trans-item">
+            <p class="trans-label">标题</p>
+            <p class="trans-ori dim">{{ r.ori_title }}</p>
+            <p class="trans-dst">{{ r.title }}</p>
+          </div>
+          <div v-if="r.ori_plot" class="trans-item">
+            <p class="trans-label">简介</p>
+            <p class="trans-ori dim">{{ r.ori_plot }}</p>
+            <p class="trans-dst trans-plot">{{ r.plot }}</p>
+          </div>
+          <p class="field-hint" style="margin-top: var(--space-2);">
+            关闭开关后, 该部整理落盘时保留上方原文(不写入译文); 直接使用「刮削并整理」则按默认翻译落盘
+          </p>
+        </div>
 
         <div v-if="rows(r.sources).length" class="table-wrap" style="margin-top: var(--space-3);">
           <table class="table">
@@ -195,4 +240,23 @@ onMounted(() => {
 .review-title { margin-top: var(--space-2); font-size: var(--font-base); color: var(--color-text-primary); }
 .dim { color: var(--color-text-secondary); }
 code { font-family: var(--font-mono); font-size: var(--font-sm); }
+
+/* 翻译预览块: 原文(暗) → 译文(亮) 对照, 顶部开关决定该部是否采用译文落盘 */
+.review-trans {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg-page, var(--color-bg-surface));
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+}
+.trans-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.trans-flag {
+  font-size: var(--font-sm); font-weight: 600; color: var(--color-primary);
+}
+.trans-toggle { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-sm); cursor: pointer; }
+.trans-item { margin-top: var(--space-2); }
+.trans-label { font-size: var(--font-xs); color: var(--color-text-secondary); margin-bottom: 2px; }
+.trans-ori { font-size: var(--font-sm); margin: 0; text-decoration: line-through; text-decoration-color: var(--color-border-medium); }
+.trans-dst { font-size: var(--font-sm); color: var(--color-text-primary); margin: 2px 0 0; }
+.trans-plot { white-space: pre-wrap; }
 </style>

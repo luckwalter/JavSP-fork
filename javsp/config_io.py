@@ -246,9 +246,54 @@ def _try_insert_missing(lines, index, inserted, path, value):
     return False
 
 
-def write_config_preserving_comments(cfg_path, changes):
+def _try_replace_flow_ancestor(lines, index, path, merged, to_replace, to_delete, done):
+    """path 在文件中定位不到时, 尝试归并到最近的可定位祖先行(单行 flow 容器)
+
+    背景: engine 这类 discriminated union 字段首次保存时会被 _render 写成**单行
+    flow 映射**(engine: {name: openai, ...})。之后再改它的子字段(model/
+    use_proxy/api_key...), diff_leaves 报上来的是叶子路径 ('translator','engine',
+    'model'), 而文件里并没有这一行 —— 全部落入 missing, 表现为「界面提示保存
+    成功、配置却没生效」。此时应向上找到 ('translator','engine') 那一行, 用
+    合并后的完整子树整行替换(含吞掉跨行续行)。
+
+    merged 为合并后的完整配置; 传 None(旧调用方)时直接放弃, 行为与从前一致。
+    同一祖先被多个叶子变化命中时只处理第一次(done 去重), 值本就是最新子树。
+    """
+    if merged is None:
+        return False
+    for i in range(len(path) - 1, 0, -1):
+        ancestor = path[:i]
+        if ancestor in done:
+            return True
+        entry = index.get(ancestor)
+        if entry is None:
+            continue
+        kind, line_i = entry
+        if kind != 'leaf':
+            # 祖先是多行容器: 其子键本应有独立行, 不该走到这里, 交回原逻辑
+            return False
+        sub = merged
+        for k in ancestor:
+            if isinstance(sub, dict) and k in sub:
+                sub = sub[k]
+            else:
+                return False
+        content, eol = _split_eol(lines[line_i])
+        indent = len(content) - len(content.lstrip())
+        new_line = ' ' * indent + ancestor[-1] + ': ' + _render(sub)
+        end = _flow_end(lines, line_i)
+        to_delete.update(range(line_i + 1, end))
+        to_replace[line_i] = new_line + eol
+        done.add(ancestor)
+        return True
+    return False
+
+
+def write_config_preserving_comments(cfg_path, changes, merged=None):
     """只替换 changes 中指定字段，其余内容（含注释）原样保留
 
+    merged: 合并后的完整配置 dict。用于「单行 flow 容器子字段」的回退替换
+    (见 _try_replace_flow_ancestor); 不传则退回旧的逐字段语义。
     返回 (写入的字段数, 未能在文件中定位到的字段列表)
     """
     if not changes:
@@ -262,6 +307,7 @@ def write_config_preserving_comments(cfg_path, changes):
     to_delete = set()               # block 列表被替换成单行后需要删除的旧行
     inserted = []                    # (原行号, 新行内容): 在祖先容器行后插入缺失字段
     missing = []
+    flow_done = set()               # 已被 flow 祖先回退处理过的祖先路径
 
     for path, value in changes.items():
         entry = index.get(path)
@@ -283,8 +329,12 @@ def write_config_preserving_comments(cfg_path, changes):
                 to_delete.update(range(i + 1, end))
             to_replace[i] = new_line + eol
         else:
-            # 字段在文件中不存在: 尝试在已存在的祖先容器内新建(仅单级缺失,
+            # 字段在文件中不存在: 先尝试归并到单行 flow 祖先行(如 engine 的
+            # 子字段), 再尝试在已存在的祖先容器内新建(仅单级缺失,
             # 如新增嵌套字段 crawler.required_keys 而原 config.yml 无此字段)。
+            if _try_replace_flow_ancestor(lines, index, path, merged,
+                                          to_replace, to_delete, flow_done):
+                continue
             if not _try_insert_missing(lines, index, inserted, path, value):
                 missing.append('.'.join(path))
 

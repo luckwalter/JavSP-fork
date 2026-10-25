@@ -156,6 +156,121 @@ const JAVDB_COVER_OPTS = [
   { value: 'no', label: '从不用', desc: '不使用 javdb 封面(其他站都没有时将没有封面)' },
 ]
 
+// ---- 翻译引擎 ----
+// ⚠️ 后端 translator.engine 是 confz discriminated union: dict({name, ...}) 或 null。
+// 历史实现直接 v-model 绑 engine 对象 + <option value="google">, 造成三个连环坑:
+//   ① GET 回来的 engine 是 {name:'google'} 对象, 与字符串 option 用 looseEqual
+//      也永不相等 → 下拉永远显示空白, 界面与实际配置不符;
+//   ② 用户切换引擎后 engine 变成裸字符串, 保存时 confz discriminator 校验直接 400;
+//   ③ api_key 写到了 translator 顶层而非 engine.api_key, 密钥从未真正存进
+//      config.yml(diff 还会往 translator: 块下插一个无效的顶层 api_key 行)。
+// 故全部改用 computed 中转, 回传完整 dict 结构。
+const ENGINE_OPTS = [
+  { value: 'google', label: 'Google 网页翻译' },
+  { value: 'baidu', label: '百度翻译' },
+  { value: 'bing', label: 'Bing 翻译(Azure)' },
+  { value: 'claude', label: 'Claude(Anthropic)' },
+  { value: 'openai', label: 'OpenAI 兼容(含本地 Ollama 等)' },
+]
+
+// 翻译目标语种(与后端 _LANGUAGES 表的界面 code 对应)。
+// 译文写入 NFO 与文件名, 输出严格保持所选语种, 不会简繁混用或夹带其它文字。
+const LANGUAGE_OPTS = [
+  { value: 'zh_CN', label: '简体中文' },
+  { value: 'zh_TW', label: '繁体中文' },
+  { value: 'en', label: '英语' },
+  { value: 'ja', label: '日语' },
+  { value: 'fr', label: '法语' },
+  { value: 'de', label: '德语' },
+  { value: 'es', label: '西班牙语' },
+]
+
+const langSel = computed({
+  // 旧配置无 language 字段时后端给默认值 zh_CN; 双保险防 undefined
+  get: () => cfg.value?.translator?.language || 'zh_CN',
+  set: (v) => { if (cfg.value?.translator) cfg.value.translator.language = v },
+})
+
+// OpenAI 兼容引擎的端点预设: 选中后自动填入地址与推荐模型, 并按 local 决定代理默认值。
+// local=true 为局域网/本机地址(默认不走代理); 云端源国内直连不通, 默认打开代理。
+const LLM_PRESETS = [
+  { label: '本地 Ollama', url: 'http://127.0.0.1:11434/v1/chat/completions', model: 'qwen3:14b', local: true },
+  { label: '局域网 Ollama(NAS/主机)', url: 'http://192.168.1.10:11434/v1/chat/completions', model: 'qwen3:14b', local: true },
+  { label: 'LM Studio(本机)', url: 'http://127.0.0.1:1234/v1/chat/completions', model: 'qwen3-14b', local: true },
+  { label: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', model: 'llama-3.3-70b-versatile', local: false },
+  { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', model: 'qwen/qwen3-14b:free', local: false },
+  { label: 'SiliconFlow 硅基流动', url: 'https://api.siliconflow.cn/v1/chat/completions', model: 'Qwen/Qwen3-14B', local: false },
+  { label: 'ModelScope 魔搭', url: 'https://api-inference.modelscope.cn/v1/chat/completions', model: 'Qwen/Qwen3.5-27B', local: false },
+  { label: 'Gemini(OpenAI 兼容)', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', model: 'gemini-2.5-flash', local: false },
+]
+
+const engineObj = computed(() => {
+  const e = cfg.value?.translator?.engine
+  return (e && typeof e === 'object') ? e : null
+})
+
+const engineName = computed({
+  get: () => engineObj.value?.name || null,
+  set: (name) => {
+    const t = cfg.value?.translator
+    if (!t) return
+    if (!name) { t.engine = null; return }
+    const prev = engineObj.value || {}
+    // 切换引擎时按目标引擎重建 dict; 密钥类字段沿用它引擎已有值(可能是掩码,
+    // 后端 unmask_secrets 会还原成真实密钥, 不会因切换引擎丢密钥)。
+    const base = { name }
+    if (name === 'baidu') Object.assign(base, { app_id: prev.app_id ?? '', api_key: prev.api_key ?? '' })
+    if (name === 'bing') Object.assign(base, { api_key: prev.api_key ?? '' })
+    if (name === 'claude') Object.assign(base, { api_key: prev.api_key ?? '', use_proxy: prev.use_proxy ?? false })
+    if (name === 'openai') Object.assign(base, {
+      url: prev.url || LLM_PRESETS[0].url,
+      api_key: prev.api_key ?? '',
+      model: prev.model || LLM_PRESETS[0].model,
+      use_proxy: prev.use_proxy ?? false,
+    })
+    t.engine = base
+  },
+})
+
+// 引擎字段读写: 掩码值在输入框里显示为空(后端保存时仍会还原), 用户输入即替换。
+const engUrl = computed({
+  get: () => engineObj.value?.url ?? '',
+  set: (v) => { if (engineObj.value) engineObj.value.url = v },
+})
+const engModel = computed({
+  get: () => engineObj.value?.model ?? '',
+  set: (v) => { if (engineObj.value) engineObj.value.model = v },
+})
+const engAppId = computed({
+  get: () => { const v = engineObj.value?.app_id; return v === MASK ? '' : (v ?? '') },
+  set: (v) => { if (engineObj.value) engineObj.value.app_id = v },
+})
+const engApiKey = computed({
+  get: () => { const v = engineObj.value?.api_key; return v === MASK ? '' : (v ?? '') },
+  set: (v) => { if (engineObj.value) engineObj.value.api_key = v },
+})
+const engApiKeySet = computed(() => {
+  const v = engineObj.value?.api_key
+  return typeof v === 'string' && v.length > 0
+})
+const engUseProxy = computed({
+  get: () => !!engineObj.value?.use_proxy,
+  set: (v) => { if (engineObj.value) engineObj.value.use_proxy = v },
+})
+
+const presetSel = ref('')
+function onPresetChange() {
+  const e = engineObj.value
+  if (!e || e.name !== 'openai' || !presetSel.value) return
+  const p = LLM_PRESETS.find((x) => x.label === presetSel.value)
+  if (!p) return
+  e.url = p.url
+  e.model = p.model
+  // 本地/局域网地址默认不走代理; 云端源默认打开(国内直连不通, 需走项目代理)
+  e.use_proxy = !p.local
+  presetSel.value = ''
+}
+
 onMounted(load)
 </script>
 
@@ -499,32 +614,103 @@ onMounted(load)
 
           <!-- 翻译 -->
           <template v-else-if="currentGroup.key === 'translator'">
+            <!-- 范围说明(用户反馈强调): 只翻译标题/剧情, 不涉及字幕生成或语音转写 -->
+            <div class="notice notice--info" style="margin-bottom: var(--space-4);">
+              翻译范围: <b>影片标题与剧情简介</b>(译文写入 NFO 与文件名)。
+              本功能<b>不涉及</b>电影字幕生成或语音转写——那是另一套能力(未来或作为独立插件/项目提供)。
+            </div>
             <div class="field">
               <label class="field-label">翻译引擎</label>
-              <select v-model="cfg.translator.engine" class="input" style="max-width: 240px;">
+              <select v-model="engineName" class="input" style="max-width: 300px;">
                 <option :value="null">不翻译</option>
-                <option value="google">Google</option>
-                <option value="baidu">百度</option>
-                <option value="bing">Bing</option>
-                <option value="claude">Claude</option>
-                <option value="openai">OpenAI</option>
+                <option v-for="o in ENGINE_OPTS" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
+              <p class="field-hint">选择「不翻译」则保留日文原标题与简介; Google 网页翻译免费但有限流</p>
             </div>
-            <div class="field">
-              <label class="field-label">API 密钥</label>
-              <input type="password" class="input" style="max-width: 360px;"
-                     :disabled="!cfg.translator.engine"
-                     :value="cfg.translator.engine && cfg.translator.api_key !== MASK ? cfg.translator.api_key : ''"
-                     :placeholder="cfg.translator.engine ? '留空= 不使用该引擎' : '请先选择翻译引擎'"
-                     @input="cfg.translator.api_key = $event.target.value" />
+
+            <!-- 目标语种: 决定 NFO/文件名里译文的语种, 输出严格一致不混用 -->
+            <div v-if="engineName" class="field">
+              <label class="field-label">目标语种</label>
+              <select v-model="langSel" class="input" style="max-width: 300px;">
+                <option v-for="o in LANGUAGE_OPTS" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
               <p class="field-hint">
-                <template v-if="!cfg.translator.engine">选好翻译引擎后才需要填写密钥</template>
-                <template v-else>
-                  配置文件是 git 跟踪的, 建议改用环境变量
-                  <code>JAVSP_TRANSLATOR.ENGINE.API_KEY</code>(点号, 双下划线会被静默忽略)
-                </template>
+                标题与简介的译文语种; 引擎会严格按此输出(不混用繁体或其它文字),
+                配置里手写过其它语种码时按简体中文处理
               </p>
             </div>
+
+            <!-- OpenAI 兼容引擎: 端点预设 + 接口地址 + 模型名 -->
+            <template v-if="engineName === 'openai'">
+              <div class="field">
+                <label class="field-label">端点预设</label>
+                <select v-model="presetSel" class="input" style="max-width: 300px;" @change="onPresetChange">
+                  <option value="">自定义(直接填写下方地址)</option>
+                  <option v-for="p in LLM_PRESETS" :key="p.label" :value="p.label">
+                    {{ p.label }}{{ p.local ? ' · 本地/局域网' : ' · 云端' }}
+                  </option>
+                </select>
+                <p class="field-hint">
+                  选中预设会自动填入接口地址与推荐模型; 本地部署选 Ollama / LM Studio, 云端源按需选择
+                </p>
+              </div>
+              <div class="field">
+                <label class="field-label">接口地址</label>
+                <input v-model="engUrl" class="input input--mono" style="max-width: 520px;" spellcheck="false"
+                       placeholder="http://127.0.0.1:11434/v1/chat/completions" />
+                <p class="field-hint">
+                  OpenAI 兼容的 chat/completions 完整地址; Ollama 默认端口 11434, LM Studio 为 1234
+                </p>
+              </div>
+              <div class="field">
+                <label class="field-label">模型名</label>
+                <input v-model="engModel" class="input input--mono" style="max-width: 300px;" spellcheck="false"
+                       placeholder="qwen3:14b" />
+                <p class="field-hint">
+                  本地模型填 Ollama 里的名字(如 qwen3:14b / glm-4-9b / translategemma:12b); 云端填各平台模型 ID
+                </p>
+              </div>
+            </template>
+
+            <!-- 百度: APP ID + 密钥(历史 UI 漏了 app_id, 只能手改 config.yml) -->
+            <div v-if="engineName === 'baidu'" class="row-2">
+              <div class="field">
+                <label class="field-label">APP ID</label>
+                <input v-model="engAppId" class="input" spellcheck="false"
+                       :placeholder="engineObj?.app_id ? '已配置, 输入可替换' : '百度翻译开放平台 APP ID'" />
+              </div>
+              <div class="field">
+                <label class="field-label">API 密钥</label>
+                <input v-model="engApiKey" type="password" class="input" spellcheck="false"
+                       :placeholder="engApiKeySet ? '已配置, 输入可替换(清空并保存= 清除)' : '百度翻译开放平台 API 密钥'" />
+              </div>
+            </div>
+            <!-- 其余需要密钥的引擎 -->
+            <div v-else-if="engineName && engineName !== 'google'" class="field">
+              <label class="field-label">API 密钥</label>
+              <input v-model="engApiKey" type="password" class="input" style="max-width: 360px;" spellcheck="false"
+                     :placeholder="engApiKeySet ? '已配置密钥, 输入可替换(清空并保存= 清除)' : '本地 Ollama 可随意填写'" />
+              <p class="field-hint">
+                配置文件是 git 跟踪的, 建议改用环境变量
+                <code>JAVSP_TRANSLATOR.ENGINE.API_KEY</code>(点号, 双下划线会被静默忽略)
+              </p>
+            </div>
+
+            <!-- 代理开关: 仅 LLM 引擎(openai/claude); 本地部署不要勾 -->
+            <div v-if="engineName === 'openai' || engineName === 'claude'" class="switch-list"
+                 style="margin-bottom: var(--space-4);">
+              <label class="switch-row">
+                <input v-model="engUseProxy" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">使用通用代理</span>
+                  <span class="switch-desc">
+                    勾选后翻译请求直接走「网络与容错」里配置的出口代理, 无需重复填写;
+                    本地/局域网部署的模型请勿勾选
+                  </span>
+                </span>
+              </label>
+            </div>
+
             <div class="switch-list">
               <label class="switch-row">
                 <input v-model="cfg.translator.fields.title" type="checkbox" />
@@ -537,7 +723,7 @@ onMounted(load)
                 <input v-model="cfg.translator.fields.plot" type="checkbox" />
                 <span class="switch-text">
                   <span class="switch-title">翻译剧情</span>
-                  <span class="switch-desc">简介文本翻译, 耗时随引擎而定</span>
+                  <span class="switch-desc">简介文本翻译, 耗时随引擎而定(本地大模型在 CPU 上可能较慢)</span>
                 </span>
               </label>
             </div>

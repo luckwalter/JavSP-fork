@@ -14,7 +14,7 @@ The code is **fully open source** (GPL-3.0). Both the Docker image and the Windo
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.3.13-blue.svg)
+![Version](https://img.shields.io/badge/version-0.3.16-blue.svg)
 
 ## Features
 
@@ -192,6 +192,68 @@ After organizing, each movie lands in its **own folder** (`output_folder_pattern
 
 When writing NFO, ratings are normalized to 0~10 (Jellyfin parses `<rating>` with a single float conversion and no range check, so out-of-range values display as-is).
 
+### Translation Engine: auto-translate titles and plot summaries
+
+During organizing, Japanese titles and plot summaries can be translated into Chinese (written into NFO and filenames), configured in "System Settings → Translation".
+
+**Scope**: only **movie titles and plot summaries** — no subtitle generation or speech transcription (a separate capability, possibly a standalone plugin/project in the future).
+
+> **Don't need translation?** Skip this whole section: translation is off by default (`engine: null`) and does not affect the scraping/organizing workflow — turn it on whenever you need it.
+
+**Review before writing to disk**: with translation configured, batch-scrape (without "and organize") in the Scrape Queue, then the Result Review page shows the **original → translated** comparison for each movie's title and plot, with "use this translation when organizing" checked by default — organize only after you're satisfied; turn the switch off for any single movie to keep its original text in the NFO. Choosing "Scrape & organize" directly writes the default translation to disk without review.
+
+**Target language**: Simplified Chinese / Traditional Chinese / English / Japanese / French / German / Spanish are selectable; the translation strictly follows the chosen language — no mixed Traditional/Simplified characters or stray text from other languages.
+
+**Consistent Chinese characters throughout the NFO**: Besides the translated title/plot, genre tags come from the source sites' original labels (some sites serve Traditional Chinese, some Japanese). When writing the NFO, characters are normalized to the target language — choosing Simplified Chinese converts Traditional labels too (e.g. `單體作品` → `单体作品`, `DMM獨家` → `DMM独家`), and vice versa; non-Chinese target languages are left untouched. Tags marked as "not written" in the mapping table (e.g. distributor-exclusive tags) are unaffected.
+
+**Same language = no translation**: If the source text is already in the target language (e.g. a site title already in Chinese with Simplified Chinese selected), translation is skipped and the original text is used as-is — saving time (a plot takes several seconds even on a local model) and avoiding pointless rewrites. A Traditional source with a Simplified target is also skipped; consistency is guaranteed by the character normalization above.
+
+**Design decision: custom interface only — no LLM is bundled into this project.** Bundling a model/inference framework would bloat the software quickly (model files, dependencies, GPU/CPU adaptation are all bottomless pits), and users' hardware and network conditions vary widely. So this project only provides a **standard OpenAI-compatible endpoint**: URL, model name and API key are all filled in by the user — self-hosted (Ollama / LM Studio) or cloud sources both work, deployment form is entirely up to you. This capability is inherited from upstream Yuukiy/JavSP (which only had the OpenAI engine with no custom entry), and was expanded in response to [issue #5](https://github.com/luckwalter/JavSP-fork/issues/5) "Can the translation engine add Ollama?".
+
+**Self-hosted (recommended: free / uncensored / unlimited)**: run [Ollama](https://ollama.com/) locally or on your LAN, then pick the "Local Ollama" or "LAN Ollama" preset to auto-fill the endpoint and a recommended model (`qwen3:14b` / `glm-4-9b` / `translategemma:12b` for translation; `qwen3:8b` on limited hardware; below 8B quality is close to auto subtitle translation — not recommended). ⚠️ **For adult content, cloud APIs are generally unusable**: OpenAI / Anthropic / Google ToS prohibit adult content, and domestic platforms (SiliconFlow / ModelScope / Z.ai / Kimi) are safety-aligned and will refuse — a local model is the only reliable path.
+
+**Quick Ollama setup** (modeled on the author's LAN deployment; works on Windows / Linux / macOS):
+
+1. **Install Ollama**: download from [ollama.com](https://ollama.com/); on Linux you can also run `curl -fsSL https://ollama.com/install.sh | sh`
+2. **Allow LAN access** (required when accessing from another machine): set the environment variable `OLLAMA_HOST=0.0.0.0` and restart Ollama (on Windows, add it under System Properties → Advanced → Environment Variables, then restart Ollama); also make sure the machine's firewall allows port 11434
+3. **Pull a model**: `ollama pull translategemma:4b` (~3.3GB, Google's translation-specialized fine-tune, 55 languages; general-purpose alternatives: `qwen3:14b` / `glm-4:9b`, or `qwen3:8b` on tight hardware)
+4. **Configure in JavSP**: "System Settings → Translation" → engine "OpenAI-compatible (incl. local Ollama)" → endpoint preset "LAN Ollama" → change the URL to `http://<IP of the Ollama machine>:11434/v1/chat/completions` → model name `translategemma:4b` → keep "use global proxy" off → target language "Simplified Chinese" → save (takes effect immediately)
+5. **Verify**: scrape a few movies in the Scrape Queue (leave "and organize" unchecked) → open Result Review to check the translations → then "Go organize"
+
+**Field-tested case** (author's LAN during v0.3.14 development): a Windows machine running Ollama + `translategemma:4b` — Google's translation-specialized fine-tune of Gemma 3 (~3.3GB, Q4_K_M, 55 languages). In JavSP set the endpoint to `http://192.168.1.100:11434/v1/chat/completions`, model `translategemma:4b`, and leave "use global proxy" off (direct LAN access). Tested JA→ZH title/plot translations came out accurate and fluent — **the 4B class is enough for metadata**; a plot paragraph takes a few seconds even on CPU. Pick `translategemma:12b/27b` for higher quality. ⚠️ Ollama listens on `127.0.0.1` by default: for LAN access set the env var `OLLAMA_HOST=0.0.0.0` and restart Ollama (and make sure port 11434 is allowed through the machine's firewall).
+
+**Config example (local Ollama, copy-paste ready)**:
+
+```yaml
+translator:
+  fields:
+    title: true      # translate titles
+    plot: true       # translate plot summaries
+  engine:
+    name: openai
+    url: 'http://127.0.0.1:11434/v1/chat/completions'   # local Ollama; for a LAN machine use http://<IP>:11434/v1/chat/completions
+    api_key: 'ollama'                                    # local models don't check the key; any non-empty value works
+    model: 'translategemma:4b'                           # or qwen3:14b / glm-4:9b, etc.
+    use_proxy: false                                     # no proxy for local deployment
+```
+
+Or use the WebUI (Settings → Translation: engine "OpenAI-compatible (incl. local Ollama)", preset "Local Ollama" auto-fills the endpoint and recommended model; saving applies instantly):
+
+![Translation settings](docs/images/translator-settings.png)
+
+**Cloud free-tier assessment** (compiled as of 2026-10; quotas change — check each provider's console):
+
+| Provider | Free quota (approx.) | Direct from CN | Adult content | Notes |
+|---|---|---|---|---|
+| Groq | 30 RPM / 1000 RPD / 200K tokens per day | needs proxy | ⚠️ ToS gray area, model may refuse | very fast, no card |
+| OpenRouter | 20 RPM / 50 RPD (1000 RPD after $10 top-up) | needs proxy | ⚠️ model-dependent, free pool rotates | one key, many open models |
+| Gemini (AI Studio) | Flash 15 RPM / 1500 RPD | needs proxy | ❌ safety filters on by default | free-tier data used for training |
+| SiliconFlow | 1000 RPM / 50K TPM | ✅ | ❌ safety-aligned, refuses | lowest latency in CN |
+| ModelScope | 2000 RPD | ✅ | ❌ same | Alibaba official |
+| Local Ollama | unlimited | ✅ | ✅ uncensored | uses local RAM/CPU, speed varies |
+
+For non-local cloud sources, enable "Use general proxy" to reuse the egress proxy configured under "Network & Retry" — no need to enter it twice.
+
 ## Security Notes (read before deploying)
 
 - This is a **single-user, personal tool**; use only on a trusted network (local / home LAN) is recommended — **putting it on the public internet is an explicitly unsupported use**.
@@ -206,7 +268,7 @@ When writing NFO, ratings are normalized to 0~10 (Jellyfin parses `<rating>` wit
 
 ## Versioning
 
-This project **does not follow the upstream version numbers**, starting from `0.0.1`: small changes (fix/tweak) bump the third digit; large changes (feature/architecture) bump the second digit and reset the third to 1; stable release `1.0.0`. **Current version: 0.3.13**.
+This project **does not follow the upstream version numbers**, starting from `0.0.1`: small changes (fix/tweak) bump the third digit; large changes (feature/architecture) bump the second digit and reset the third to 1; stable release `1.0.0`. **Current version: 0.3.16**.
 
 The version number's single source of truth is `pyproject.toml`; `python sync_version.py` syncs it to `frontend/package.json` / `package-lock.json` / `README.md`, and `python sync_version.py --check` validates consistency (both the version badge and the "current version" marker in README will error if either is missing or changed in form, never silently passing); for cross-environment deploys (e.g., NAS container) also use `python sync_version.py --check-target <path>` to validate the target's `pyproject.toml`. Full changelog: **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)** (maintained independently by this fork, does not overwrite upstream `CHANGELOG.md`).
 

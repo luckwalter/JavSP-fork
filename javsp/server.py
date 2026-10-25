@@ -33,6 +33,7 @@ from javsp.datatype import Movie
 from javsp.task_store import TaskStore
 from javsp import auth
 from javsp.web import health as channel_health
+from javsp.web.translate import translate_movie_info
 
 logger = logging.getLogger('javsp.server')
 
@@ -217,6 +218,9 @@ class ScrapeRequest(BaseModel):
 
 class OrganizeRequest(BaseModel):
     guid: str
+    # 落盘时是否使用翻译: None=按配置(默认), True=强制翻译, False=强制不用翻译
+    # (审阅页对单部影片关闭"落盘时使用此翻译"时传 False, 还原刮削阶段的译文)
+    use_translate: Optional[bool] = None
 
 
 class BatchRequest(BaseModel):
@@ -406,6 +410,28 @@ def api_auth_logout(request: Request, response: Response):
 
 
 # --------------------- 渠道健康监控(熔断) ---------------------
+
+
+def _pre_translate(m) -> dict:
+    """刮削成功后按配置预翻译, 返回审阅页需要的原文/译文字段
+
+    设计: 翻译原本发生在落盘(organize)时, 用户要在"结果审阅"页就看到每部的
+    标题/简介译文再决定是否采用, 因此刮削阶段就地翻译。落盘时
+    translate_movie_info 有 ori_title/ori_plot 幂等守卫, 不会二次翻译。
+    翻译失败不阻塞刮削结果(审阅页照常展示原文), 仅记录日志。
+    """
+    info = getattr(m, 'info', None)
+    if info is None or Cfg().translator.engine is None:
+        return {}
+    try:
+        translate_movie_info(info)
+    except Exception as e:      # noqa: BLE001 预翻译失败不应让整部刮削结果作废
+        logger.warning(f'预翻译失败(继续展示原文): {e}')
+    return {
+        'ori_title': getattr(info, 'ori_title', None),
+        'plot': getattr(info, 'plot', None),
+        'ori_plot': getattr(info, 'ori_plot', None),
+    }
 
 
 def _sources_with_health(m) -> dict:
@@ -699,7 +725,8 @@ def api_scrape(req: ScrapeRequest):
                     if movie is None:
                         assign_guid(m)
                         TASKS[m.guid] = m
-                    q.put({'type': 'result', 'guid': m.guid, 'info': movie_info_dict(m.info), 'sources': _sources_with_health(m)})
+                    q.put({'type': 'result', 'guid': m.guid, 'info': movie_info_dict(m.info),
+                           'sources': _sources_with_health(m), **_pre_translate(m)})
             except Exception as e:
                 logger.exception(e)
                 q.put({'type': 'error', 'msg': str(e)})
@@ -736,7 +763,8 @@ def api_organize(req: OrganizeRequest):
                 q.put({'type': 'stage', 'stage': 'organizing'})
                 # 标记活跃:整理期间持有 Movie,不能被 TTL/容量回收(否则落盘到一半源对象被删)
                 with TASKS.mark_active(req.guid):
-                    result = organize_movie(movie, progress_cb=progress_cb)
+                    result = organize_movie(movie, progress_cb=progress_cb,
+                                            translate=req.use_translate)
                 q.put({'type': 'result', 'result': result})
             except Exception as e:
                 logger.exception(e)
@@ -783,6 +811,9 @@ def api_batch(req: BatchRequest):
                     except Exception as e:
                         logger.exception(e)
                         ok = False
+                    # 刮削成功即按配置预翻译: 审阅页需要展示每部的标题/简介译文
+                    # (落盘时 translate_movie_info 有幂等守卫, 不会二次翻译)
+                    trans = _pre_translate(m) if ok else {}
                     if ok and req.organize:
                         try:
                             organize_movie(m, progress_cb=progress_cb)
@@ -797,6 +828,7 @@ def api_batch(req: BatchRequest):
                         q.put({'type': 'movie_done', 'index': idx, 'guid': m.guid,
                                'ok': True, 'organized': organized,
                                'title': (m.info.title if m.info else None),
+                               **trans,
                                'sources': _sources_with_health(m)})
                     else:
                         fail += 1
@@ -859,7 +891,7 @@ def api_config_put(updates: dict):
             cfg_path = _config_file_path()
             try:
                 changes = diff_leaves(current, merged)
-                res = apply_config_changes(cfg_path, changes)
+                res = apply_config_changes(cfg_path, changes, merged)
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f'写入配置失败: {e}')
     except HTTPException:

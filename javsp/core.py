@@ -694,6 +694,21 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
         except Exception as e:
             logger.warning(f"翻译失败(忽略继续): {e}")
             result['errors'].append(f'translate: {e}')
+    else:
+        # 调用方明确不使用翻译(如审阅页对单部关闭"落盘时使用此翻译"):
+        # 刮削阶段可能已预翻译过(info.ori_title/ori_plot 有值), 这里还原原文,
+        # 保证 NFO/文件名与用户所见确认一致。ori_plot 是运行时动态属性, 还原后删除。
+        info = movie.info
+        if getattr(info, 'ori_title', None):
+            info.title = info.ori_title
+            info.ori_title = None
+        if getattr(info, 'ori_plot', None):
+            info.plot = info.ori_plot
+            try:
+                delattr(info, 'ori_plot')
+            except AttributeError:
+                pass
+        result['steps'].append('no_translate')
 
     generate_names(movie)
     if not movie.save_dir:
@@ -796,6 +811,11 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
         try:
             movie.rename_files(Cfg().summarizer.path.hard_link)
             result['steps'].append('move')
+            # 源空目录清理失败(如被 SMB 占用/权限不足)时上报路径列表,
+            # 由 Web 端提示用户确认后手动删除 —— 不再静默遗留
+            leftovers = getattr(movie, 'cleanup_failures', None)
+            if leftovers:
+                result['leftover_dirs'] = leftovers
         except Exception as e:
             logger.error(f"移动影片文件失败: {e}")
             result['status'] = 'move_failed'

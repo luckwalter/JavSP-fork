@@ -14,7 +14,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.3.13-blue.svg)
+![Version](https://img.shields.io/badge/version-0.3.16-blue.svg)
 
 ## 功能特点
 
@@ -191,6 +191,68 @@ poster 与 fanart 同源，两项都关时连封面下载都不会发生，批�
 
 写入 NFO 时会把评分规范化到 0~10（Jellyfin 解析 `<rating>` 只做一次浮点转换、不做范围校验，越界值会原样显示）。
 
+### 翻译引擎：标题与剧情简介的自动翻译
+
+整理时可将日文标题与剧情简介翻译为中文（写入 NFO 与文件名），在「系统设置 → 翻译」中配置。
+
+**功能范围**：只翻译**影片标题与剧情简介**，不涉及电影字幕生成或语音转写——那是另一套能力（未来或作为独立插件/项目提供）。
+
+> **不需要翻译？** 本节内容可整段跳过：翻译默认关闭（`engine: null`），不影响刮削与整理主流程，需要时再随时开启。
+
+**翻译的确认环节**：配置翻译后，在「刮削队列」批量刮削（不勾选「并整理」）完成后，「结果审阅」页会在每部影片下方展示标题与简介的**原文 → 译文对照**，并默认勾选「落盘时使用此翻译」——确认译文满意后再整理落盘；对某部不满意可单独关闭开关，该部将保留原文写入 NFO。若直接选择「刮削并整理」，则按默认翻译直接落盘，不经审阅。
+
+**目标语种**：设置页可选简体中文 / 繁体中文 / 英语 / 日语 / 法语 / 德语 / 西班牙语，译文写入 NFO 与文件名时会严格保持所选语种，不会简繁混用或夹带其它文字。
+
+**NFO 全文中文字体一致**：除标题/简介译文外，影片分类（genre）等字段来自各刮削站点的原始标签（部分站点给繁体、部分给日文），落盘时会按目标语种自动统一用字——选简体则繁体标签一并转简体（如 `單體作品` → `单体作品`、`DMM獨家` → `DMM独家`），选繁体则反向转换；目标语种为非中文时不转换。映射表中标记为"不写入"的标签（如发行商专属标签）不受影响。
+
+**同语言不翻译**：若原文已是目标语种（如源站标题直接是中文、目标选简体中文），则跳过翻译直接采用原文，不再调用翻译引擎——既省时间（本地模型一段剧情要数秒），也避免译文对原文做无谓的同义改写。原文为繁体、目标为简体时同样跳过翻译，由上述用字统一机制保证 NFO 一致。
+
+**设计决策：只做自定义接口，不在项目内集成任何大模型**。把某个模型/推理框架内置进本项目会让软件迅速臃肿（模型文件、依赖、GPU/CPU 适配都是无底洞），且用户的硬件与网络条件千差万别。因此本项目只提供**标准 OpenAI 兼容接口**：端点地址、模型名、密钥都由用户自行填写，本地部署（Ollama / LM Studio）或云端源均可，部署形式完全自选。该能力继承自上游 Yuukiy/JavSP（上游仅有 OpenAI 引擎、无自定义入口），因 [issue #5](https://github.com/luckwalter/JavSP-fork/issues/5)「翻译引擎能加Ollama吗」的反馈而拓展完善。
+
+**本地部署（推荐：免费 / 无审查 / 无限额）**：本机或局域网跑起 [Ollama](https://ollama.com/) 后，端点预设选「本地 Ollama」或「局域网 Ollama」即可自动填好地址与推荐模型（翻译场景可选 `qwen3:14b` / `glm-4-9b` / `translategemma:12b`，硬件有限选 `qwen3:8b`；7B 以下质量约等于自动字幕翻译，不建议）。⚠️ **成人内容场景下云端 API 普遍不可用**：OpenAI / Anthropic / Google 的服务条款禁止成人内容，国内平台（SiliconFlow / 魔搭 / 智谱 / Kimi）的模型均过安全对齐会拒答——本地模型是唯一稳妥路径。
+
+**本地部署 Ollama 简要步骤**（以作者局域网部署为范例，Windows / Linux / macOS 通用）：
+
+1. **安装 Ollama**：到 [ollama.com](https://ollama.com/) 下载安装；Linux 也可一行脚本 `curl -fsSL https://ollama.com/install.sh | sh`
+2. **放行局域网访问**（换机器访问时必需）：设置环境变量 `OLLAMA_HOST=0.0.0.0` 并重启 Ollama（Windows 在「系统属性 → 高级 → 环境变量」中添加后重启 Ollama 即可），同时确认该机器防火墙放行 11434 端口
+3. **拉取模型**：`ollama pull translategemma:4b`（约 3.3GB，Google 翻译专用微调，55 种语言互译；通用对话模型可选 `qwen3:14b` / `glm-4:9b`，硬件紧张选 `qwen3:8b`）
+4. **在 JavSP 中配置**：「系统设置 → 翻译」→ 引擎选「OpenAI 兼容（含本地 Ollama）」→ 端点预设选「局域网 Ollama」→ 接口地址改为 `http://<跑 Ollama 的机器 IP>:11434/v1/chat/completions` → 模型名填 `translategemma:4b` →「使用通用代理」保持关闭 → 目标语种选「简体中文」→ 保存（即时生效）
+5. **验证**：「刮削队列」选几部刮削（先不要勾「并整理」）→ 打开「结果审阅」查看每部的译文对照 → 满意后「去整理落盘」
+
+**本地实测案例**（v0.3.14 开发期间作者局域网环境）：一台 Windows 机器跑 Ollama + `translategemma:4b`——Google 基于 Gemma 3 的翻译专用微调模型（约 3.3GB，Q4_K_M，支持 55 种语言互译），JavSP 端点填 `http://192.168.1.100:11434/v1/chat/completions`、模型名 `translategemma:4b`、关闭「使用通用代理」（本地直连）。实测日→中的标题与剧情翻译语义准确、行文通顺，**4B 量级即可满足元数据场景**，CPU 上一段剧情约数秒；追求更高文采可换 `translategemma:12b/27b`。⚠️ Ollama 默认只监听 `127.0.0.1`，局域网访问需设环境变量 `OLLAMA_HOST=0.0.0.0` 并重启 Ollama（同时确认机器防火墙放行 11434 端口）。
+
+**配置示例（本地 Ollama，可直接抄进 config.yml）**：
+
+```yaml
+translator:
+  fields:
+    title: true      # 翻译标题
+    plot: true       # 翻译剧情简介
+  engine:
+    name: openai
+    url: 'http://127.0.0.1:11434/v1/chat/completions'   # 本机 Ollama；局域网机器换成 http://<机器IP>:11434/v1/chat/completions
+    api_key: 'ollama'                                    # 本地模型不校验密钥，任意非空值即可
+    model: 'translategemma:4b'                           # 也可以换 qwen3:14b / glm-4:9b 等
+    use_proxy: false                                     # 本地部署不走代理
+```
+
+当然更推荐在 WebUI「系统设置 → 翻译」中配置——引擎选「OpenAI 兼容（含本地 Ollama）」、端点预设选「本地 Ollama」即自动填好地址与推荐模型，保存后立即生效：
+
+![翻译设置](docs/images/translator-settings.png)
+
+**云端免费源评判**（2026-10 时点整理，额度随时可能调整，以各平台控制台为准）：
+
+| 方案 | 免费额度（约） | 国内直连 | 成人内容适配 | 备注 |
+|---|---|---|---|---|
+| Groq | 30 RPM / 1000 RPD / 20 万 tokens 每天 | 需代理 | ⚠️ ToS 灰色地带，模型可能拒答 | 速度极快，免卡注册 |
+| OpenRouter | 20 RPM / 50 RPD（累计充值 $10 后 1000 RPD） | 需代理 | ⚠️ 取决于所选模型，免费池轮换不稳定 | 一个 key 遍览开源模型 |
+| Gemini（AI Studio） | Flash 15 RPM / 1500 RPD | 需代理 | ❌ 安全过滤默认开启 | 免费档数据会被用于训练 |
+| SiliconFlow 硅基流动 | 1000 RPM / 5 万 TPM | ✅ | ❌ 安全对齐会拒答 | 国内延迟最低 |
+| ModelScope 魔搭 | 2000 RPD | ✅ | ❌ 同上 | 阿里官方 |
+| 本地 Ollama | 无限 | ✅ | ✅ 无审查 | 占本机内存 / CPU，速度随硬件 |
+
+非本地部署的云端源，勾选「使用通用代理」即可直接走「网络与容错」里配置的出口代理，无需重复填写。
+
 ## 安全说明（部署前必读）
 
 - **单用户自用工具**，仅建议在可信网络（本地/家庭内网）使用，**放在公网上是明确不支持的用法**。
@@ -205,7 +267,7 @@ poster 与 fanart 同源，两项都关时连封面下载都不会发生，批�
 
 ## 版本规则
 
-本项目**不沿用上游版本号**，从 `0.0.1` 起步：小变更（修补/微调）第三位 +1；大变更（功能/架构）第二位 +1 且第三位归 1；正式稳定版 `1.0.0`。**当前版本：0.3.13**。
+本项目**不沿用上游版本号**，从 `0.0.1` 起步：小变更（修补/微调）第三位 +1；大变更（功能/架构）第二位 +1 且第三位归 1；正式稳定版 `1.0.0`。**当前版本：0.3.16**。
 
 版本号以 `pyproject.toml` 为唯一权威来源，`python sync_version.py` 同步到 `frontend/package.json` / `package-lock.json` / `README.md`，`python sync_version.py --check` 可校验一致性（README 的版本徽章与「当前版本」两处标记，任一缺失或写法变化都会报错，不会静默放行）；跨环境部署（如 NAS 容器）另用 `python sync_version.py --check-target <路径>` 校验目标环境里的 `pyproject.toml`。完整的版本迭代记录见 **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

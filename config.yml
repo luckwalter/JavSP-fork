@@ -177,8 +177,12 @@ translator:
   #
   # ⚠️ 安全提示: 填写下面的 api_key / app_id 后, 本文件即包含明文凭据。
   # 本文件是被 git 跟踪的, 请**不要** `git commit -a` 把填好的密钥提交上去;
-  # 更稳妥的做法是用环境变量覆盖(无需改本文件): 例如
-  #   JAVSP_TRANSLATOR__ENGINE__API_KEY=xxx   (双下划线表示嵌套层级)
+  # 更稳妥的做法是用环境变量覆盖(无需改本文件), 注意 confz 2.x 的嵌套分隔符是
+  # **点号**(双下划线会被静默忽略, 是常见坑):
+  #   JAVSP_TRANSLATOR.ENGINE.API_KEY=xxx
+  #   JAVSP_TRANSLATOR.ENGINE.URL=http://127.0.0.1:11434/v1/chat/completions
+  #   JAVSP_TRANSLATOR.ENGINE.MODEL=qwen3:14b
+  #   JAVSP_TRANSLATOR.ENGINE.USE_PROXY=false
   # 环境变量优先级高于本文件, 详见 README「配置」小节。
   engine: null
   ## 使用百度翻译: {{{
@@ -199,8 +203,13 @@ translator:
   #   name: claude
   #   # Claude的密钥 (使用haiku模型)
   #   api_key: ''
+  #   # 国内访问 Anthropic 需代理: 打开后翻译请求走 network.proxy_server(与爬虫共用)
+  #   use_proxy: false
   ## }}}
-  ## 使用OpenAI翻译: {{{
+  ## 使用OpenAI翻译(兼容任何 OpenAI 协议的端点, 含本地大模型): {{{
+  # 说明: 该引擎继承自上游 Yuukiy/JavSP(上游仅有这一个 LLM 入口, 且没有自定义端点
+  # 的配置界面); 本 fork 应 issue #5「翻译引擎能加Ollama吗」的诉求, 补全了 WebUI 的
+  # 端点地址/模型名/代理开关配置与本地模型预设, 此处的手填方式依然可用。
   # engine: 
   #   name: openai
   #   # OpenAI API（默认使用 Groq，可替换成任何兼容 OpenAI 的第三方 API）
@@ -208,14 +217,34 @@ translator:
   #   api_key: ''
   #   # 要使用的模型（默认使用 Groq 的 llama-3.1-70b-versatile 模型，若使用 OpenAI 官方 API 的话一般模型为 gpt-3.5-turbo）
   #   model: llama-3.1-70b-versatile
+  #   # 云端源(Groq/OpenRouter/SiliconFlow/Gemini 等)国内直连不通时打开, 走通用代理;
+  #   # 本地部署(Ollama 等局域网地址)保持 false
+  #   use_proxy: false
+  # 本地模型实测参考(作者局域网): Ollama + translategemma:4b(Google 翻译专用微调,
+  # 约3.3GB), url 填 http://<局域网机器IP>:11434/v1/chat/completions, 模型名
+  # translategemma:4b, use_proxy 保持 false。日→中标题/剧情实测语义准确, 4B 量级
+  # 即可满足元数据场景; 注意 Ollama 默认只听 127.0.0.1, 局域网访问需设
+  # OLLAMA_HOST=0.0.0.0 并重启(详见 README「翻译引擎」小节)
+  ## }}}
+  ## 使用本地 Ollama 部署的大模型(免费/无审查/无限额, 需本机或局域网先跑起 Ollama): {{{
+  # engine:
+  #   name: openai
+  #   url: 'http://127.0.0.1:11434/v1/chat/completions'   # 局域网内换成对应主机 IP
+  #   api_key: 'ollama'                                    # 本地不校验, 随意填写
+  #   model: 'qwen3:14b'                                   # ollama list 里的模型名; CJK 翻译也可选 glm-4-9b / translategemma:12b
+  #   use_proxy: false
   ## }}}
   
   # 是否翻译各个字段
-  fields: 
+  fields:
     # 是否翻译标题
     title: true
     # 是否翻译剧情简介
     plot: true
+  # 翻译目标语种: zh_CN(简体中文, 默认)/zh_TW(繁体中文)/en/ja/fr/de/es
+  # 译文写入 NFO 与文件名; 引擎会严格按此语种输出, 不混用繁体或其它文字。
+  # 环境变量: JAVSP_TRANSLATOR.LANGUAGE=zh_TW
+  language: 'zh_CN'
   
 ################################
 other:

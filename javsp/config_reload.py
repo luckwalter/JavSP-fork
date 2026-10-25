@@ -206,9 +206,11 @@ def _atomic_write_bytes(path, data):
         raise
 
 
-def apply_config_changes(cfg_path, changes):
+def apply_config_changes(cfg_path, changes, merged=None):
     """写入变更并让运行时立即生效
 
+    merged: 合并后的完整配置, 透传给 write_config_preserving_comments 用于
+    「单行 flow 容器子字段」的回退替换(engine 改模型名/开关等场景)。
     任一环节失败都会回滚：先恢复文件内容，再让运行时重新读回旧配置。
     返回 dict: {'written', 'missing', 'reloaded', 'refreshed', 'error', 'rolled_back'}
     """
@@ -220,7 +222,7 @@ def apply_config_changes(cfg_path, changes):
     with _lock:
         original = _read_bytes(cfg_path)
         try:
-            n, missing = write_config_preserving_comments(cfg_path, changes)
+            n, missing = write_config_preserving_comments(cfg_path, changes, merged)
         except Exception as e:
             raise RuntimeError(f'写入 config.yml 失败: {e}') from e
         result['written'] = n

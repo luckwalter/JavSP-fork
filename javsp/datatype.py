@@ -3,6 +3,7 @@ import os
 import csv
 import json
 import shutil
+import time
 import logging
 from functools import cached_property
 
@@ -205,6 +206,8 @@ class Movie:
                 move_file(fullpath, newpath)
                 new_paths.append(newpath)
         self.new_paths = new_paths
+        # 记录本次整理未能自动清理的空目录(供 Web 端提示用户手动处理)
+        self.cleanup_failures = []
         # 移动后源目录可能变空。单层 os.rmdir 只删最内层, 嵌套目录(如
         # <根>/<分类>/<影片>/xxx.mp4)清理后 <分类> 会残留空壳, 故向上递归清理。
         # scan_root 是 Web 端运行时挂上的边界锚点; CLI 没有, 由层数上限+黑名单兜底。
@@ -298,14 +301,44 @@ class Movie:
                             logger.debug(f'清理缩略图缓存: {victim}')
                         except OSError as e:
                             logger.debug(f'缩略图缓存 {victim} 删除失败(忽略): {e}')
-                os.rmdir(real_cur)             # 空 -> 删
+                self._rmdir_with_retry(real_cur)  # 空 -> 删(占用时重试)
                 logger.info(f"清理空目录: {real_cur}")
             except OSError as e:
-                # 权限不足 / 被占用 / 并发创建了文件等: 停止向上, 不强行处理
-                logger.debug(f'清理空目录 {real_cur} 失败: {e}')
+                # 权限不足 / 被占用 / 并发创建了文件等: 停止向上, 不强行处理。
+                # 实测根因之一: Windows 桌面版经 SMB 整理 NAS 路径时, 用户正用
+                # 资源管理器停在该源目录 → SMB 服务端对 rmdir 返回共享冲突
+                # (EBUSY/EACCES), 而占用通常几秒内释放 —— 已由 _rmdir_with_retry
+                # 重试; 仍失败则记录并上报 Web 端, 提示用户手动删除, 不再静默。
+                logger.warning(f'清理空目录 {real_cur} 失败(可手动删除): {e}')
+                self._note_cleanup_failure(real_cur, e)
                 return
             cur = os.path.realpath(os.path.dirname(real_cur))
             depth += 1
+
+    # rmdir 重试参数: 目录被短时占用(SMB 共享冲突/索引服务扫描)时值得再等等
+    _RMDIR_RETRIES = 3
+    _RMDIR_RETRY_DELAY = 0.8
+
+    def _rmdir_with_retry(self, path: str) -> None:
+        """删除空目录, 失败时按固定间隔重试, 仍失败则抛出最后一次异常"""
+        last = None
+        for attempt in range(self._RMDIR_RETRIES):
+            try:
+                os.rmdir(path)
+                return
+            except OSError as e:
+                last = e
+                if attempt < self._RMDIR_RETRIES - 1:
+                    time.sleep(self._RMDIR_RETRY_DELAY)
+        raise last
+
+    def _note_cleanup_failure(self, path: str, err: OSError) -> None:
+        """记录清理失败的空目录, 供 organize 结果上报给 Web 端提示用户手动处理"""
+        failures = getattr(self, 'cleanup_failures', None)
+        if failures is None:
+            failures = []
+            self.cleanup_failures = failures
+        failures.append({'path': path, 'reason': str(err)})
 
 
 class GenreMap(dict):

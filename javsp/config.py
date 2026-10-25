@@ -210,12 +210,19 @@ class BingTranslateEngine(BaseConfig):
 class ClaudeTranslateEngine(BaseConfig):
     name: Literal['claude']
     api_key: str
+    # 是否走本项目通用代理(network.proxy_server)。国内访问 Anthropic 需要代理,
+    # 而 translate.py 的设计是翻译服务默认不走代理(除 google 外), 故显式开关。
+    # 默认 False 兼容旧配置(缺省即直连)。
+    use_proxy: bool = False
 
 class OpenAITranslateEngine(BaseConfig):
     name: Literal['openai']
     url: Url
     api_key: str
     model: str
+    # 同 ClaudeTranslateEngine.use_proxy。本地部署(Ollama 等)填局域网地址时保持
+    # False; 云端源(Groq/OpenRouter/Gemini 等)国内直连不通, 打开即走项目代理。
+    use_proxy: bool = False
 
 class GoogleTranslateEngine(BaseConfig):
     name: Literal['google']
@@ -235,6 +242,9 @@ class TranslateField(BaseConfig):
 class Translator(BaseConfig):
     engine: TranslateEngine = Field(..., discriminator='name')
     fields: TranslateField
+    # 翻译目标语种: zh_CN(简体中文)/zh_TW(繁体中文)/en/ja/fr/de/es
+    # 旧配置无此字段时默认简体中文, 保持兼容
+    language: str = 'zh_CN'
 
 class Other(BaseConfig):
     interactive: bool

@@ -139,8 +139,12 @@ export function scrapeStream(payload, onEvent) {
   return consumeSSE(BASE + '/api/scrape', payload, onEvent)
 }
 
-export function organizeStream(guid, onEvent) {
-  return consumeSSE(BASE + '/api/organize', { guid }, onEvent)
+export function organizeStream(guid, onEvent, useTranslate = null) {
+  // useTranslate: null=按服务端配置(默认); false=审阅页对该部关闭了"落盘时使用此翻译",
+  // 落盘还原刮削阶段生成的译文所对应的原文
+  const body = { guid }
+  if (useTranslate === true || useTranslate === false) body.use_translate = useTranslate
+  return consumeSSE(BASE + '/api/organize', body, onEvent)
 }
 
 export function batchStream(payload, onEvent) {

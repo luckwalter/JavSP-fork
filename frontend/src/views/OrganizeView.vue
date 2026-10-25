@@ -83,6 +83,15 @@ function toggleAll() {
  */
 async function organizeOne(movie, opts = {}) {
   const { skipConfirm = false, manageRunning = true } = opts
+  // 结果审阅页可能对某部关闭了"落盘时使用此翻译"(按 avid 记录), 此处传
+  // use_translate=false, 后端落盘时还原刮削阶段译文对应的原文;
+  // 未记录(含未配置翻译)时传 null, 由服务端按配置决定。
+  let useTranslate = null
+  try {
+    const set = new Set(JSON.parse(localStorage.getItem('javsp:reviewNoTranslate') || '[]'))
+    const key = movie.dvdid || movie.cid || movie.avid
+    if (set.has(key)) useTranslate = false
+  } catch { /* localStorage 异常时按默认(按配置)处理 */ }
   if (!skipConfirm) {
     const ok = askConfirm
       ? await askConfirm({
@@ -104,13 +113,15 @@ async function organizeOne(movie, opts = {}) {
       // 后端 organize 完成事件是 {type:'result'}, 错误是 {type:'error'} —— 没有 d.done 字段
       if (d.type === 'result') {
         const path = (d.result && (d.result.saved_path || d.result.movie_path)) || '完成'
-        results.value = { ...results.value, [movie.guid]: { ok: true, path } }
+        // leftover_dirs: 源目录已空但自动删除失败(被占用/权限), 收集后提示用户手动处理
+        const leftover = (d.result && d.result.leftover_dirs) || []
+        results.value = { ...results.value, [movie.guid]: { ok: true, path, leftover } }
         load()  // 刷新 organized 真实态: 使按钮变"已落盘"并禁用, 避免重复整理
       }
       if (d.type === 'error') {
         results.value = { ...results.value, [movie.guid]: { ok: false, error: d.msg } }
       }
-    })
+    }, useTranslate)
     return true
   } catch (e) {
     results.value = { ...results.value, [movie.guid]: { ok: false, error: e.message } }
@@ -177,6 +188,14 @@ function stopBatch() {
 
 const doneCount = computed(() => Object.values(results.value).filter((r) => r.ok).length)
 const failCount = computed(() => Object.values(results.value).filter((r) => !r.ok).length)
+// 本次整理中未能自动删除的空源目录(被 SMB 占用/权限不足等), 提示用户手动清理
+const leftoverDirs = computed(() => {
+  const all = []
+  for (const r of Object.values(results.value)) {
+    if (r.ok && r.leftover && r.leftover.length) all.push(...r.leftover)
+  }
+  return all
+})
 
 onMounted(load)
 </script>
@@ -236,6 +255,21 @@ onMounted(load)
             <p class="stat-label">失败</p>
             <p class="stat-value" style="color: var(--color-danger);">{{ failCount }}</p>
           </div>
+        </div>
+
+        <!-- 源目录已空但自动删除失败(常见: Windows 桌面版经 SMB 整理时资源管理器
+             正停在该目录, 或权限不足): 列出路径供用户确认后手动删除 -->
+        <div v-if="leftoverDirs.length" class="notice notice--warning"
+             style="margin-bottom: var(--space-4); max-width: 760px;">
+          <p style="margin: 0 0 var(--space-2);">
+            <strong>{{ leftoverDirs.length }} 个源目录已空但未能自动删除</strong>
+            （可能被程序占用或权限不足），确认无用后可手动删除：
+          </p>
+          <ul style="margin: 0; padding-left: 1.4em; line-height: 1.7;">
+            <li v-for="(item, i) in leftoverDirs" :key="i">
+              <code>{{ item.path }}</code>
+            </li>
+          </ul>
         </div>
 
         <div class="toolbar">

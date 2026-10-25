@@ -6,6 +6,7 @@ from lxml.builder import E
 
 from javsp.datatype import MovieInfo
 from javsp.config import Cfg
+from javsp.zh import normalize_nfo_text
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,24 @@ def _normalize_rating(score):
 def write_nfo(info: MovieInfo, nfo_file):
     """将存储了影片信息的'info'写入到nfo文件中"""
     # NFO spec: https://kodi.wiki/view/NFO_files/Movies
+    # genre/tag 的中文字体按用户选择的目标语言归一化: 各源的 genre 映射表 translate 列
+    # 与站点标签存在简繁混杂(实测同一份 NFO 里 '出轨' 与 '出軌'、'苗条' 与 '苗條'
+    # 并存), 在取数与生成模板字典之前原地统一 info.genre_norm/genre, 保证
+    # dic['genre'] 与实际写入的 <genre> 节点一致(自定义字段 {genre} 也受益)。
+    # 只在目标语言为中文时转换; 选英/日/法等语言时 genre 本就不翻译, 保持原样。
+    nfo_lang = getattr(Cfg().translator, 'language', None) or 'zh_CN'
+    if nfo_lang in ('zh_CN', 'zh_TW'):
+        for attr in ('genre_norm', 'genre'):
+            values = getattr(info, attr, None)
+            if values:
+                setattr(info, attr, [normalize_nfo_text(v, nfo_lang) for v in values])
+
     nfo = E.movie()
     dic = info.get_info_dic()
 
-    if info.nfo_title:
+    # nfo_title 由 core.generate_names 动态设置(命名规则.title_pattern 的结果),
+    # 直接调用 write_nfo 而未走整理流程时不存在该属性, 用 getattr 兜底
+    if getattr(info, 'nfo_title', None):
         nfo.append(E.title(info.nfo_title))
     else:
         nfo.append(E.title(info.title))

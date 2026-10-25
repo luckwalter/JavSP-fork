@@ -8,6 +8,119 @@
 
 ---
 
+## v0.3.16（2026-10-25）
+
+**NFO 中文字体一致性 + 同语言跳过翻译 + 空目录清理健壮化 —— v0.3.15 实测反馈驱动**
+
+### 背景与来源
+
+- v0.3.15 实测反馈三点：① 翻译开启后制作的 NFO 仍简体/繁体混用（实例：HOMA-170 的 `<genre>` 节点 `出轨` 与 `出軌`、`苗条` 与 `苗條` 并存）；② 整理过后源目录已空但未被删除；③ 追加需求：原文语种与所选输出语种相同时不翻译。
+- 定位结论：v0.3.15 的语种一致性只覆盖了 title/plot（走 LLM 翻译），**genre 字段从未走翻译**——它来自 javbus/javdb 的 genre 映射表与站点原文标签，而映射表的 `translate` 列本身就简繁混杂。
+
+### 新增
+
+- **同语言跳过翻译**（零依赖字符集判定）：新增 `_detect_source_lang`（平/片假名 → 日文；含汉字无假名 → 中文，简繁不分；无 CJK → 拉丁族）与 `_SAME_LANG_SKIP` 映射表——目标为简体/繁体中文而源文已是中文、或目标为日语而源文已含假名时，直接返回原文不打引擎；英/法/德/西目标**不启用**（拉丁语族内部无法零依赖区分，误跳过的代价高于多打一次调用）；空文本同样跳过（顺带省下百度/Google 的 QPS 配额）。`translate()` 入口兜底所有调用方；`translate_movie_info` 同语言时不记 `ori_title`/`ori_plot`，避免 NFO 的 `<originaltitle>` 变成原文的冗余副本。繁体源文 + 简体目标：不调 LLM，用字统一由落盘时的繁简归一化负责。
+- **空目录清理失败可见化**：`rename_files` 收集 `cleanup_failures`（路径 + 失败原因）→ `organize_movie` 写入 `result['leftover_dirs']` → SSE result 事件 → OrganizeView 在整理结果区显示警告条，列出未能自动删除的空目录路径，提示用户确认后手动删除。此前该失败只写 debug 日志，用户完全无感知。
+
+### 修复
+
+- **NFO genre 简繁混用**（v0.3.15 语言一致性的漏网字段）：genre 数据实际来自多源（javbus 的 `genre_norm` 简体映射值 + 另一源的繁体/日文原文标签），且映射表 `translate` 列上游即不统一（javbus 常规行是简体、uncensored 行是繁体；javdb 的 `單體作品` 行亦为繁体）。三层修复：
+  1. **新增 `javsp/zh.py`**：内置零第三方依赖的繁简归一化（数据整理自 MediaWiki 繁简对照表：词级保留 2~4 字 367/5172 条 + 全单字 4704/3909 条，最长匹配优先）。选它而非 opencc/zhconv 的原因：NAS 增量部署只同步 `javsp/` 目录，新增 pip 依赖到不了运行实例。
+  2. **`write_nfo` 落盘归一化**：按 `Translator.language` 在 `get_info_dic()` **之前**原地归一化 `info.genre_norm`/`info.genre`，保证 `<genre>` 节点与自定义字段 `{genre}` 拼接串、`<tag>` 三者一致；目标为繁体时简→繁，目标为英/日等非中文时不转换（genre 本就不随目标语言翻译）。实测 HOMA-170 的 15 个混杂节点收敛为 9 个全简体节点。
+  3. **映射表数据修正**：4 个 genre CSV 的 `translate` 列统一简体（javbus 207 行 + javdb 202 行；avsox/javlib 原本已一致）。**空 `translate` 行保持为空**——那是上游"此标签不写入 NFO"的语义（如 javbus `g`=DMM獨家，note 注明"发行商不作为影片标签"），填值反而违背上游意图。
+- **空目录清理静默失败**：rmdir 遭遇占用时只记 debug 日志。实测根因之一：Windows 桌面版经 SMB 整理 NAS 路径时，用户正用资源管理器停在该源目录，SMB 服务端对 rmdir 返回共享冲突（EBUSY/EACCES），而占用通常数秒内释放。改为**重试 3 次（间隔 0.8 秒）**，仍失败则 warning 日志 + `leftover_dirs` 上报。NAS 侧已排除代码版本（容器 md5 与仓库一致）、权限（root + 777，探测可建可删）、配置（`move_files: true`）等静态因素——动态占用场景由重试覆盖，无法解决的由提示覆盖。
+- **`write_nfo` 的 `nfo_title` 隐含依赖**（既有脆弱点）：该属性由 `core.generate_names` 动态挂载，未经整理流程直接调用 `write_nfo` 会 AttributeError；改为 `getattr` 兜底。
+
+### 部署
+
+- NAS 增量部署包新增 `data/` 目录：genre 映射表 CSV 经 `resource_path` 解析到容器 `/app/data`，而既有部署 tar 只含 `javsp/`，CSV 数据修正到不了运行实例。本次起 tar 与 `docker cp` 均带上 `data/`。
+
+### 验证
+
+- 单测 4 组全过（`test_nfo_zh.py` / `test_same_lang_skip.py` / `test_cleanup_retry.py` / `test_cleanup_repro.py`）：NFO 繁简收敛（15 → 9 个全简体节点、无繁体残留、无重复）/ 同语言跳过 21 项断言（语种检测、跳过判定、mock 引擎零调用、`ori_title` 不记）/ 清理重试（EBUSY×2 后第 3 次成功删除）/ 失败上报（持续 EACCES 时目录保留、失败记录含路径与原因、目标文件不受影响、`rename_files` 不抛异常）。
+- NAS 容器诊断（paramiko SSH + docker exec）：运行代码 0.3.15 与仓库 md5 一致、容器内 root、`/data/Leak` 777 且建删目录探测成功、`move_files: true`、`custom_genres_fields: ['{genre}', '{censor}']` 实锤为 NFO 拼接串来源。
+
+---
+
+---
+
+## v0.3.15（2026-10-25）
+
+**功能：翻译结果审阅 + 目标语种可选（7 语种）—— v0.3.14 实测反馈驱动**
+
+### 背景与来源
+
+- v0.3.14 发布后，作者以局域网 Windows 机器 + Ollama + `translategemma:4b` 实测翻译链路，反馈两点：① 翻译发生在落盘时，用户希望在「结果审阅」环节就看到每部的标题/简介译文，确认后再决定是否落盘；② NFO 里简繁体混用，希望目标语种自选且全文一致。
+- 追加需求：README 补充本地部署 Ollama 与模型的简要步骤（以作者部署为范例），并明确告知「无翻译需求的用户可跳过本节」。
+
+### 新增
+
+- **刮削阶段预翻译 + 审阅展示**：`javsp/server.py` 批量/单部刮削成功后按配置就地翻译（`_pre_translate`，失败不阻塞刮削结果），`movie_done` / `result` SSE 事件携带 `ori_title/title/plot/ori_plot`；前端 `QueueView` 日志记录透传，`ReviewView` 在每部影片下方展示**原文 → 译文对照**。
+- **审阅页单片开关**：翻译预览块内「落盘时使用此翻译」默认勾选；关闭后该部整理时传 `use_translate=false`，`organize_movie` 将 title/plot 还原为 ori_title/ori_plot 原文再写 NFO。选择按 avid 存 localStorage（`javsp:reviewNoTranslate`），`OrganizeView` 整理时读取。「刮削并整理」路径不经审阅，按默认翻译直接落盘（符合既有语义）。
+- **目标语种可选**：`Translator.language`（默认 `zh_CN`，旧配置兼容），设置页下拉 7 语种（简体中文/繁体中文/英语/日语/法语/德语/西班牙语）；`translate()` 入口与全部 5 引擎透传，`_LANGUAGES` 表统一换算各引擎语种码（百度 `jp/cht`、Bing `zh-Hans`…），未知 code 回落简体中文并告警。
+
+### 修复
+
+- **剧情双重翻译**（既有缺陷，v0.3.14 预翻译引入后必踩）：`translate_movie_info` 的 plot 分支缺幂等守卫，预翻译 + 落盘会两次翻译（译文累积语种漂移，正是简繁混用的源头之一）；补 `ori_plot is None` 守卫。
+- **LLM 不遵循目标语种**（实测）：`translategemma:4b` 指定英语时对短标题仍稳定输出中文（4B 小模型对纯文字指令遵循弱）；prompt 改为**语种指令前置 + few-shot 示例**（`こんにちは` → 目标语种译文），实测 7 语种输出全部正确，且 `temperature=0` 下重复请求结果一致。
+- **环境变量代理拦截本地模型**（既有缺陷）：`use_proxy=False` 时 `proxies=None` 会让 requests 回落 `HTTP_PROXY/HTTPS_PROXY` 环境变量——用户本机常开 Clash 等代理软件，连 `127.0.0.1` Ollama 的请求会被丢给代理导致超时（实测复现）；改为 Session + `trust_env=False`，`use_proxy=True` 时显式 proxies 仍优先于环境变量。
+
+### 文档
+
+- README 中英「翻译引擎」小节：开头新增「**不需要翻译？本节可整段跳过**」提示；新增「翻译的确认环节」「目标语种」两段说明；新增「**本地部署 Ollama 简要步骤**」（5 步，以作者局域网部署为范例）。
+- `config.yml` 模板：`translator.language` 字段及环境变量示例（`JAVSP_TRANSLATOR.LANGUAGE=zh_TW`）。
+
+### 验证
+
+- 后端 7 项（假 Ollama + 真实 server 链路，全过）：配置兼容（默认/显式语种）/ 七语种映射与未知回落 / prompt 约束 / **代理回归**（`HTTP_PROXY` 指向死端口时本地直连仍成功）/ 预翻译幂等（二次调用零翻译）/ `translate=False` 还原原文（NFO 含原文）/ 审阅字段完整。
+- Playwright UI 5 项（全过，console 零错误）：语种下拉 7 选项与默认值 / 语种切换 / 审阅预览原文译文渲染 / 开关取消后 localStorage 持久化 / 刷新后保持。
+- 真实 Ollama（`translategemma:4b`）三语种实测：`zh_CN`/`en`/`zh_TW` 标题与剧情输出全部正确，重复调用一致。
+
+---
+
+## v0.3.14（2026-10-25）
+
+**功能：翻译引擎拓展为「本地/云端大模型都能方便接入」（issue #5）—— 附带修复翻译设置页三个既有缺陷**
+
+### 背景与来源
+
+- 本翻译功能直接继承自上游 Yuukiy/JavSP：`javsp/web/translate.py` 的五引擎框架（baidu / bing / claude / openai / google）与 `translate_movie_info` 流程均为上游遗产，本 fork 此前未做改动。
+- 上游只有 `openai` 一个 LLM 引擎（OpenAI 兼容端点），没有面向本地部署的自定义入口：WebUI 不暴露端点地址与模型名，也没有代理开关与端点预设，用户想接本地模型只能手改 config.yml。
+- 契机：2026-10-25 用户 yang1560 提交 [issue #5「翻译引擎能加Ollama吗」](https://github.com/luckwalter/JavSP-fork/issues/5)，指出翻译运算成本不大、本地模型即可胜任（参考 PotPlayer 字幕翻译接 Ollama），不必依赖花钱的大厂 API。鉴于 AI 功能日益普及、本地推理门槛持续降低，遂将本功能从「能接 OpenAI」拓展为「本地/云端都能方便接入」。
+- 范围声明（设置页已明示）：本功能只翻译**影片标题与剧情简介**，不涉及电影字幕生成或语音转写（那需要另一套能力，未来或作为独立插件/项目提供）。
+
+### 设计决策：只做自定义接口，不在项目内集成任何大模型
+
+把某个模型/推理框架内置进本项目会让软件迅速臃肿（模型文件、依赖、GPU/CPU 适配都是无底洞），且用户的硬件与网络条件千差万别。因此本次只提供**标准 OpenAI 兼容接口**：端点地址、模型名、密钥均由用户自行填写，本地部署（Ollama / LM Studio）或云端源均可，部署形式完全自选。研究过程中对公共免费 AI 资源的评判（免费额度、国内直连可行性、成人内容适配——云端 API 在成人内容场景普遍不可用，本地模型是唯一稳妥路径）已整理进 README「翻译引擎」小节，供用户选型参考。
+
+### 新增
+
+- `javsp/config.py`：`ClaudeTranslateEngine` / `OpenAITranslateEngine` 新增 `use_proxy: bool = False`——勾选后翻译请求直接走「网络与容错」里配置的通用代理（`network.proxy_server`），无需重复填写；本地/局域网部署保持关闭。默认 False 兼容旧配置（挂载卷里的老 config.yml 缺此字段也能加载）。
+- `javsp/web/translate.py`：
+  - `claude_translate` / `openai_translate` 支持 `use_proxy`，打开时传 `proxies=read_proxy()`（此前除 google 外所有翻译引擎都不走代理，云端源在国内直连不通）；
+  - LLM 引擎超时从 20s 放宽到 120s（本地 CPU 推理一段剧情动辄 30-90s，原超时大量误判失败）；输出上限 `max_tokens` 1024 → 2048（长简介译文约 900-1400 tokens，原值会截断）；
+  - 新增共用的领域 system prompt：保留女优名、番号（如 ABC-123）、厂商/系列名等专有名词不译——通用 prompt 下这些常被译成似是而非的中文，导致 NFO 与文件名里的番号认不回去。
+- `frontend/src/views/SettingsView.vue` 翻译组重构：
+  - 选 OpenAI 兼容引擎时显示**端点预设下拉**（本地 Ollama / 局域网 Ollama / LM Studio / Groq / OpenRouter / SiliconFlow / ModelScope / Gemini，选中自动填地址与推荐模型；本地预设自动关代理、云端预设自动开代理）、**接口地址**与**模型名**输入框；
+  - 新增「使用通用代理」开关（仅 LLM 引擎显示）；
+  - 补上百度引擎的 **APP ID** 输入框（此前 WebUI 只有 api_key，app_id 只能手改 config.yml）；
+  - 翻译组顶部新增范围声明：仅翻译标题与剧情简介，不涉及字幕生成/语音转写。
+- `config.yml` 模板：openai/claude 示例补 `use_proxy` 注释与「本地 Ollama」示例块；环境变量示例从错误的双下划线改为 confz 2.x 正确的点号分隔（`JAVSP_TRANSLATOR.ENGINE.API_KEY`），并补 URL / MODEL / USE_PROXY 三项目的；openai 块注明功能来源（继承自上游、应 issue #5 拓展）。
+
+### 修复（翻译设置页既有缺陷，本次连带修复）
+
+1. **引擎下拉永远显示空白**：`v-model` 绑的是 engine 对象（confz discriminated union，GET 回来是 `{name: 'google'}`），option value 却是字符串，两者永不相等 → 界面与实际配置不符。
+2. **API 密钥从未真正存进 config.yml**：输入框写的是 `translator.api_key`（顶层），真实字段却在 `translator.engine.api_key`——diff 还会往 translator 块下插一个无效的顶层 api_key 行；且切换引擎后 engine 变成裸字符串，保存时 confz discriminator 校验直接 400。
+3. **engine 子字段二次修改静默丢失**（`javsp/config_io.py`）：engine 首次保存被写成单行 flow 映射（`engine: {name: openai, ...}`），之后再改模型名 / use_proxy / api_key，diff 报的叶子路径在文件里没有对应行 → 全部落入 missing，表现为「界面提示保存成功、配置却没生效」。新增 `_try_replace_flow_ancestor`：定位不到叶子时向上找单行 flow 祖先行，用合并后的完整子树整行替换（含吞掉跨行续行）；`apply_config_changes` 同步透传 merged。
+
+### 验证
+
+- 配置加载：openai/claude + use_proxy 校验通过；旧配置（无 use_proxy）兼容，默认 False。
+- 端到端（假 Ollama 服务 + 真实 server，12 项断言）：`openai_translate` 直调（use_proxy False/True）→ max_tokens=2048、领域 prompt、Authorization 头均正确；`translate_movie_info` 全链路（环境变量配置路径）→ title/plot 译文 + ori_title/ori_plot 原文保留；PUT → config.yml 中 engine dict 完整落盘（含 use_proxy 与明文密钥）；二次修改（use_proxy=true、model=glm-4-9b）→ 正确更新（修复 #3 前此步静默丢失）；掩码回传 → 真实密钥还原不丢失。
+- UI（Playwright，11 项断言）：引擎下拉回显 openai（修复 #1 前为空白）；端点/模型/代理开关按已存配置回显；密钥框掩码显示为空 + 「已配置」提示；「本地 Ollama」预设一键填充并自动关代理；切 Google → LLM 字段隐藏；切百度 → APP ID 框出现；切回 OpenAI → 字段恢复；console 零错误。
+
+---
+
 ## v0.3.13（2026-10-25）
 
 **修复：桌面版目录选择器回到「我的电脑」层级时页面崩溃（issue #4）—— 盘符列表因缩进错误膨胀成 O(n²) 重复项**
