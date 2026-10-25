@@ -292,8 +292,8 @@ defineExpose({ scanPath, movies, selectedGuids, doScan })
         <div v-if="browseVolumes.length" class="browser-volumes">
           <span class="browser-volumes-label">切换到:</span>
           <button
-            v-for="v in browseVolumes"
-            :key="v.path"
+            v-for="(v, vi) in browseVolumes"
+            :key="v.path + '#' + vi"
             class="browser-volume"
             :class="{ 'browser-volume--off': v.present === false }"
             :title="v.present === false ? '该盘当前不可用(未插入/未挂载)' : v.path"

@@ -580,10 +580,14 @@ def _list_volumes(current: str) -> List[dict]:
                 present = False
             (mounted if present else unmounted).append(
                 {'name': name, 'path': d, 'present': present})
-            # 已挂载盘全列(可点进去); 空盘位最多补 3 个作提示 —— 全列 25 个是噪音,
-            # 而主人卡住的点从来是"找不到可用的位置", 不是"看不到空盘符"
-            out.extend(mounted)
-            out.extend(unmounted[:3])
+        # 已挂载盘全列(可点进去); 空盘位最多补 3 个作提示 —— 全列 25 个是噪音,
+        # 而主人卡住的点从来是"找不到可用的位置", 不是"看不到空盘符"
+        # ⚠️ 这两行必须在 for 循环**外**: 曾误缩进到循环体内, 于是每轮都把已累计的
+        # mounted/unmounted 重复 extend 一次 → 列表长度变成 O(n²)(实测本机 3 个盘符
+        # 就返回 72 项, 盘符多的机器可达上千项) → 前端渲染出上千个重复按钮, 页面
+        # 直接卡死(2026-10-24 用户 issue #4: 回到"我的电脑"层级就崩溃)。
+        out.extend(mounted)
+        out.extend(unmounted[:3])
     # 当前在 UNC 路径下时, 附带同服务器其它共享(存在才列)
     if in_unc:
         server = drive_cur.split(os.sep, 2)[2] if drive_cur.count(os.sep) >= 2 else ''
