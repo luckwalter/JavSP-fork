@@ -8,6 +8,47 @@
 
 ---
 
+## v0.4.1（2026-10-26）
+> 说明：版本号由 v0.3.17 直接进到 v0.4.1 —— v0.4.0 仅作内部联调构建未对外发布（其 Windows 包保留为本次升级功能的实测基线）。
+
+**大版本：新增软件更新检查与一键升级能力（Windows 桌面版可自动完成升级）**
+
+> 本次发布同时收录此前已实现但未单独发版的 **v0.3.16**（已发 Release）与 **v0.3.17**（仅打 tag），并回填 [issue #5](https://github.com/luckwalter/JavSP-fork/issues/5)、[issue #6](https://github.com/luckwalter/JavSP-fork/issues/6) 的更新说明。
+
+### 新增：软件更新检查与升级（v0.4.1）
+
+- **启动时后台检查**：服务启动后延迟 5 秒在后台线程查询本仓库的最新 Release，**3 秒超时、失败静默**（网络不可达时绝不拖慢启动，也不弹任何错误）；结果缓存 6 小时。设置页「软件更新」可手动检查，并可开关启动时自动检查（复用上游遗留的 `other.check_update` 开关）。
+- **全局更新提示条**：发现新版本时在界面顶部提示「当前 vX → 最新 vY」，提供「发布说明 / 稍后 / 不再提示此版本」（按版本号记在 localStorage，同一版本不再打扰）。
+- **Windows 桌面版一键升级**：点「立即升级」→ 下载最新 Windows 安装包（带进度）→ 启动独立 helper 进程 → 主程序退出后由 helper 接管：**旧程序目录整体改名备份**（旧版无用的组件随旧目录一并清除，不残留）→ 解压新版落地 → **原样保留 `config.yml`、`.sessions.json`、`JavSP.log`** → 启动新版本。失败自动回滚到旧目录。
+- **Docker 部署指引**：容器内无法替换自身镜像，提示条直接给出可复制的更新命令 `docker load -i javsp-fork-<版本>-image.tar.gz && docker restart javsp` 与发布页链接。
+
+### 技术要点
+
+- **新增 `javsp/update.py`**：版本检测、资产下载、helper 生成。重写了上游 `javsp/func.py` 里那套 CLI 版 `check_update`/`download_update`——上游查的是**上游仓库**的 releases（对本 fork 无效）、是 CLI 打印式未接 WebUI，且其自动更新靠"重命名运行中的 exe"，而 **Windows 不允许替换正在运行的 exe**，该路径实际必然失败。
+- **版本比较用语义比较**（`packaging.version`）：字符串比较会把 `0.3.9` 判成比 `0.3.17` 新。
+- **走项目通用代理**（`network.proxy_server`）并沿用 `tls_verify()`：否则国内直连 GitHub API 会超时，或在 HTTPS 代理做 TLS 解密时抛证书错误。
+- **helper 用 PowerShell 而非 cmd**，且脚本以 **UTF-8 BOM** 落盘（PowerShell 5.1 读无 BOM 的 UTF-8 会按 ANSI 解码，中文路径会乱码）；`Expand-Archive` 为 Win10 自带，无需额外依赖。
+- **更新包路径校验**：只允许应用程序自己下载目录内的 zip，避免被诱导覆盖任意路径。
+
+### 修复（v0.3.16 / v0.3.17，随本次一并发布）
+
+- **NFO 简繁混用**（issue #5 之外的独立反馈）：genre 字段从未走翻译，且映射表 translate 列本身简繁混杂。修复含三层——新增 `javsp/zh.py` 内置零依赖繁简归一化、`write_nfo` 按目标语种原地归一化 genre、4 个 genre 映射表 translate 列统一简体（空值保持空 = 上游"不写入"语义）。
+- **同语言跳过翻译**：原文已是目标语种时直接采用原文，不调用翻译引擎。
+- **整理后源空目录未删**：rmdir 重试 3 次，仍失败则在整理结果区列出待手动删除的目录。
+- **多分片(CD)影片只移动了第一个分片**（[issue #6](https://github.com/luckwalter/JavSP-fork/issues/6)）：多分片分支原为"一错全停"——任一分片抛异常即中断整个循环，呈现为"只移动了 CD1"且失败原因不可见。现改为逐分片容错 + 移动前预检目标冲突 + 失败明细在界面逐条列出。
+- **翻译引擎接入本地大模型**（[issue #5](https://github.com/luckwalter/JavSP-fork/issues/5)）：OpenAI 引擎支持自定义端点/模型/代理开关，本地 Ollama、LM Studio 与云端 Groq/OpenRouter/SiliconFlow 等 OpenAI 兼容源零改接入；prompt 做 JAV 领域优化；不内嵌任何模型。
+- **刮削阶段预翻译 + 审阅确认**：审阅页展示原文→译文对照，可按片关闭；目标语种 7 选 1。
+
+### 验证
+
+- 新增 `unittest/test_update.py`（7 项）：语义版本比较（含 `0.3.9 < 0.3.17` 与非法版本号）/ 网络不可达时静默返回 None / 有更新时返回完整信息与资产 / Windows 资产挑选 / Docker 指引内容 / 用户数据保留清单 / helper 脚本内容与 UTF-8 BOM。
+- 全量回归 22 项通过（`test_update` 7 + `test_multicd_move` 4 + `test_cleanup_retry` 3 + `test_nfo_zh` 4 + `test_same_lang_skip` 4）。
+- 端点级验证：`GET /api/update/check` 返回 200 且不被静态文件挂载拦截（更新端点注册在 `app.mount('/')` 之前，否则会被通配路由接管）。
+
+---
+
+---
+
 ## v0.3.17（2026-10-25）
 
 **修复：多分片(CD)影片整理时只移动了第一个分片（issue #6）**

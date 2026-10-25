@@ -139,6 +139,30 @@ export function scrapeStream(payload, onEvent) {
   return consumeSSE(BASE + '/api/scrape', payload, onEvent)
 }
 
+// ---- 软件更新 ----
+// 检查是否有新版本。不可达时后端返回 available=false(不报错), 前端据此不提示。
+export async function checkUpdate(force = false) {
+  const r = await request('/api/update/check' + (force ? '?force=true' : ''))
+  if (!r.ok) throw new Error(await readDetail(r, '检查更新失败'))
+  return r.json()
+}
+
+// 下载更新包(SSE 进度): onEvent 收到 {type:'progress'|'result'|'error'}
+export function downloadUpdate(onEvent) {
+  return consumeSSE(BASE + '/api/update/download', {}, onEvent)
+}
+
+// 应用已下载的更新包: 后端启动 helper 进程后主进程会退出并重启
+export async function applyUpdate(zipPath) {
+  const r = await request('/api/update/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ zip_path: zipPath }),
+  })
+  if (!r.ok) throw new Error(await readDetail(r, '应用更新失败'))
+  return r.json()
+}
+
 export function organizeStream(guid, onEvent, useTranslate = null) {
   // useTranslate: null=按服务端配置(默认); false=审阅页对该部关闭了"落盘时使用此翻译",
   // 落盘还原刮削阶段生成的译文所对应的原文

@@ -12,6 +12,7 @@ import string
 import threading
 import hashlib
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple
 
@@ -32,6 +33,7 @@ from javsp.core import (
 from javsp.datatype import Movie
 from javsp.task_store import TaskStore
 from javsp import auth
+from javsp import update as update_mod
 from javsp.web import health as channel_health
 from javsp.web.translate import translate_movie_info
 
@@ -124,6 +126,21 @@ async def lifespan(app: FastAPI):
 
     _prune_thread = threading.Thread(target=_prune_loop, daemon=True, name='session-prune')
     _prune_thread.start()
+
+    # 启动时后台检查软件更新: 延迟几秒再查, 不与启动流程抢资源。
+    # 网络不可达时静默失败(3 秒超时), 绝不拖慢启动 —— 更新检查是辅助能力。
+    def _update_check_once():
+        time.sleep(5)
+        try:
+            if not getattr(Cfg().other, 'check_update', True):
+                return
+            info = update_mod.check_latest()
+            if info:
+                logger.info(f"发现新版本 {info['latest']} (当前 {info['current']}): {info['url']}")
+        except Exception as e:      # noqa: BLE001 后台线程绝不能因异常而静默死亡
+            logger.debug(f'检查更新失败(忽略): {e}')
+
+    threading.Thread(target=_update_check_once, daemon=True, name='update-check').start()
     yield
     _prune_stop.set()
     channel_health.stop_auto_probe()
@@ -953,6 +970,112 @@ def _resolve_dist_dir() -> str:
         return os.path.join(base, 'frontend', 'dist')
     return os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'frontend', 'dist')
+
+# ---------------------------------------------------------------------------
+# 软件更新接口
+# 注: 必须注册在静态文件挂载(app.mount('/'))之前 —— 否则 /api/update/* 会被
+# 静态挂载的通配路由接管。
+# ---------------------------------------------------------------------------
+
+class UpdateApplyRequest(BaseModel):
+    """应用更新包: 传入已下载的 zip 路径(后端会校验其位于自己的下载目录内)"""
+    zip_path: str
+
+
+def _update_dir() -> str:
+    """更新包存放目录: 桌面版放在 exe 同级的 update/ 下, 其余用系统临时目录"""
+    if update_mod.is_frozen():
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        import tempfile
+        base = os.path.join(tempfile.gettempdir(), 'javsp_update')
+    path = os.path.join(base, 'update')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+@app.get('/api/update/check')
+def api_update_check(force: bool = False):
+    """检查软件更新
+
+    网络不可达 / 仓库无 release / 已是最新 时一律返回 available=False, 不抛异常
+    —— 前端据此不显示任何提示, 用户不会被无意义的报错打扰。
+    """
+    try:
+        info = update_mod.check_latest(force=force)
+    except Exception as e:      # noqa: BLE001
+        logger.debug(f'检查更新失败(忽略): {e}')
+        info = None
+    return {
+        'available': bool(info),
+        'current': update_mod.local_version(),
+        'info': info,
+        'frozen': update_mod.is_frozen(),
+        'container': update_mod.is_container(),
+        'docker_hint': update_mod.docker_upgrade_hint(info['latest']) if info else '',
+        'auto_update': bool(getattr(Cfg().other, 'auto_update', False)),
+    }
+
+
+@app.post('/api/update/download')
+def api_update_download():
+    """下载最新版本的 Windows 桌面版安装包, SSE 推送下载进度"""
+    info = update_mod.check_latest(force=True)
+    if not info:
+        raise HTTPException(status_code=404, detail='未获取到最新版本信息(请检查网络连接)')
+    asset = update_mod.select_windows_asset(info)
+    if not asset:
+        raise HTTPException(status_code=404, detail='该发布未提供 Windows 桌面版安装包')
+    dest = os.path.join(_update_dir(), asset['name'])
+
+    def event_gen():
+        q: queue.Queue = queue.Queue()
+
+        def run():
+            try:
+                def progress(done, total):
+                    q.put({'type': 'progress', 'downloaded': done, 'total': total})
+                update_mod.download_asset(asset['url'], dest, progress)
+                q.put({'type': 'result', 'path': dest, 'size': os.path.getsize(dest)})
+            except Exception as e:
+                q.put({'type': 'error', 'msg': str(e)})
+            finally:
+                q.put(None)
+
+        threading.Thread(target=run, daemon=True).start()
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield sse_pack(item)
+
+    return StreamingResponse(event_gen(), media_type='text/event-stream')
+
+
+@app.post('/api/update/apply')
+def api_update_apply(req: 'UpdateApplyRequest'):
+    """应用已下载的更新包: 启动 helper 进程后退出主进程
+
+    helper 会等待本进程退出, 再把旧程序目录改名备份、解压新版到位、保留
+    config.yml 并启动新版本(详见 javsp/update.py)。
+    """
+    if not update_mod.is_frozen():
+        raise HTTPException(status_code=400, detail='当前不是桌面版(exe)部署, 请改用镜像/源码方式更新')
+    zip_path = os.path.abspath(req.zip_path)
+    allowed = os.path.abspath(_update_dir())
+    # 只允许应用自己下载目录里的包, 避免被诱导覆盖任意路径
+    if not zip_path.startswith(allowed + os.sep) or not zip_path.lower().endswith('.zip'):
+        raise HTTPException(status_code=400, detail='非法的更新包路径')
+    if not os.path.isfile(zip_path):
+        raise HTTPException(status_code=404, detail='更新包不存在, 请先下载')
+    try:
+        res = update_mod.apply_windows_update(zip_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'启动更新助手失败: {e}')
+    # 给 HTTP 响应留出发送时间, 然后退出主进程(由 helper 接手覆盖与重启)
+    threading.Timer(1.5, lambda: os._exit(0)).start()
+    return {'ok': True, 'helper_pid': res['pid']}
+
 
 _dist_dir = _resolve_dist_dir()
 if os.path.isdir(_dist_dir):

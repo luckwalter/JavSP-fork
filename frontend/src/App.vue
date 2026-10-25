@@ -18,6 +18,7 @@ import { ref, computed, onMounted, onUnmounted, provide, inject } from 'vue'
 
 import NavRail from './components/NavRail.vue'
 import StatusBar from './components/StatusBar.vue'
+import UpdateBanner from './components/UpdateBanner.vue'
 import LoginView from './components/LoginView.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 
@@ -267,6 +268,9 @@ onUnmounted(() => {
     <div class="app-main">
       <main class="app-content">
         <div class="content-inner">
+          <!-- 软件更新提示(仅在发现新版本时出现; 检查失败静默) -->
+          <UpdateBanner />
+
           <!-- 动态组件承载当前页面; 状态经 sessionStorage 保持, 刷新可接续 -->
           <component
             :is="currentView"
