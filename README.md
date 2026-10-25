@@ -14,7 +14,9 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.3.16-blue.svg)
+![Version](https://img.shields.io/badge/version-0.3.17-blue.svg)
+
+> **📌 下个版本预告**：将进行**例行 bug 修复**，并新增**软件更新检查**功能（自动检测新版本并提示，无需手动比对下载）。当前版本的使用不受影响，可放心使用。
 
 ## 功能特点
 
@@ -267,7 +269,7 @@ translator:
 
 ## 版本规则
 
-本项目**不沿用上游版本号**，从 `0.0.1` 起步：小变更（修补/微调）第三位 +1；大变更（功能/架构）第二位 +1 且第三位归 1；正式稳定版 `1.0.0`。**当前版本：0.3.16**。
+本项目**不沿用上游版本号**，从 `0.0.1` 起步：小变更（修补/微调）第三位 +1；大变更（功能/架构）第二位 +1 且第三位归 1；正式稳定版 `1.0.0`。**当前版本：0.3.17**。
 
 版本号以 `pyproject.toml` 为唯一权威来源，`python sync_version.py` 同步到 `frontend/package.json` / `package-lock.json` / `README.md`，`python sync_version.py --check` 可校验一致性（README 的版本徽章与「当前版本」两处标记，任一缺失或写法变化都会报错，不会静默放行）；跨环境部署（如 NAS 容器）另用 `python sync_version.py --check-target <路径>` 校验目标环境里的 `pyproject.toml`。完整的版本迭代记录见 **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)**（本 fork 独立维护，不覆盖上游 `CHANGELOG.md`）。
 

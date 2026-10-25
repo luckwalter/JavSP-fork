@@ -110,11 +110,19 @@ def scan_movies(root: str) -> List[Movie]:
     skipped_files = list(itertools.chain(*small_videos.values()))
     skipped_cnt = len(skipped_files)
     if skipped_cnt > 0:
+        # 用 warning 而非 info: 这些文件是被**丢弃**的(没进扫描结果, 也就不会参与
+        # 整理)。若它们本该是某部影片的其它分片(多 CD 场景常见: 后续分片体积
+        # 小于阈值), 会出现"只整理了 CD1、其余分片原地不动"的现象 ——
+        # 必须在日志里醒目提示, 否则用户无从察觉(issue #6 排查要点)。
         if len(has_avid) > 0:
-            logger.info(f"跳过了 {', '.join(has_avid)} 等{skipped_cnt}个小于指定大小的视频文件")
+            logger.warning(f"跳过了 {', '.join(has_avid)} 等{skipped_cnt}个小于指定大小的视频文件")
         else:
-            logger.info(f"跳过了{skipped_cnt}个小于指定大小的视频文件")
-        logger.debug('跳过的视频文件如下:\n' + '\n'.join(skipped_files))
+            logger.warning(f"跳过了{skipped_cnt}个小于指定大小的视频文件")
+        # 文件清单可能很长: 前若干个用 warning 打出, 其余留在 debug
+        for f in skipped_files[:20]:
+            logger.warning(f"  未纳入扫描(体积小于阈值): {f}")
+        if len(skipped_files) > 20:
+            logger.debug('跳过的视频文件如下:\n' + '\n'.join(skipped_files[20:]))
     # 检查是否有多部影片对应同一个番号
     non_slice_dup = {}  # avid: [abspath1, abspath2...]
     for avid, files in dic.copy().items():

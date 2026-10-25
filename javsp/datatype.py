@@ -136,6 +136,7 @@ class Movie:
         self.dvdid = dvdid              # DVD ID，即通常的番号
         self.cid = cid                  # DMM Content ID
         self.files = []                 # 关联到此番号的所有影片文件的列表（用于管理带有多个分片的影片）
+        self.move_failures = []         # 未能移动的分片明细(多分片影片逐个处理时可能有失败项)
         self.data_src = 'normal'        # 数据源：不同的数据源将使用不同的爬虫
         self.info: MovieInfo = None     # 抓取到的影片信息
         self.save_dir = None            # 存放影片、封面、NFO的文件夹路径
@@ -174,7 +175,14 @@ class Movie:
         return __class__.__name__ + expression
 
     def rename_files(self, use_hardlink: bool = False) -> None:
-        """根据命名规则移动（重命名）影片文件"""
+        """根据命名规则移动（重命名）影片文件
+
+        多分片(CD)影片逐个分片独立处理: 某个分片移动失败(目标已存在、源文件
+        被占用/失效、跨卷等)时**不再中断其余分片**, 失败明细记入
+        self.move_failures 供上层提示用户。此前是一错全停 —— 一部 3 分片的
+        影片只要第 2 个分片出错, 就会停在"只移动了 CD1"的状态, 而失败原因
+        只在异常栈里, 用户完全看不到(issue #6)。
+        """
         def move_file(src:str, dst:str):
             """移动（重命名）文件并记录信息到日志"""
             abs_dst = os.path.abspath(dst)
@@ -192,6 +200,8 @@ class Movie:
             filemove_logger.debug(f'移动（重命名）文件: \n  原路径: "{src}"\n  新路径: "{abs_dst}"')
 
         new_paths = []
+        # 记录未能移动的分片: [{'path': 源路径, 'target': 目标路径, 'reason': 原因}]
+        failures = []
         dir = os.path.dirname(self.files[0])
         if len(self.files) == 1:
             fullpath = self.files[0]
@@ -200,12 +210,30 @@ class Movie:
             move_file(fullpath, newpath)
             new_paths.append(newpath)
         else:
+            # 先算出全部分片的目标路径, 再逐个处理:
+            # 目标已存在的分片**直接跳过**(不动源文件), 其余分片照常移动 ——
+            # 避免"边移边失败"留下的半成品状态(移了 CD1 却没移 CD2/CD3)。
+            plans = []
             for i, fullpath in enumerate(self.files, start=1):
                 ext = os.path.splitext(fullpath)[1]
                 newpath = os.path.join(self.save_dir, self.basename + f'-CD{i}' + ext)
-                move_file(fullpath, newpath)
+                plans.append((i, fullpath, newpath))
+            for i, fullpath, newpath in plans:
+                if os.path.exists(os.path.abspath(newpath)):
+                    reason = f'FileExistsError: 目标已存在: {newpath}'
+                    logger.warning(f"分片 CD{i} 未移动(目标已存在): '{fullpath}'")
+                    failures.append({'path': fullpath, 'target': newpath, 'reason': reason})
+                    continue
+                try:
+                    move_file(fullpath, newpath)
+                except Exception as e:
+                    # 单个分片失败不影响其余分片: 记录后继续
+                    logger.warning(f"分片 CD{i} 移动失败(其余分片继续): '{fullpath}' -> '{newpath}': {e}")
+                    failures.append({'path': fullpath, 'target': newpath, 'reason': f'{type(e).__name__}: {e}'})
+                    continue
                 new_paths.append(newpath)
         self.new_paths = new_paths
+        self.move_failures = failures
         # 记录本次整理未能自动清理的空目录(供 Web 端提示用户手动处理)
         self.cleanup_failures = []
         # 移动后源目录可能变空。单层 os.rmdir 只删最内层, 嵌套目录(如

@@ -115,7 +115,9 @@ async function organizeOne(movie, opts = {}) {
         const path = (d.result && (d.result.saved_path || d.result.movie_path)) || '完成'
         // leftover_dirs: 源目录已空但自动删除失败(被占用/权限), 收集后提示用户手动处理
         const leftover = (d.result && d.result.leftover_dirs) || []
-        results.value = { ...results.value, [movie.guid]: { ok: true, path, leftover } }
+        // move_failures: 多分片影片里个别分片未移动(目标已存在/源文件被占用等)
+        const moveFailures = (d.result && d.result.move_failures) || []
+        results.value = { ...results.value, [movie.guid]: { ok: true, path, leftover, moveFailures } }
         load()  // 刷新 organized 真实态: 使按钮变"已落盘"并禁用, 避免重复整理
       }
       if (d.type === 'error') {
@@ -196,6 +198,14 @@ const leftoverDirs = computed(() => {
   }
   return all
 })
+// 多分片影片里未能移动的分片(其余分片已移动), 需明确提示而非静默
+const moveFailures = computed(() => {
+  const all = []
+  for (const r of Object.values(results.value)) {
+    if (r.ok && r.moveFailures && r.moveFailures.length) all.push(...r.moveFailures)
+  }
+  return all
+})
 
 onMounted(load)
 </script>
@@ -268,6 +278,21 @@ onMounted(load)
           <ul style="margin: 0; padding-left: 1.4em; line-height: 1.7;">
             <li v-for="(item, i) in leftoverDirs" :key="i">
               <code>{{ item.path }}</code>
+            </li>
+          </ul>
+        </div>
+
+        <!-- 多分片(CD)影片里个别分片未能移动: 其余分片已就位, 失败项需用户处理 -->
+        <div v-if="moveFailures.length" class="notice notice--warning"
+             style="margin-bottom: var(--space-4); max-width: 760px;">
+          <p style="margin: 0 0 var(--space-2);">
+            <strong>{{ moveFailures.length }} 个分片未能移动</strong>
+            （其余分片已正常移动），常见原因：目标已存在、源文件被其它程序占用。
+          </p>
+          <ul style="margin: 0; padding-left: 1.4em; line-height: 1.7;">
+            <li v-for="(item, i) in moveFailures" :key="i">
+              <code>{{ item.path }}</code>
+              <span class="dim">— {{ item.reason }}</span>
             </li>
           </ul>
         </div>

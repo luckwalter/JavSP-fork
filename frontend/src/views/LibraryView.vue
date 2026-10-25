@@ -27,6 +27,16 @@ const browseVolumes = ref([])
 const browseRoot = ref('')
 const jumpPath = ref('')
 
+// 下个版本预告(例行 bug 修复 + 软件更新检查功能)。可关闭, 关闭后不再打扰。
+const NEXT_NOTICE_KEY = 'javsp:hideNextVersionNotice'
+const showNextNotice = ref(
+  (() => { try { return localStorage.getItem(NEXT_NOTICE_KEY) !== '1' } catch { return true } })()
+)
+function dismissNextNotice() {
+  showNextNotice.value = false
+  try { localStorage.setItem(NEXT_NOTICE_KEY, '1') } catch { /* 忽略存储异常 */ }
+}
+
 watch([scanPath, movies], () => {
   saveState('scanPath', scanPath.value)
   // 影片列表可能很大(含 files 数组), 只持久化表格需要的字段, 避免撑爆 sessionStorage
@@ -161,6 +171,16 @@ defineExpose({ scanPath, movies, selectedGuids, doScan })
     <div class="page-head">
       <h1 class="page-title">影片库</h1>
       <p class="page-desc">选择媒体目录并扫描, 然后选择要刮削的影片</p>
+    </div>
+
+    <!-- 下个版本预告: 例行 bug 修复 + 软件更新检查功能(可关闭, 关闭后不再显示) -->
+    <div v-if="showNextNotice" class="notice notice--info"
+         style="margin-bottom: var(--space-4); display: flex; align-items: flex-start; gap: var(--space-3);">
+      <div style="flex: 1;">
+        <strong>下个版本预告</strong>：将进行例行 bug 修复，并新增<strong>软件更新检查</strong>功能
+        （自动检测新版本并提示，无需手动比对下载）。
+      </div>
+      <button class="btn btn--sm btn--ghost" @click="dismissNextNotice">知道了</button>
     </div>
 
     <!-- 目录选择 -->

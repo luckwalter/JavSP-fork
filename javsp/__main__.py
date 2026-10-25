@@ -197,6 +197,9 @@ def RunNormalMode(all_movies):
                 inner_bar.set_description('移动影片文件')
                 movie.rename_files(Cfg().summarizer.path.hard_link)
                 check_step(True)
+                # 多分片影片里个别分片未移动时明确提示(其余分片已移动)
+                for mf in getattr(movie, 'move_failures', []) or []:
+                    logger.warning(f"分片未移动: {mf['path']} -> {mf['target']} ({mf['reason']})")
                 logger.info(f'整理完成，相关文件已保存到: {movie.save_dir}\n')
             else:
                 saved_to = movie.nfo_file if output_enabled('nfo') else movie.save_dir

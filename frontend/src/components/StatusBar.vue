@@ -86,6 +86,8 @@ function cycleTheme() {
       <span v-if="user" class="statusbar-user">{{ user }}</span>
       <button v-if="user" class="link-btn" @click="emit('logout')">退出</button>
       <span class="statusbar-version">v{{ version || '—' }}</span>
+      <!-- 下个版本预告标记: 例行 bug 修复 + 软件更新检查功能 -->
+      <span class="statusbar-next" title="下个版本将进行例行 bug 修复, 并新增软件更新检查功能">下版预告</span>
     </div>
   </footer>
 </template>
@@ -130,6 +132,16 @@ function cycleTheme() {
 
 .statusbar-user { color: var(--color-text-secondary); }
 .statusbar-version { color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
+
+/* 下版预告标记: 低调但可见, 悬停有说明 */
+.statusbar-next {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 0 0.4em;
+  cursor: default;
+}
 
 /* 主题按钮: 固定 2 字宽, 四种模式标签都是 2 字, 切换时宽度不抖动 */
 .theme-btn { min-width: 2em; text-align: center; }

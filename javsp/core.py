@@ -816,6 +816,15 @@ def organize_movie(movie: Movie, progress_cb: ProgressCb = None,
             leftovers = getattr(movie, 'cleanup_failures', None)
             if leftovers:
                 result['leftover_dirs'] = leftovers
+            # 多分片影片里个别分片未能移动(目标已存在/源文件被占用等)时,
+            # 其余分片照常移动, 失败明细上报 —— 避免"只移动了 CD1"且无从得知
+            # (issue #6)
+            move_failures = getattr(movie, 'move_failures', None)
+            if move_failures:
+                result['move_failures'] = move_failures
+                result['partial'] = True
+                result['errors'].append(
+                    f"move: {len(move_failures)} 个分片未移动(其余已移动)")
         except Exception as e:
             logger.error(f"移动影片文件失败: {e}")
             result['status'] = 'move_failed'
