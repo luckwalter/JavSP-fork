@@ -22,7 +22,11 @@ const errorMsg = ref('')
 const copied = ref(false)
 
 const current = computed(() => (info.value && info.value.current) || '')
-const latest = computed(() => (info.value && info.value.latest) || '')
+// 版本号在 info.info.latest(顶层只有 available/current/frozen/container 等状态位), 此前少取一层导致显示成 '发现新版本 v'
+const latest = computed(() => {
+  const d = info.value && info.value.info
+  return (d && d.latest) || (info.value && info.value.latest) || ''
+})
 const isWindows = computed(() => !!(info.value && info.value.frozen))
 const isContainer = computed(() => !!(info.value && info.value.container))
 const dockerHint = computed(() => (info.value && info.value.docker_hint) || '')
