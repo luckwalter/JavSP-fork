@@ -40,6 +40,16 @@
 - 单测 4 组全过（`test_nfo_zh.py` / `test_same_lang_skip.py` / `test_cleanup_retry.py` / `test_cleanup_repro.py`）：NFO 繁简收敛（15 → 9 个全简体节点、无繁体残留、无重复）/ 同语言跳过 21 项断言（语种检测、跳过判定、mock 引擎零调用、`ori_title` 不记）/ 清理重试（EBUSY×2 后第 3 次成功删除）/ 失败上报（持续 EACCES 时目录保留、失败记录含路径与原因、目标文件不受影响、`rename_files` 不抛异常）。
 - NAS 容器诊断（paramiko SSH + docker exec）：运行代码 0.3.15 与仓库 md5 一致、容器内 root、`/data/Leak` 777 且建删目录探测成功、`move_files: true`、`custom_genres_fields: ['{genre}', '{censor}']` 实锤为 NFO 拼接串来源。
 
+### 发版状态（2026-10-25 21:20）
+
+- **提交** `cbe4113`（28 文件）→ master；tag `v0.3.16` 已推。本次合并发布 0.3.14 ~ 0.3.16 三个此前未发布的功能版本。
+- **三处部署全绿**：NAS Docker（health 0.3.16、前端资产 `index-0o4dpCpu.js`、GenreMap `['出轨']['单体作品'][]`、zh 双向转换、挂载卷 config.yml md5 `8c217e09` 未动）；Windows 本机 `C:\JavSP` 与网盘 `\\HOMENAS\Downloads\JavSP`（各 854 文件、exe 10.9MB、旧 config.yml md5 一致保留、旧版备份 `.bak20261025`）；本机 exe 实跑 health 0.3.16。
+- **镜像**：`docker commit` 打正标签 `javsp-fork:0.3.16`（249MB，标签与运行代码一致），导出 `javsp-fork-0.3.16-image.tar.gz` 84.4MB（sha256 `28cdf4d5e9f1949933b55a45f4d6c7b07300bf00b52ae2774e817df0067ae5e1`）。
+- **Release**：id `423414959`，https://github.com/luckwalter/JavSP-fork/releases/tag/v0.3.16 —— 三资产（镜像 tar.gz / Windows zip 37.1MB / sha256 清单）已上传并线上核对（draft=False, prerelease=False）。
+- **issue #5**（yang1560「翻译引擎能加Ollama吗」）：已回复三步配置指引（评论 id `6398165484`）并置为 `closed / completed`（临时关闭，有后续反馈可再打开）。
+- **NAS 发版后清理**：悬空镜像 1 个 + 构建缓存 5 项清零，docker root 1.2G，javsp / javboss 容器运行正常。
+- **凭据**：GitHub connector(MCP) App 建 Release/发 issue 评论仍 403（仅仓库读写权限），本次用主人 classic PAT 经环境变量 `GH_PAT` 传入（不落盘、不入库、不记入记忆）。
+
 ---
 
 ---
