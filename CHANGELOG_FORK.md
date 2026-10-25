@@ -32,6 +32,13 @@
 - API：`/api/browse?path=C:\` → volumes 3 项、`parent=None`（根层级不再把自己算成自己的上级）。
 - 端到端（Playwright 真实点开目录选择器 → 输入 `C:\` 跳到根层级）：盘符按钮 **3 个、重复项 0**，console/page 错误 0；弹窗布局恢复正常（修复前被上千个按钮撑爆并溢出屏幕）。
 
+### 发版实测（2026-10-25）
+
+- 桌面 exe 实跑：`/api/health` 回 `{"status":"ok","version":"0.3.13"}`；对**真实 exe** 再跑一遍端到端 UI 验证（打开目录选择器 → 跳到盘符根）→ 盘符按钮 3 个、重复项 0、console 零错误。
+- NAS 部署全绿：`javsp-fork:0.3.13`（`3fe892144d24`，235MB）重建容器 → `/api/health` 报 `0.3.13`；挂载源 `/share/CACHEDEV2_DATA/javsp_config`；前端资产自洽；代码标记校验通过；旧容器已删。
+- 部署位置：本地 `C:\JavSP` 与网盘 `\\HOMENAS\Downloads\JavSP`（两处 config.yml 均保留原样，旧版备份 `.bak20261025`）。
+- GitHub Release：镜像 + exe 双资产上传成功（镜像 sha256 `0b128bfd0a9c73a8a65e8afe2dcdb736588dabbd4a43021092a1a03e9eb74dba`，exe sha256 `f2d438dfd137065db33699a35aa894054a895b1d2d6d9e6131fe9d56db793466`）；对应 issue #4 已回复并关闭。
+
 ---
 
 ## v0.3.12（2026-10-24）
