@@ -47,9 +47,33 @@ const GROUPS = [
   { key: 'summarizer', label: '输出控制', hint: '不想生成的东西可以关掉' },
   { key: 'appearance', label: '外观', hint: '主题与界面亮度' },
   { key: 'translator', label: '翻译', hint: '标题与剧情的自动翻译' },
+  { key: 'update', label: '软件更新', hint: '检查新版本并升级' },
 ]
 
 const currentGroup = computed(() => GROUPS.find((g) => g.key === activeGroup.value) || GROUPS[0])
+
+// ---- 软件更新 ----
+const updateInfo = ref({ available: false, current: '', info: null })
+const checkingUpdate = ref(false)
+const updateMsg = ref('')
+
+async function checkUpdateNow() {
+  checkingUpdate.value = true
+  updateMsg.value = ''
+  try {
+    const res = await api.checkUpdate(true)
+    updateInfo.value = res
+    if (res.available && res.info) {
+      updateMsg.value = `发现新版本 v${res.info.latest}（当前 v${res.current}）`
+    } else {
+      updateMsg.value = '当前已是最新版本'
+    }
+  } catch (e) {
+    updateMsg.value = '检查失败（网络不可达时属正常现象）'
+  } finally {
+    checkingUpdate.value = false
+  }
+}
 
 // 选源(启用哪些源/哪些番号类别)已于 2026-10-17 迁移到「刮削源」页(ChannelsView):
 // 选源 chip + 实时健康状态合一, 避免两处可改同一字段而漂移。
@@ -724,6 +748,46 @@ onMounted(load)
                 <span class="switch-text">
                   <span class="switch-title">翻译剧情</span>
                   <span class="switch-desc">简介文本翻译, 耗时随引擎而定(本地大模型在 CPU 上可能较慢)</span>
+                </span>
+              </label>
+            </div>
+          </template>
+
+          <!-- 软件更新 -->
+          <template v-else-if="currentGroup.key === 'update'">
+            <div class="notice notice--info" style="margin-bottom: var(--space-4);">
+              启动时会后台检查一次新版本（网络不可达时静默跳过，不会拖慢启动）；
+              发现新版本会在界面顶部提示。桌面版可一键升级，容器部署请按提示的命令更新镜像。
+            </div>
+
+            <div class="field">
+              <label class="field-label">当前版本</label>
+              <p class="field-hint" style="margin-top: 0;">
+                v{{ updateInfo.current || runtime?.version || '—' }}
+                <template v-if="updateInfo.info">　→　最新 v{{ updateInfo.info.latest }}</template>
+              </p>
+            </div>
+
+            <div class="field">
+              <label class="field-label">检查更新</label>
+              <div style="display: flex; align-items: center; gap: var(--space-3);">
+                <button class="btn btn--sm" :disabled="checkingUpdate" @click="checkUpdateNow">
+                  <span v-if="checkingUpdate" class="spinner" aria-hidden="true"></span>
+                  {{ checkingUpdate ? '检查中…' : '立即检查' }}
+                </button>
+                <span class="field-hint" style="margin: 0;">
+                  <template v-if="updateMsg">{{ updateMsg }}</template>
+                  <template v-else>检查失败不会报错，仅在发现新版本时提示。</template>
+                </span>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="switch">
+                <input type="checkbox" v-model="cfg.other.check_update" @change="save" />
+                <span class="switch-text">
+                  <span class="switch-title">启动时自动检查更新</span>
+                  <span class="switch-desc">关闭后仅在此处手动检查（网络不通时两者都无影响）</span>
                 </span>
               </label>
             </div>
