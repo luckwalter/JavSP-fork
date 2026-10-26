@@ -22,13 +22,16 @@ The code is **fully open source** (GPL-3.0). Both the Docker image and the Windo
 
 - Automatically identify movie IDs and handle multi-part movies
 - Aggregate data from multiple sites into an NFO, scrape in parallel with multiple threads, download HD cover art
-- Translate titles and plot summaries
-- **Web UI**: folder scanning, single-movie scraping, batch tasks (with optional organizing), metadata preview, one-click organize
+- **Title and plot translation**: five engine families supported — Baidu / Bing / Google / Claude / OpenAI-compatible (including local Ollama) — with 7 selectable target languages
+- **Translations can be reviewed before writing to disk**: after scraping, the Review page shows the original and the translation side by side for every movie; you organize only once you are satisfied. Text already in the target language is skipped instead of translated again, and NFO wording is unified (no mixed simplified/traditional)
+- **Web UI**: folder scanning, single-movie lookup, batch tasks (with optional organizing), metadata preview, one-click organize
 - **Per-site data passthrough**: results show which site contributed which field, making it easy to judge data quality and spot a single broken source
 - **Channel health monitoring & automatic circuit breaking**: dead sources are automatically dropped from scraping — no more waiting on them
 - **Web-based configuration**: the Settings page edits and writes back `config.yml` via grouped forms; changes apply instantly and Chinese comments are preserved
 - **Output items can be toggled individually**: cover poster / fanart / extra fanarts / NFO each have their own switch (turn them all off when letting Jellyfin scrape by itself for a faster organize)
 - **Optional AI cover cropping**: local `slimeface` face detection, and you can verify whether it actually took effect (applied / fell back / why it fell back is reported honestly)
+- **Visual naming-rule builder**: click variables to preview the resulting names, with a dark mode
+- **Built-in software update**: new versions are checked in the background at startup; the desktop build can download and apply an update in one click (config and session preserved, app restarts itself), while Docker deployments get the matching image update command
 - **Multiple delivery forms**: Web service (Docker / NAS) + Windows desktop app (exe, default native GUI window shell / `--nogui` for browser)
 - **Optional single-user login**: set `JAVSP_AUTH_PASSWORD` to enable it; unset means no login required (default)
 
@@ -79,6 +82,10 @@ Release dual assets: javsp-fork-<ver>-image.tar.gz (ready to `docker load`)
   | Endpoint | Description |
   |---|---|
   | `GET /api/health` | Health check, also returns the server version |
+  | `GET /api/channels` | List all scraping sources with their health state (tripped or not, hit rate, …) |
+  | `POST /api/channels/check` | Manually trigger a health probe for a given channel |
+  | `GET /api/browse` | "Browse folder…" listing of subdirectories (constrained by `JAVSP_BROWSE_ROOT`) |
+  | `GET /api/auth/status` · `POST /api/auth/login` · `POST /api/auth/logout` | Optional single-user login (all open when no password is set) |
   | `POST /api/scan` | Scan a movie folder, return the list and assign `guid` |
   | `GET /api/movies` | List in-memory movie tasks |
   | `POST /api/scrape` | Scrape a single movie, SSE pushes each crawler's progress |
@@ -86,7 +93,10 @@ Release dual assets: javsp-fork-<ver>-image.tar.gz (ready to `docker load`)
   | `POST /api/batch` | **Batch** scrape (optional organize), SSE pushes per-movie + overall progress |
   | `GET` / `PUT /api/config` | Read / write back `config.yml` (applies instantly, no restart) |
   | `GET /api/config/runtime` | View the actually-effective runtime config (incl. per-crawler proxy / timeout) |
-- **Frontend `frontend/`**: Vue3 + Vite, custom design system (Element Plus removed since 0.2.x, hand-written components + design-token CSS), with scanning, single scrape, batch tasks, channel monitoring, settings pages.
+  | `GET /api/update/check` | Check whether a new version exists (silent background polling, failures are harmless) |
+  | `POST /api/update/download` | Download the update package (**sha256-verified**; a mismatch aborts and deletes it) |
+  | `POST /api/update/apply` | Start the upgrade helper and exit the main process; the helper replaces the files and restarts |
+- **Frontend `frontend/`**: Vue3 + Vite, custom design system (Element Plus removed since 0.2.x, hand-written components + design-token CSS), 7 pages: Library (scan), Lookup, Queue, Review, Batch Organize, Sources (channel monitoring), Settings; plus the naming-rule builder, login page, dark mode and the update banner.
 - **Channel health `javsp/web/health.py`**: background probing + circuit break / half-open recovery, see below.
 - **Auth `javsp/auth.py`**: optional single-user login, session on disk, login lockout.
 
@@ -125,6 +135,9 @@ javsp server                                      # or python -m javsp server
 ### Method 3: Desktop app (Windows native exe, ready to use)
 
 Download `JavSP-<version>-windows.zip` from Releases, extract anywhere, and **double-click `JavSP.exe`**: it opens a native window loading the WebUI by default (pywebview); add `--nogui` to use a browser instead. All config/sessions land in the **exe's own directory** (portable, doesn't touch the system drive); since 0.3.2 the config file is `config.yml` next to the exe, so a full-package upgrade won't overwrite your config.
+
+> **In-app upgrade**: after startup, go to "System Settings → Software Update" → "Upgrade now" to download and apply the update; the app restarts itself and keeps `config.yml`, sessions and logs intact. The downloaded package is **sha256-verified**.
+> ⚠️ **Every version before v0.4.5 carries an upgrade defect** (the upgrade helper's working directory sat inside the directory it had to rename, so the rename always failed) — clicking "Upgrade now" from those versions will fail. Download `JavSP-0.4.5-windows.zip` and **overwrite the install folder manually** once; in-app upgrades then work normally.
 
 > **Windows 10 note**: the default GUI shell relies on the **Microsoft Edge WebView2 Runtime**. Win11 ships with it; **Win10 does not necessarily** (it is absent on machines where Edge was removed, has not been updated for a long time, or is blocked by enterprise policy). When it is missing, older versions fall back to the IE engine, while our frontend is a modern Vue3 bundle — the symptom is a **blank window after double-click**.
 >
@@ -197,6 +210,8 @@ When writing NFO, ratings are normalized to 0~10 (Jellyfin parses `<rating>` wit
 ### Translation Engine: auto-translate titles and plot summaries
 
 During organizing, Japanese titles and plot summaries can be translated into Chinese (written into NFO and filenames), configured in "System Settings → Translation".
+
+**Available engines**: Baidu Translate / Bing Translate / Google Translate / Claude / **OpenAI-compatible** (you fill in endpoint, model name and API key — point it at a local [Ollama](https://ollama.com/) / LM Studio instance or any other OpenAI-compatible service). Every engine except OpenAI-compatible only needs an API key; for engines that need a proxy, enable "use global proxy" on the same page.
 
 **Scope**: only **movie titles and plot summaries** — no subtitle generation or speech transcription (a separate capability, possibly a standalone plugin/project in the future).
 
@@ -289,6 +304,7 @@ This fork derives from [Yuukiy/JavSP](https://github.com/Yuukiy/JavSP); **the cr
 | Process visibility | CLI output | SSE live progress, **per-site field contribution passthrough**, visible failure reasons |
 | Config | hand-edit `config.yml` | Settings page grouped-form writeback (**preserves Chinese comments & formatting**) + instant apply + bad-config auto-rollback |
 | Output control | fixed generation | poster / fanart / stills / NFO each independent switch |
+| Software update | none | background version check at startup, one-click download-and-upgrade on the desktop build (sha256 verified + config/session preserved + auto restart), image update instructions for Docker |
 | Delivery | pip / source | Docker image, NAS, **Windows desktop exe**, source (Release dual assets) |
 | Access control | none | optional single-user password login (session on disk + login lockout) |
 | Version record | — | independent version + **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)**, does not overwrite upstream `CHANGELOG.md` |
@@ -302,9 +318,11 @@ For more detailed source notes you can still refer to the original [JavSP Wiki](
 
 ## Development
 
-The repo root ships several **pure-logic verification scripts** (no network, run directly) that you can run after changes for a quick self-check, covering: scrape polishing (concurrency limit / retry backoff / genre merge / per-site passthrough), batch end-to-end, per-site contribution passthrough, config writeback (comment/newline preservation), config hot-reload & rollback, AI cover crop, output switches, historical bug regression guards, etc. (`verify_*.py`).
+Regression tests live in `unittest/` (run with `python -m pytest unittest -q` or `python -m unittest discover -s unittest -v`). Six of those files are the **mandatory gate for every release** (update/upgrade path, config hardening, multi-part moving, empty-folder cleanup retry, NFO simplified/traditional unification, same-language translation skip — 47 cases in total). `tests/` additionally holds behavior guards for upstream PR port fixes. Add cases in sync with new fixes.
 
-There are also **unittest regression tests** under `tests/` (zero third-party deps, run with `python -m unittest discover -s tests -v`), currently covering behavior guards for upstream PR port fixes (underscore-suffix recognition, fc2ppvdb missing-field tolerance); new fixes should add cases in sync.
+Helper scripts live in `tools/`, where `tools/build_desktop.py` does the whole frontend build + PyInstaller packaging + zip in one command.
+
+> The pure-logic verification scripts (`verify_*.py` and friends) are local development tools and are **not committed** (see `.gitignore`); they only exist on the dev machine.
 
 ## Feedback
 
