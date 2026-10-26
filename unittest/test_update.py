@@ -110,7 +110,9 @@ def test_helper_script_content_and_bom():
         f.write(b'PK\x05\x06' + b'\x00' * 18)
     exe_dir = os.path.join(tmp, 'JavSP')
     os.makedirs(exe_dir)
-    script = u._helper_script(zip_path, exe_dir, os.path.join(exe_dir, 'JavSP.exe'))
+    workdir = os.path.join(tmp, 'helper_work')
+    os.makedirs(workdir)
+    script = u._helper_script(zip_path, exe_dir, os.path.join(exe_dir, 'JavSP.exe'), workdir)
     assert os.path.isfile(script)
     with open(script, 'rb') as f:
         raw = f.read()
@@ -123,6 +125,118 @@ def test_helper_script_content_and_bom():
     assert 'Expand-Archive' in text, '需用 PowerShell 解压 zip'
     assert 'Start-Process' in text, '升级后需启动新版本'
     assert '已回滚' in text or 'Move-Item -Path $bak -Destination $exeDir' in text, '失败需能回滚'
+
+
+# ---------------------------------------------------------------------------
+# B-012: helper 的工作区必须与"待升级目录"彻底隔离
+# 根因: helper 把脚本 + 日志 + 安装包放在 exe 同级的 update/ 内部, 且进程
+#       工作目录继承自主进程 —— 打开的文件句柄与 CWD 让该目录自身处于
+#       "使用中", Move-Item 改名备份必然失败(本地盘与 UNC 一视同仁)。
+# ---------------------------------------------------------------------------
+
+def test_helper_workdir_is_outside_exe_dir():
+    """helper 工作区必须在系统临时目录, 绝不能落在 exe 目录内"""
+    tmp = tempfile.mkdtemp(prefix='helper_wd_test_')
+    exe_dir = os.path.join(tmp, 'JavSP')
+    os.makedirs(exe_dir)
+    work = u._helper_workdir()
+    assert os.path.isdir(work)
+    # 工作区既不在 exe 目录内, 也不是 exe 目录的子目录
+    assert not u.is_path_within(work, exe_dir)
+    assert not u.is_path_within(exe_dir, work)
+
+
+def test_helper_script_not_written_into_exe_dir():
+    """helper 脚本本身不得落在待升级目录内"""
+    tmp = tempfile.mkdtemp(prefix='helper_path_test_')
+    zip_path = os.path.join(tmp, 'JavSP-0.4.0-windows.zip')
+    with open(zip_path, 'wb') as f:
+        f.write(b'PK\x05\x06' + b'\x00' * 18)
+    exe_dir = os.path.join(tmp, 'JavSP')
+    os.makedirs(exe_dir)
+    workdir = os.path.join(tmp, 'helper_work')
+    os.makedirs(workdir)
+    script = u._helper_script(zip_path, exe_dir, os.path.join(exe_dir, 'JavSP.exe'), workdir)
+    assert not u.is_path_within(script, exe_dir), 'helper 脚本落在待升级目录内 -> 目录自身会被锁住'
+    assert os.path.isfile(script)
+
+
+def test_helper_log_path_not_in_exe_dir():
+    """脚本内容里的日志路径必须指向工作区, 而非待升级目录"""
+    tmp = tempfile.mkdtemp(prefix='helper_log_test_')
+    zip_path = os.path.join(tmp, 'JavSP-0.4.0-windows.zip')
+    with open(zip_path, 'wb') as f:
+        f.write(b'PK\x05\x06' + b'\x00' * 18)
+    exe_dir = os.path.join(tmp, 'JavSP')
+    os.makedirs(exe_dir)
+    workdir = os.path.join(tmp, 'helper_work')
+    os.makedirs(workdir)
+    script = u._helper_script(zip_path, exe_dir, os.path.join(exe_dir, 'JavSP.exe'), workdir)
+    with open(script, 'rb') as f:
+        text = f.read().decode('utf-8-sig')
+    # 日志必须基于 $work(工作区), 不能是 Split-Path $zip 的同级(即待升级目录内)
+    assert "$log = Join-Path $work 'apply_update.log'" in text, '日志必须写在工作区'
+    assert 'Split-Path $zip' not in text, '日志不得跟随 zip 落在待升级目录内'
+
+
+def test_stage_update_zip_moves_out_of_exe_dir():
+    """安装包必须被搬离待升级目录"""
+    tmp = tempfile.mkdtemp(prefix='stage_zip_test_')
+    exe_dir = os.path.join(tmp, 'JavSP')
+    upd = os.path.join(exe_dir, 'update')
+    os.makedirs(upd)
+    zip_path = os.path.join(upd, 'JavSP-0.4.0-windows.zip')
+    with open(zip_path, 'wb') as f:
+        f.write(b'PK\x05\x06' + b'\x00' * 18)
+    workdir = os.path.join(tmp, 'helper_work')
+    os.makedirs(workdir)
+    staged = u._stage_update_zip(zip_path, workdir)
+    assert not u.is_path_within(staged, exe_dir), '安装包仍在待升级目录内'
+    assert os.path.isfile(staged)
+    assert not os.path.isfile(zip_path), '原位置的安装包应被搬走(不是复制)'
+
+
+def test_apply_windows_update_uses_workdir_cwd():
+    """启动 helper 时必须显式指定 cwd=工作区, 不能继承主进程 CWD"""
+    captured = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, **kwargs):
+        captured['cmd'] = cmd
+        captured['kwargs'] = kwargs
+        return FakeProc()
+
+    tmp = tempfile.mkdtemp(prefix='apply_wd_test_')
+    exe_dir = os.path.join(tmp, 'JavSP')
+    os.makedirs(exe_dir)
+    upd = os.path.join(exe_dir, 'update')
+    os.makedirs(upd)
+    zip_path = os.path.join(upd, 'JavSP-0.4.0-windows.zip')
+    with open(zip_path, 'wb') as f:
+        f.write(b'PK\x05\x06' + b'\x00' * 18)
+
+    orig_popen = u.subprocess.Popen
+    orig_exe_dir = u._exe_dir
+    orig_wait = u._wait_helper_started
+    u.subprocess.Popen = fake_popen
+    u._exe_dir = lambda: exe_dir
+    u._wait_helper_started = lambda *a, **k: True
+    try:
+        res = u.apply_windows_update(zip_path)
+    finally:
+        u.subprocess.Popen = orig_popen
+        u._exe_dir = orig_exe_dir
+        u._wait_helper_started = orig_wait
+
+    assert res['pid'] == 4242
+    cwd = captured['kwargs'].get('cwd')
+    assert cwd, '必须显式指定 cwd'
+    assert not u.is_path_within(cwd, exe_dir), 'cwd 落在待升级目录内 -> 目录自身会被锁住'
+    helper = captured['cmd'][-1]
+    assert not u.is_path_within(helper, exe_dir), 'helper 脚本落在待升级目录内'
+
 
 
 # ---------------------------------------------------------------------------
