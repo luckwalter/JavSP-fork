@@ -394,6 +394,22 @@ try {{
     # 卡在"另一个进程正在使用此文件"。先主动结束这些孤儿释放锁。
     try {{ Get-Process -Name msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }} catch {{ }}
     Start-Sleep -Seconds 1
+    # ⚠️ 预检(B-013): 动数据之前先确认该目录**能正常枚举**。
+    # 网络驱动器(UNC/SMB)上, 某些共享会拒绝枚举深层目录(如 _internal 的几十个子
+    # 目录) —— 此时整目录改名(Move-Item)必然失败, 而失败后的回滚还会把备份藏进
+    # 子目录, 造成"exe/配置/更新包全没了"的假象。
+    # 所以先探一次: 目录里有 exe 却列不出任何条目 => 立即中止, **一个字节都不动**。
+    $probeErr = $null
+    $probe = @()
+    try {{ $probe = @(Get-ChildItem -Path $exeDir -Force -ErrorAction Stop) }} catch {{ $probeErr = $_.Exception.Message }}
+    $hasExe = Test-Path (Join-Path $exeDir 'JavSP.exe')
+    if ($hasExe -and $probe.Count -eq 0 -and $probeErr) {{
+        Log ("预检失败: 无法枚举运行目录(" + $probeErr + ")")
+        Log ("该路径很可能不支持目录改名(网络驱动器/共享限制)。已中止升级, 原文件未做任何改动。")
+        Log ("建议: 把桌面版放到本地磁盘运行, 或手动下载 zip 覆盖(保留 exe 同级的 config.yml)。")
+        exit 2
+    }}
+    Log ("预检通过: 运行目录可枚举, 条目 " + $probe.Count + " 项")
     # 只保留最近一个回退备份: 更老的直接清掉(避免多轮升级堆积旧组件)
     if (Test-Path $bak) {{ Remove-Item $bak -Recurse -Force }}
     # 把整个运行目录改名备份 —— 重试仍失败则多为目录自身被占用
@@ -434,10 +450,26 @@ try {{
 }} catch {{
     Log ("应用更新失败: " + $_.Exception.Message)
     # 回滚: 新目录不完整时换回旧目录
-    if (-not (Test-Path (Join-Path $exeDir 'JavSP.exe')) -and (Test-Path $bak)) {{
-        Move-Item -Path $bak -Destination $exeDir
-        Log "已回滚到旧版本"
+    # ⚠️ B-013: 旧写法 `Move-Item -Path $bak -Destination $exeDir` 在目标目录**已存在**时,
+    # PowerShell 会把备份**移进**该目录(变成 exeDir/bak), 结果是主目录里 exe/配置/
+    # 更新包全都不见了 —— 看起来像"文件被删了", 实际数据被藏进一层子目录。
+    # 正确做法: 先把不完整的新目录挪走, 再把备份原样移回; 且无论成败都要把
+    # 关键路径写进日志, 保证用户找得到数据。
+    $failed = $exeDir + '.failed'
+    try {{
+        if (Test-Path $failed) {{ Remove-Item $failed -Recurse -Force -ErrorAction SilentlyContinue }}
+        if (Test-Path $exeDir) {{ Move-Item -Path $exeDir -Destination $failed -Force -ErrorAction SilentlyContinue }}
+        if (Test-Path $bak) {{
+            Move-Item -Path $bak -Destination $exeDir -Force
+            Log "已回滚到旧版本"
+        }} else {{
+            Log ("旧版备份不存在, 不完整的新目录保留在: " + $failed)
+        }}
+    }} catch {{
+        Log ("回滚失败: " + $_.Exception.Message)
     }}
+    Log ("路径提示 | 运行目录: " + $exeDir + " | 旧版备份: " + $bak + " | 不完整副本: " + $failed)
+    Log ("若主目录里找不到 exe, 请到上面「旧版备份」路径下取回, 或重新下载 zip 手动覆盖。")
 }}
 '''
     path = os.path.join(workdir, _HELPER_NAME)

@@ -128,6 +128,73 @@ def test_helper_script_content_and_bom():
 
 
 # ---------------------------------------------------------------------------
+# B-013: 升级失败时不得把旧版"藏进"主目录
+# 现象: 升级失败后回滚, exe/配置/更新包全都不见了, 实际数据被移到了
+#       <运行目录>/<备份名>/ 里 —— 用户以为文件被删了。
+# 根因: `Move-Item -Path $bak -Destination $exeDir` 在目标目录已存在时,
+#       PowerShell 会把备份移进该目录而不是替换它; 且失败后没有把
+#       关键路径写进日志, 用户无从找回。
+# 修复: 回滚前先把不完整的新目录挪到 <运行目录>.failed, 再把备份移回;
+#       无论成败都把运行目录/旧版备份/不完整副本三个路径写进日志。
+#       另加"枚举预检": 动数据之前先确认目录能枚举, 不可枚举则直接中止,
+#       一个字节都不动(UNC/SMB 上深层目录常被拒绝枚举, 改名必然失败)。
+# ---------------------------------------------------------------------------
+
+def _helper_text(tmp, exe_dir=None, workdir=None):
+    """生成 helper 脚本并返回其文本内容"""
+    zip_path = os.path.join(tmp, 'JavSP-0.4.0-windows.zip')
+    with open(zip_path, 'wb') as f:
+        f.write(b'PK\x05\x06' + b'\x00' * 18)
+    if exe_dir is None:
+        exe_dir = os.path.join(tmp, 'JavSP')
+    if workdir is None:
+        workdir = os.path.join(tmp, 'helper_work')
+    os.makedirs(workdir, exist_ok=True)
+    script = u._helper_script(zip_path, exe_dir, os.path.join(exe_dir, 'JavSP.exe'), workdir)
+    with open(script, 'rb') as f:
+        return f.read().decode('utf-8-sig')
+
+
+def test_rollback_does_not_nest_backup_into_exe_dir():
+    """回滚不得把备份移进运行目录(那会让主目录看起来空无一物)"""
+    text = _helper_text(tempfile.mkdtemp(prefix='b013_'))
+    # 回滚必须先把不完整的新目录挪走
+    assert '.failed' in text, '回滚前应把不完整的新目录挪到 <运行目录>.failed'
+    assert "$failed = $exeDir + '.failed'" in text
+    # 移走后再把备份原样移回(带 -Force, 避免被当成"移进目录")
+    assert 'Move-Item -Path $bak -Destination $exeDir -Force' in text, '回滚移动备份必须带 -Force'
+    # 绝不能再出现"无 -Force 的 Move-Item -Path $bak -Destination $exeDir"
+    # (只看实际命令, 跳过以 # 开头的注释行)
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            continue
+        if 'Move-Item -Path $bak -Destination $exeDir' in stripped:
+            assert '-Force' in stripped, f'回滚移动备份必须带 -Force: {stripped}'
+
+
+def test_rollback_logs_paths_so_user_can_recover():
+    """失败时必须把关键路径写进日志, 否则用户找不到数据"""
+    text = _helper_text(tempfile.mkdtemp(prefix='b013_'))
+    assert '路径提示' in text, '失败时需输出路径提示'
+    assert '旧版备份:' in text, '需指出旧版备份位置'
+    assert '不完整副本:' in text, '需指出不完整副本位置'
+
+
+def test_precheck_blocks_upgrade_when_dir_not_enumerable():
+    """动数据之前先做枚举预检: 不可枚举则中止, 不动任何文件"""
+    text = _helper_text(tempfile.mkdtemp(prefix='b013_'))
+    assert 'Get-ChildItem' in text, '需做目录枚举预检'
+    assert '预检失败' in text, '预检失败需有明确日志'
+    assert '已中止升级' in text, '预检失败须中止升级'
+    assert '原文件未做任何改动' in text, '预检失败须声明未改动原文件'
+    # 预检必须在 Move-Item 之前
+    pre = text.index('预检')
+    move = text.index('Move-Item -Path $exeDir -Destination $bak')
+    assert pre < move, '预检必须早于目录改名'
+
+
+# ---------------------------------------------------------------------------
 # B-012: helper 的工作区必须与"待升级目录"彻底隔离
 # 根因: helper 把脚本 + 日志 + 安装包放在 exe 同级的 update/ 内部, 且进程
 #       工作目录继承自主进程 —— 打开的文件句柄与 CWD 让该目录自身处于
