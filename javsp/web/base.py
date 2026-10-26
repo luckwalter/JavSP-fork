@@ -10,7 +10,6 @@ import cloudscraper
 from functools import partial
 import lxml.html
 from tqdm import tqdm
-from lxml import etree
 from lxml.html.clean import Cleaner
 from requests.models import Response
 
@@ -278,7 +277,7 @@ def is_connectable(url, timeout=3):
     探测结果与真实可用性无关（误判所有站点不可达并错误熔断）。
     """
     try:
-        r = requests.get(url, headers=headers, timeout=timeout,
+        requests.get(url, headers=headers, timeout=timeout,
                          proxies=read_proxy(), verify=tls_verify())
         return True
     except requests.exceptions.RequestException as e:

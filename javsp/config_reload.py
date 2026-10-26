@@ -29,6 +29,7 @@ import threading
 import tempfile
 
 from javsp.config_io import write_config_preserving_comments
+from javsp.version import get_version
 
 __all__ = ['reload_runtime_config', 'apply_config_changes', 'describe_runtime',
            'config_transaction']
@@ -155,6 +156,9 @@ def describe_runtime():
         }
     crop_cfg = cfg.summarizer.cover.crop
     return {
+        # 版本号: 与 /api/health 同源(单一版本源 pyproject.toml)。设置页「软件更新」
+        # 分组的兜底取 runtime.version, 而本接口此前并未返回该字段 -> 恒显示 'v—'。
+        'version': get_version(),
         'proxy_server': _mask_proxy(cfg.network.proxy_server),
         'timeout': cfg.network.timeout.total_seconds(),
         'retry': cfg.network.retry,

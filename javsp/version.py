@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 # 匹配 `version = "x.y.z"`(行首, 允许单引号)
 _VERSION_RE = re.compile(r'^version\s*=\s*["\']([^"\']+)["\']', re.M)
 
-_FALLBACK = '0.0.0'
+FALLBACK_VERSION = '0.0.0'   # 对外公开: 调用方据此判断"没取到真实版本号"
+_FALLBACK = FALLBACK_VERSION
 
 
 def _from_pyproject():
