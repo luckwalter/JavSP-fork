@@ -350,9 +350,27 @@ try {{
     New-Item -ItemType Directory -Path $tmp | Out-Null
     Expand-Archive -Path $zip -DestinationPath $tmp -Force
     Log "解压完成: $tmp"
+    # 释放文件锁: pywebview 退出后常残留 msedgewebview2 孤儿进程, 仍锁着
+    # _internal/webview 等文件; 网盘(UNC)路径下 SMB 锁更"粘", Move-Item 会
+    # 卡在"另一个进程正在使用此文件"。先主动结束这些孤儿释放锁。
+    try {{ Get-Process -Name msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }} catch {{ }}
+    Start-Sleep -Seconds 1
     # 只保留最近一个回退备份: 更老的直接清掉(避免多轮升级堆积旧组件)
     if (Test-Path $bak) {{ Remove-Item $bak -Recurse -Force }}
-    Move-Item -Path $exeDir -Destination $bak
+    # 把整个运行目录改名备份 —— UNC/锁定时可能失败, 加重试循环(每次清锁+等)
+    $moved = $false
+    for ($i = 0; $i -lt 10; $i++) {{
+        try {{
+            Move-Item -Path $exeDir -Destination $bak -Force
+            $moved = $true
+            break
+        }} catch {{
+            Log ("Move-Item 重试 #" + ($i+1) + ": " + $_.Exception.Message)
+            try {{ Get-Process -Name msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }} catch {{ }}
+            Start-Sleep -Seconds 2
+        }}
+    }}
+    if (-not $moved) {{ throw ("多次重试仍无法移动旧目录(可能被占用): " + $exeDir) }}
     Copy-Item -Path $tmp -Destination $exeDir -Recurse -Force
     Log "新版已就位: $exeDir"
     # 拷回用户数据: 配置与会话不能丢
@@ -364,8 +382,8 @@ try {{
             Log "已保留 $name"
         }}
     }}
-    Start-Process -FilePath $newExe
-    Log "已启动新版本"
+    try {{ Start-Process -FilePath $newExe }} catch {{ Log ("启动新版本失败(可手动启动): " + $_.Exception.Message) }}
+    Log "已请求启动新版本"
     Start-Sleep -Seconds 3
     # 清理临时产物: 解压目录 / 下载的包 / 本脚本; 保留 $bak 作为最近回退版
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
