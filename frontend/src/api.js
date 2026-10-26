@@ -316,3 +316,25 @@ export async function logout() {
   })
   return r.ok ? r.json() : { ok: false }
 }
+
+// ---- 缩略图缓存(结果审阅页的渠道封面小图) ----
+
+/** 缩略图 URL: 直接给 <img src> 用, 命中后端缓存; 取不到时后端返回 404, 前端显示占位 */
+export function thumbUrl(url) {
+  if (!url) return ''
+  return `${BASE}/api/thumb?url=${encodeURIComponent(url)}`
+}
+
+/** 缓存统计(张数 / 占用 / 目录 / 自动清理设置) */
+export async function getThumbsCache() {
+  const r = await request('/api/cache/thumbs')
+  if (!r.ok) throw new Error(await readDetail(r, '读取缓存统计失败'))
+  return r.json()
+}
+
+/** 手动清空缩略图缓存 */
+export async function clearThumbsCache() {
+  const r = await request('/api/cache/thumbs', { method: 'DELETE' })
+  if (!r.ok) throw new Error(await readDetail(r, '清除缓存失败'))
+  return r.json()
+}

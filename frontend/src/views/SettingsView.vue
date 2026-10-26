@@ -102,12 +102,52 @@ async function load() {
   err.value = ''
   try {
     cfg.value = await api.getConfig()
+    // 旧配置文件里没有 cache 段(本功能新增)—— 补默认值, 否则 v-model 会报错
+    if (!cfg.value.cache) {
+      cfg.value.cache = { thumbs_dir: '', auto_clean: true, retention_days: 7 }
+    }
     runtime.value = await api.getConfigRuntime().catch(() => null)
     serverVersion.value = await api.getHealth().then((r) => r.version || '').catch(() => '')
+    await loadThumbsCache()
   } catch (e) {
     err.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+// ---- 缩略图缓存管理(结果审阅页的渠道封面小图) ----
+const thumbsCache = ref(null)
+const thumbsMsg = ref('')
+const clearingThumbs = ref(false)
+
+function formatBytes(n) {
+  const v = Number(n) || 0
+  if (v < 1024) return `${v} B`
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`
+  if (v < 1024 * 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB`
+  return `${(v / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+async function loadThumbsCache() {
+  try {
+    thumbsCache.value = await api.getThumbsCache()
+  } catch (e) {
+    thumbsCache.value = null
+  }
+}
+
+async function clearThumbs() {
+  clearingThumbs.value = true
+  thumbsMsg.value = ''
+  try {
+    const r = await api.clearThumbsCache()
+    thumbsMsg.value = `已清除 ${r.removed ?? 0} 张缩略图`
+    await loadThumbsCache()
+  } catch (e) {
+    thumbsMsg.value = `清除失败：${e.message}`
+  } finally {
+    clearingThumbs.value = false
   }
 }
 
@@ -806,6 +846,75 @@ onMounted(load)
                   <span class="switch-desc">关闭后仅在此处手动检查（网络不通时两者都无影响）</span>
                 </span>
               </label>
+            </div>
+
+            <!-- 缩略图缓存: 结果审阅页展示各渠道封面小图时产生, 可定期/手动清理 -->
+            <div class="field" style="margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--color-border-light);">
+              <label class="field-label">封面缓存</label>
+              <p class="field-hint" style="margin-top: 0;">
+                「结果审阅」页为每个有贡献的渠道展示一张该站封面缩略图，图片缓存在本地。
+                清理只影响缩略图缓存，<strong>不会删除已整理到媒体库的封面文件</strong>。
+              </p>
+
+              <div v-if="thumbsCache" style="margin-top: var(--space-3); display: flex; gap: var(--space-4); flex-wrap: wrap;">
+                <span class="field-hint" style="margin: 0;">已缓存 <strong>{{ thumbsCache.count }}</strong> 张</span>
+                <span class="field-hint" style="margin: 0;">占用 <strong>{{ formatBytes(thumbsCache.bytes) }}</strong></span>
+                <span v-if="thumbsCache.oldest_days != null" class="field-hint" style="margin: 0;">
+                  最早缓存 {{ thumbsCache.oldest_days }} 天前
+                </span>
+              </div>
+              <p v-if="thumbsCache" class="field-hint" style="margin-top: var(--space-2);">
+                目录：<code>{{ thumbsCache.dir }}</code>
+              </p>
+
+              <div class="field" style="margin-top: var(--space-3);">
+                <label class="field-label">缓存目录（留空 = 自动）</label>
+                <input
+                  type="text"
+                  class="input"
+                  v-model="cfg.cache.thumbs_dir"
+                  placeholder="自动：容器 /data/.javsp_cache/thumbs，桌面版 exe 同级 cache/thumbs"
+                  @change="save" />
+                <p class="field-hint" style="margin-top: var(--space-1);">
+                  留空即自动判定。容器形态下使用 <code>/data</code> 下的隐藏目录（点开头，媒体服务器默认跳过，不会污染媒体库索引）。
+                </p>
+              </div>
+
+              <div class="field" style="margin-top: var(--space-3);">
+                <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+                  <button class="btn btn--sm" :disabled="clearingThumbs" @click="clearThumbs">
+                    <span v-if="clearingThumbs" class="spinner" aria-hidden="true"></span>
+                    {{ clearingThumbs ? '清除中…' : '立即清除全部缓存' }}
+                  </button>
+                  <span v-if="thumbsMsg" class="field-hint" style="margin: 0;">{{ thumbsMsg }}</span>
+                  <span v-else class="field-hint" style="margin: 0;">清空后下次审阅会重新拉取缩略图</span>
+                </div>
+              </div>
+
+              <div class="field" style="margin-top: var(--space-3);">
+                <label class="switch">
+                  <input type="checkbox" v-model="cfg.cache.auto_clean" @change="save" />
+                  <span class="switch-text">
+                    <span class="switch-title">自动清理过期缓存</span>
+                    <span class="switch-desc">启动时按保留天数清理超期的缩略图（不删正在使用的）</span>
+                  </span>
+                </label>
+              </div>
+
+              <div class="field" style="margin-top: var(--space-3);">
+                <label class="field-label">保留天数</label>
+                <div style="display: flex; align-items: center; gap: var(--space-3);">
+                  <input
+                    type="number"
+                    class="input"
+                    style="width: 96px;"
+                    min="1"
+                    max="365"
+                    v-model.number="cfg.cache.retention_days"
+                    @change="save" />
+                  <span class="field-hint" style="margin: 0;">天（默认 7 天，仅在自动清理打开时生效）</span>
+                </div>
+              </div>
             </div>
           </template>
         </div>

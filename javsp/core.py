@@ -100,6 +100,9 @@ def _summarize_sources(all_info: Dict[str, MovieInfo]) -> dict:
             'has_actress': has_actress,
             'uncensored': info.uncensored,
             'contributed': bool(has_cover or has_genre or has_actress),
+            # 各站自己的封面 URL —— 供结果审阅页取该站缩略图做并排比对。
+            # 只在该站确实贡献了封面时才给, 避免前端对无图站点反复请求。
+            'cover': (info.cover if has_cover else None),
         }
     return out
 

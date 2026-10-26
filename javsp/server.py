@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -34,6 +34,7 @@ from javsp.datatype import Movie
 from javsp.task_store import TaskStore
 from javsp import auth
 from javsp import update as update_mod
+from javsp import thumbs as thumbs_mod
 from javsp.web import health as channel_health
 from javsp.web.translate import translate_movie_info
 
@@ -111,6 +112,21 @@ async def lifespan(app: FastAPI):
         channel_health.start_auto_probe()
     except Exception as e:      # noqa: BLE001
         logger.warning(f'渠道自动探活启动失败(不影响刮削): {channel_health._sanitize(str(e))}')
+    # 启动时清理过期缩略图缓存(仅在配置打开时执行)。放后台线程里跑, 不阻塞启动;
+    # 失败只记日志 —— 缓存清理是维护性任务, 不能成为启动依赖。
+    def _thumbs_cleanup_once():
+        time.sleep(3)
+        try:
+            if not getattr(Cfg().cache, 'auto_clean', True):
+                return
+            days = int(getattr(Cfg().cache, 'retention_days', 7))
+            n = thumbs_mod.cleanup_expired(days)
+            if n:
+                logger.info(f'已清理过期缩略图 {n} 张(保留 {days} 天)')
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f'清理过期缩略图失败(忽略): {e}')
+
+    threading.Thread(target=_thumbs_cleanup_once, daemon=True, name='thumbs-cleanup').start()
     # 定期清理过期会话: daemon 线程 + 周期等待, 启动后先等一个周期(启动时刚加载
     # 过会话, 无需立即清)。失败只记日志, 监控/清理类辅助任务都不能成为启动依赖。
     _prune_stop = threading.Event()
@@ -1121,6 +1137,50 @@ def api_update_apply(req: 'UpdateApplyRequest'):
     # 需晚于 helper 的启动观察(2s), 否则主进程先退出、观察被截断
     threading.Timer(3.0, lambda: os._exit(0)).start()
     return {'ok': True, 'helper_pid': res['pid']}
+
+
+# --------------------------------------------------------------------------
+# 缩略图缓存(结果审阅页展示各渠道封面小图)
+# --------------------------------------------------------------------------
+
+@app.get('/api/thumb')
+def api_thumb(url: str):
+    """取某张封面图的缩略图(命中缓存直返, 未命中则下载原图并缩放落盘)
+
+    失败一律降级: 拿不到就返回 404, 前端显示占位 —— 缩略图是锦上添花,
+    绝不能因为取图失败而影响审阅页其余内容。
+    """
+    path = thumbs_mod.ensure_thumb(url)
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail='缩略图不可用')
+    return FileResponse(path, media_type='image/jpeg',
+                        headers={'Cache-Control': 'public, max-age=86400'})
+
+
+@app.get('/api/cache/thumbs')
+def api_cache_thumbs():
+    """缩略图缓存统计(张数 / 占用 / 最早时间 / 目录路径)"""
+    st = thumbs_mod.stats()
+    try:
+        auto_clean = bool(getattr(Cfg().cache, 'auto_clean', True))
+        retention = int(getattr(Cfg().cache, 'retention_days', 7))
+    except Exception:
+        auto_clean, retention = True, 7
+    return {
+        'dir': st['dir'],
+        'count': st['count'],
+        'bytes': st['bytes'],
+        'oldest_days': st['oldest_days'],
+        'auto_clean': auto_clean,
+        'retention_days': retention,
+    }
+
+
+@app.delete('/api/cache/thumbs')
+def api_cache_thumbs_clear():
+    """手动清空缩略图缓存(只删缓存目录内的缩略图, 不触碰已整理的封面文件)"""
+    removed = thumbs_mod.clear_all()
+    return {'ok': True, 'removed': removed}
 
 
 _dist_dir = _resolve_dist_dir()
