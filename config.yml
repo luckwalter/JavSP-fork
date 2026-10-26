@@ -254,3 +254,16 @@ other:
   check_update: true
   # 是否允许检查到新版本时自动下载
   auto_update: false
+
+################################
+# 缩略图缓存（结果审阅页展示各渠道封面小图时产生）
+cache:
+  # 缓存目录。留空 = 自动判定：
+  #   容器形态 -> /data/.javsp_cache/thumbs（点开头的隐藏目录，媒体服务器默认跳过，不污染媒体库索引）
+  #   桌面版   -> exe 同级 cache/thumbs（便携，整包升级不覆盖）
+  # 也可显式指定到其它磁盘/目录
+  thumbs_dir: ''
+  # 是否在启动时自动清理过期缩略图
+  auto_clean: true
+  # 缩略图保留天数（仅在 auto_clean 打开时生效）
+  retention_days: 7

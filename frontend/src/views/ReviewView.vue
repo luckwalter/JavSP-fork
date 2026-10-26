@@ -2,9 +2,12 @@
 /** 结果审阅: 核对每部影片各渠道抓到了什么, 再决定是否整理落盘
  *  相比旧版: 不必层层展开表格 —— 每部影片的渠道贡献直接平铺, 一眼看出哪个源有用、
  *  哪个被熔断跳过了。这是"信息密度失控"痛点的直接修复。
+ *  v0.4.6 起: 每个有贡献的渠道前附一张该站自己的封面缩略图, 便于并排比对
+ *  "哪个源给的图更好看"(缩略图由后端缓存, 懒加载, 取不到不影响其余内容)。
  */
 import { ref, computed, onMounted } from 'vue'
 import { persistState } from '../composables/usePersist'
+import { thumbUrl } from '../api'
 
 const emit = defineEmits(['navigate'])
 
@@ -27,6 +30,14 @@ const stats = computed(() => {
   }
 })
 
+/** 缩略图加载失败(404/网络问题)时置位, 退化为占位块 —— 不影响表格其余内容 */
+const thumbFailed = ref(new Set())
+function onThumbError(site, url) {
+  const key = site + '|' + url
+  if (thumbFailed.value.has(key)) return
+  thumbFailed.value = new Set(thumbFailed.value).add(key)
+}
+
 function rows(s) {
   if (!s || typeof s !== 'object') return []
   return Object.keys(s).map((site) => {
@@ -42,8 +53,16 @@ function rows(s) {
       breaker: x.breaker || '',
       healthText: x.health_text || '',
       healthStatus: x.health_status || '',
+      // 该站自己的封面 URL(后端仅在确实有封面时给出)
+      coverUrl: x.cover || '',
     }
   })
+}
+
+/** 某行是否显示缩略图: 有封面 URL 且尚未加载失败 */
+function showThumb(s) {
+  if (!s.coverUrl) return false
+  return !thumbFailed.value.has(s.site + '|' + s.coverUrl)
 }
 
 /** 某部影片的有效源数 —— 用于快速判断"数据够不够整理" */
@@ -169,7 +188,7 @@ onMounted(() => {
           <table class="table">
             <thead>
               <tr>
-                <th style="width: 100px;">渠道</th>
+                <th style="width: 128px;">渠道</th>
                 <th>站点标题</th>
                 <th style="width: 180px;">贡献字段</th>
                 <th style="width: 110px;">渠道状态</th>
@@ -177,7 +196,19 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-for="s in rows(r.sources)" :key="s.site">
-                <td><code>{{ s.site }}</code></td>
+                <td>
+                  <div class="cell-site">
+                    <!-- 该站自己的封面缩略图(懒加载, 后端缓存; 取不到退化为占位) -->
+                    <img v-if="showThumb(s)"
+                         class="thumb"
+                         :src="thumbUrl(s.coverUrl)"
+                         :alt="s.site + ' 封面'"
+                         loading="lazy"
+                         @error="onThumbError(s.site, s.coverUrl)" />
+                    <div v-else class="thumb thumb--empty" aria-hidden="true">—</div>
+                    <code>{{ s.site }}</code>
+                  </div>
+                </td>
                 <td class="dim">{{ s.title }}</td>
                 <td>
                   <span v-if="s.cover" class="pill pill--success">封面</span>
@@ -240,6 +271,27 @@ onMounted(() => {
 .review-title { margin-top: var(--space-2); font-size: var(--font-base); color: var(--color-text-primary); }
 .dim { color: var(--color-text-secondary); }
 code { font-family: var(--font-mono); font-size: var(--font-sm); }
+
+/* 渠道单元格: 缩略图 + 渠道名并排 */
+.cell-site { display: flex; align-items: center; gap: var(--space-2); }
+.thumb {
+  width: 32px;
+  height: 45px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 3px;
+  border: 0.5px solid var(--color-border-light);
+  background: var(--color-bg-surface, var(--color-bg-page));
+}
+.thumb--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-xs);
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+  border-style: dashed;
+  border-color: var(--color-border-medium, var(--color-border-light));
+}
 
 /* 翻译预览块: 原文(暗) → 译文(亮) 对照, 顶部开关决定该部是否采用译文落盘 */
 .review-trans {

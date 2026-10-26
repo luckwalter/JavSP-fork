@@ -251,6 +251,18 @@ class Other(BaseConfig):
     check_update: bool
     auto_update: bool
 
+class Cache(BaseConfig):
+    """缩略图缓存(结果审阅页展示各渠道封面小图)
+
+    thumbs_dir: 缓存目录。留空 = 自动判定(容器 /data/.javsp_cache/thumbs,
+        桌面版 exe 同级 cache/thumbs)。点开头的隐藏目录可避免被媒体服务器索引。
+    auto_clean: 是否在启动时自动清理过期缩略图。
+    retention_days: 缩略图保留天数(默认 7 天), 仅在 auto_clean 打开时生效。
+    """
+    thumbs_dir: str = ''
+    auto_clean: bool = True
+    retention_days: int = Field(7, ge=1, le=365)
+
 def get_config_source():
     parser = ArgumentParser(prog='JavSP', description='汇总多站点数据的AV元数据刮削器', formatter_class=RawTextHelpFormatter)
     parser.add_argument('-c', '--config', help='使用指定的配置文件')
@@ -293,4 +305,5 @@ class Cfg(BaseConfig):
     summarizer: Summarizer
     translator: Translator
     other: Other
+    cache: Cache = Cache()
     CONFIG_SOURCES=get_config_source()
