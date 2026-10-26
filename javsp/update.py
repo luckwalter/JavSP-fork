@@ -23,6 +23,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -307,6 +308,13 @@ def _verify_download(path: str, expect: dict = None) -> None:
 
 _HELPER_NAME = 'javsp_apply_update.ps1'
 
+# helper 的"工作区"目录名 —— 必须位于**待升级目录之外**。
+# 根因(B-012): 升级流程要把整个运行目录改名备份, 而 helper 若把脚本/日志/zip
+# 放在该目录内部, 打开的文件句柄与进程工作目录会让目录自身处于"使用中",
+# Move-Item 必然失败(本地盘与 UNC 一视同仁, 不是 SMB 锁的问题)。
+# 故 helper 的脚本 + 日志 + 安装包 + 进程 CWD 全部搬到系统临时目录。
+_HELPER_WORKDIR = 'javsp_update_helper'
+
 # 升级时必须从旧目录保留回来的用户数据(存在于 exe 同级目录)。
 # config.yml 是用户的配置(本地路径/代理/Ollama 端点等), .sessions.json 是登录
 # 会话令牌哈希 —— 丢了会直接让用户"配置全丢 + 被登出", 故升级时整目录替换后
@@ -320,7 +328,33 @@ def _exe_dir() -> str:
     return os.path.dirname(os.path.abspath(sys.executable))
 
 
-def _helper_script(zip_path: str, exe_dir: str, new_exe: str) -> str:
+def _helper_workdir() -> str:
+    """helper 的独立工作区(系统临时目录下), 刻意与待升级目录隔离"""
+    d = os.path.join(tempfile.gettempdir(), _HELPER_WORKDIR)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _stage_update_zip(zip_path: str, workdir: str) -> str:
+    """把安装包搬进 helper 工作区
+
+    搬走是必须的: 安装包若留在待升级目录内, 该目录就含有 helper 正在使用的文件。
+    跨盘移动(shutil.move 自动退化为 copy+delete)也能正常工作。
+    """
+    src = os.path.abspath(zip_path)
+    dst = os.path.join(workdir, os.path.basename(src))
+    if os.path.abspath(src) == os.path.abspath(dst):
+        return dst
+    if os.path.isfile(dst):
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
+    shutil.move(src, dst)
+    return dst
+
+
+def _helper_script(zip_path: str, exe_dir: str, new_exe: str, workdir: str) -> str:
     """生成 PowerShell helper 脚本内容
 
     用 PowerShell 而非 cmd: cmd 对 UTF-8 中文路径的处理不可靠, 且
@@ -330,8 +364,12 @@ def _helper_script(zip_path: str, exe_dir: str, new_exe: str) -> str:
 
     流程: 等主进程退出 → 旧目录改名为备份(顺带清掉更老的备份) → 新版解压落地
     → 拷回用户数据 → 启动新版 → 清理临时文件(保留最近一个回退备份)。
+
+    ⚠️ 脚本本体、日志与安装包都必须位于 **workdir**(系统临时目录), 绝不能
+    放进待升级目录 —— 否则打开的文件句柄与进程工作目录会让该目录自身
+    "正在使用中", Move-Item 改名必然失败(B-012)。
     """
-    tmp_extract = os.path.join(tempfile.gettempdir(), 'javsp_update_extract')
+    tmp_extract = os.path.join(workdir, 'javsp_update_extract')
     backup_dir = exe_dir + '.bak'
     keep_list = ','.join(f"'{n}'" for n in _KEEP_FILES)
     ps = f'''
@@ -341,7 +379,8 @@ $exeDir = '{exe_dir}'
 $tmp = '{tmp_extract}'
 $bak = '{backup_dir}'
 $newExe = '{new_exe}'
-$log = Join-Path (Split-Path $zip) 'apply_update.log'
+$work = '{workdir}'
+$log = Join-Path $work 'apply_update.log'
 $keep = @({keep_list})
 function Log($m) {{ Add-Content -Path $log -Value ("[" + (Get-Date -Format 'HH:mm:ss') + "] " + $m) -Encoding UTF8 }}
 try {{
@@ -357,7 +396,7 @@ try {{
     Start-Sleep -Seconds 1
     # 只保留最近一个回退备份: 更老的直接清掉(避免多轮升级堆积旧组件)
     if (Test-Path $bak) {{ Remove-Item $bak -Recurse -Force }}
-    # 把整个运行目录改名备份 —— UNC/锁定时可能失败, 加重试循环(每次清锁+等)
+    # 把整个运行目录改名备份 —— 重试仍失败则多为目录自身被占用
     $moved = $false
     for ($i = 0; $i -lt 10; $i++) {{
         try {{
@@ -389,6 +428,8 @@ try {{
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $zip -Force -ErrorAction SilentlyContinue
     Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
+    # 清掉旧目录里遗留的安装包目录(新版不再往 exe 同级放 update/)
+    Remove-Item (Join-Path $exeDir 'update') -Recurse -Force -ErrorAction SilentlyContinue
     Log "清理完成(旧版备份保留在: $bak)"
 }} catch {{
     Log ("应用更新失败: " + $_.Exception.Message)
@@ -399,7 +440,7 @@ try {{
     }}
 }}
 '''
-    path = os.path.join(os.path.dirname(os.path.abspath(zip_path)), _HELPER_NAME)
+    path = os.path.join(workdir, _HELPER_NAME)
     with open(path, 'w', encoding='utf-8-sig', newline='\r\n') as f:
         f.write(ps)
     return path
@@ -429,7 +470,11 @@ def apply_windows_update(zip_path: str) -> dict:
     """
     exe_dir = _exe_dir()
     new_exe = os.path.join(exe_dir, 'JavSP.exe')
-    helper = _helper_script(os.path.abspath(zip_path), exe_dir, new_exe)
+    # helper 的脚本/日志/安装包/工作目录全部搬到系统临时目录 —— 绝不能留在
+    # 待升级目录内, 否则该目录自身"正在使用中", 改名备份必败(B-012)。
+    workdir = _helper_workdir()
+    staged_zip = _stage_update_zip(zip_path, workdir)
+    helper = _helper_script(staged_zip, exe_dir, new_exe, workdir)
     # 实测坑(2026-10-26 修): DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP 下 PS 宿主
     # **不会执行脚本** —— Popen 正常返回 pid, 但脚本静默不运行, 连第一行日志都不写,
     # 表现为"点了立即升级, 程序关了却没升级"。矩阵实测: 无 flags / CREATE_NO_WINDOW
@@ -437,7 +482,7 @@ def apply_windows_update(zip_path: str) -> dict:
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
     proc = subprocess.Popen(
         ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', helper],
-        creationflags=flags, close_fds=True,
+        creationflags=flags, close_fds=True, cwd=workdir,
     )
     started = _wait_helper_started(helper)
     return {'helper': helper, 'pid': proc.pid, 'started': started}
