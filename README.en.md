@@ -14,7 +14,7 @@ The code is **fully open source** (GPL-3.0). Both the Docker image and the Windo
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.4.5-blue.svg)
+![Version](https://img.shields.io/badge/version-0.4.6-blue.svg)
 
 > **📌 Software update check since v0.4.0**: the app checks for new versions in the background at startup (silently skipped when the network is unreachable, never slowing startup). The desktop build can download and apply an update in one click (it restarts itself, keeping your config and session); Docker deployments get the matching image update command. Manual check and a toggle live in "System Settings → Software Update".
 
@@ -26,6 +26,7 @@ The code is **fully open source** (GPL-3.0). Both the Docker image and the Windo
 - **Translations can be reviewed before writing to disk**: after scraping, the Review page shows the original and the translation side by side for every movie; you organize only once you are satisfied. Text already in the target language is skipped instead of translated again, and NFO wording is unified (no mixed simplified/traditional)
 - **Web UI**: folder scanning, single-movie lookup, batch tasks (with optional organizing), metadata preview, one-click organize
 - **Per-site data passthrough**: results show which site contributed which field, making it easy to judge data quality and spot a single broken source
+- **Per-source cover thumbnails on the review page**: every contributing channel shows a small thumbnail of that source's own cover, so you can compare "which source has the better picture" side by side; images are cached locally (scaled to 120px wide, only a few KB each) and can be cleared manually or automatically by age from the Software Update page
 - **Channel health monitoring & automatic circuit breaking**: dead sources are automatically dropped from scraping — no more waiting on them
 - **Web-based configuration**: the Settings page edits and writes back `config.yml` via grouped forms; changes apply instantly and Chinese comments are preserved
 - **Output items can be toggled individually**: cover poster / fanart / extra fanarts / NFO each have their own switch (turn them all off when letting Jellyfin scrape by itself for a faster organize)
@@ -96,6 +97,9 @@ Release dual assets: javsp-fork-<ver>-image.tar.gz (ready to `docker load`)
   | `GET /api/update/check` | Check whether a new version exists (silent background polling, failures are harmless) |
   | `POST /api/update/download` | Download the update package (**sha256-verified**; a mismatch aborts and deletes it) |
   | `POST /api/update/apply` | Start the upgrade helper and exit the main process; the helper replaces the files and restarts |
+  | `GET /api/thumb?url=…` | Get a scaled-down thumbnail of a cover (served from cache, downloaded and resized on demand) |
+  | `GET /api/cache/thumbs` | Thumbnail cache statistics (count / size / directory / auto-clean settings) |
+  | `DELETE /api/cache/thumbs` | Manually clear the thumbnail cache |
 - **Frontend `frontend/`**: Vue3 + Vite, custom design system (Element Plus removed since 0.2.x, hand-written components + design-token CSS), 7 pages: Library (scan), Lookup, Queue, Review, Batch Organize, Sources (channel monitoring), Settings; plus the naming-rule builder, login page, dark mode and the update banner.
 - **Channel health `javsp/web/health.py`**: background probing + circuit break / half-open recovery, see below.
 - **Auth `javsp/auth.py`**: optional single-user login, session on disk, login lockout.
@@ -183,6 +187,15 @@ When you let Jellyfin / Emby do the scraping themselves, downloading HD covers, 
 | `nfo.enabled` | NFO file | no NFO written at all |
 
 Poster and fanart share the same source; with both off, even cover download won't happen, noticeably speeding up batch organize.
+
+### Per-source cover thumbnails on the review page: see which source has the better picture
+
+On the Result Review page, every **contributing** channel shows a small thumbnail of its own cover, so you can tell at a glance which source offers the sharper, better-composed picture — instead of only finding out after organizing that the wrong cover was picked.
+
+- **Cached locally**: the original is scaled to 120px wide and stored as a jpg (only a few KB each), downloaded once per image. Thumbnails load lazily — they are fetched as you scroll.
+- **Where it lives**: in container deployments under `/data/.javsp_cache/thumbs` (a dot-prefixed hidden directory, so media servers skip it and your media library index stays clean); on the desktop, next to the exe in `cache/thumbs`. Both can be set explicitly in the "Cover cache" section of "Settings → Software Update".
+- **Cleaning up**: that same section shows cache statistics (count / size / directory), offers an "Clear all cache now" button, and an "auto-clean expired cache" toggle with a retention period (7 days by default, applied at startup). **Only thumbnails are touched — covers already written into your media library are never deleted.**
+- **Failures are harmless**: if a thumbnail cannot be fetched, a placeholder is shown; scraping and reviewing continue as normal.
 
 ### Channel monitoring & circuit breaking: stop waiting on dead sources
 
@@ -285,7 +298,7 @@ For non-local cloud sources, enable "Use general proxy" to reuse the egress prox
 
 ## Versioning
 
-This project **does not follow the upstream version numbers**, starting from `0.0.1`: small changes (fix/tweak) bump the third digit; large changes (feature/architecture) bump the second digit and reset the third to 1; stable release `1.0.0`. **Current version: 0.4.5**.
+This project **does not follow the upstream version numbers**, starting from `0.0.1`: small changes (fix/tweak) bump the third digit; large changes (feature/architecture) bump the second digit and reset the third to 1; stable release `1.0.0`. **Current version: 0.4.6**.
 
 The version number's single source of truth is `pyproject.toml`; `python sync_version.py` syncs it to `frontend/package.json` / `package-lock.json` / `README.md`, and `python sync_version.py --check` validates consistency (both the version badge and the "current version" marker in README will error if either is missing or changed in form, never silently passing); for cross-environment deploys (e.g., NAS container) also use `python sync_version.py --check-target <path>` to validate the target's `pyproject.toml`. Full changelog: **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)** (maintained independently by this fork, does not overwrite upstream `CHANGELOG.md`).
 
