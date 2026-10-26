@@ -14,7 +14,7 @@ The code is **fully open source** (GPL-3.0). Both the Docker image and the Windo
 
 ![Python](https://img.shields.io/badge/python-3.10%20~%203.12-green.svg)
 ![License](https://img.shields.io/github/license/luckwalter/JavSP-fork)
-![Version](https://img.shields.io/badge/version-0.4.2-blue.svg)
+![Version](https://img.shields.io/badge/version-0.4.3-blue.svg)
 
 > **📌 Software update check since v0.4.0**: the app checks for new versions in the background at startup (silently skipped when the network is unreachable, never slowing startup). The desktop build can download and apply an update in one click (it restarts itself, keeping your config and session); Docker deployments get the matching image update command. Manual check and a toggle live in "System Settings → Software Update".
 
@@ -270,7 +270,7 @@ For non-local cloud sources, enable "Use general proxy" to reuse the egress prox
 
 ## Versioning
 
-This project **does not follow the upstream version numbers**, starting from `0.0.1`: small changes (fix/tweak) bump the third digit; large changes (feature/architecture) bump the second digit and reset the third to 1; stable release `1.0.0`. **Current version: 0.4.2**.
+This project **does not follow the upstream version numbers**, starting from `0.0.1`: small changes (fix/tweak) bump the third digit; large changes (feature/architecture) bump the second digit and reset the third to 1; stable release `1.0.0`. **Current version: 0.4.3**.
 
 The version number's single source of truth is `pyproject.toml`; `python sync_version.py` syncs it to `frontend/package.json` / `package-lock.json` / `README.md`, and `python sync_version.py --check` validates consistency (both the version badge and the "current version" marker in README will error if either is missing or changed in form, never silently passing); for cross-environment deploys (e.g., NAS container) also use `python sync_version.py --check-target <path>` to validate the target's `pyproject.toml`. Full changelog: **[CHANGELOG_FORK.md](./CHANGELOG_FORK.md)** (maintained independently by this fork, does not overwrite upstream `CHANGELOG.md`).
 

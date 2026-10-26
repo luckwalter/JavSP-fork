@@ -18,6 +18,9 @@ const emit = defineEmits(['navigate'])
 
 const cfg = ref(null)
 const runtime = ref(null)
+// 服务端版本号兜底: 设置页打开即显示当前版本, 不依赖「点过立即检查」才有值(B-002)。
+// 取自 /api/health(免登录白名单接口, 几乎总能通), 比 runtime 更可靠。
+const serverVersion = ref('')
 const msg = ref('')
 const err = ref('')
 const saving = ref(false)
@@ -82,12 +85,25 @@ async function checkUpdateNow() {
 
 const MASK = '***MASKED***'
 
+// 封面裁剪引擎标签(B-003): 后端返回的是 cover_crop{engine, enabled, available},
+// 顶层并没有 crop_engine —— 原写法取到的恒为 undefined, 标签永不显示。
+// engine 为空表示未配置, 此时不显示属正确行为; 配了但依赖没装则显式标注,
+// 免得用户以为"设置了就是生效的"。
+const coverEngineText = computed(() => {
+  const cc = runtime.value?.cover_crop
+  const engine = cc?.engine
+  if (!engine) return ''
+  if (cc.available === false) return `封面引擎: ${engine}（依赖未就绪）`
+  return `封面引擎: ${engine}`
+})
+
 async function load() {
   loading.value = true
   err.value = ''
   try {
     cfg.value = await api.getConfig()
     runtime.value = await api.getConfigRuntime().catch(() => null)
+    serverVersion.value = await api.getHealth().then((r) => r.version || '').catch(() => '')
   } catch (e) {
     err.value = e.message
   } finally {
@@ -332,8 +348,8 @@ onMounted(load)
               {{ saving ? '保存中' : '保存并生效' }}
             </button>
             <button class="btn" @click="load">放弃修改</button>
-            <span v-if="runtime?.crop_engine" class="pill pill--muted">
-              封面引擎: {{ runtime.crop_engine }}
+            <span v-if="coverEngineText" class="pill pill--muted">
+              {{ coverEngineText }}
             </span>
           </div>
 
@@ -763,7 +779,7 @@ onMounted(load)
             <div class="field">
               <label class="field-label">当前版本</label>
               <p class="field-hint" style="margin-top: 0;">
-                v{{ updateInfo.current || runtime?.version || '—' }}
+                v{{ updateInfo.current || serverVersion || runtime?.version || '—' }}
                 <template v-if="updateInfo.info">　→　最新 v{{ updateInfo.info.latest }}</template>
               </p>
             </div>

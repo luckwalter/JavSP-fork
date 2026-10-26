@@ -14,7 +14,9 @@ from datetime import datetime
 from packaging import version
 from colorama import Style
 from pathlib import Path
-import importlib.metadata as meta
+# 版本号与发布页地址收敛到单一数据源: 避免 CLI 这条路径再写一份仓库地址/版本逻辑
+from javsp.version import get_version, FALLBACK_VERSION
+from javsp.update import API_LATEST, RELEASES_PAGE
 
 # 判断系统是否可以使用tk
 USE_GUI = True
@@ -29,7 +31,8 @@ from javsp.lib import re_escape, resource_path
 from javsp.prompt import prompt
 
 __all__ = ['select_folder', 'get_scan_dir', 'remove_trail_actor_in_title',
-           'shutdown', 'CLEAR_LINE', 'check_update', 'split_by_punc']
+           'shutdown', 'system_shutdown_command', 'safe_extract', 'CLEAR_LINE',
+           'check_update', 'split_by_punc']
 
 
 CLEAR_LINE = '\r\x1b[K'
@@ -84,6 +87,19 @@ def remove_trail_actor_in_title(title:str, actors:list) -> str:
         return title
 
 
+def system_shutdown_command() -> list:
+    """当前平台的关机命令(列表形式, 交给 subprocess 执行时不再经过 shell)
+
+    上游统一用 `shutdown -s`: 那是 Windows 的关机参数, 类 Unix 下 `-s` 要么不是
+    有效选项(多数发行版直接报错退出), 要么在少数 SysV 实现上被忽略而立即关机
+    ——语义不可依赖, 故按平台分开。
+    """
+    if platform.system().lower() == 'windows':
+        return ['shutdown', '/s', '/t', '0']
+    # Linux/macOS: -h = halt(关机)
+    return ['shutdown', '-h', 'now']
+
+
 def shutdown(timeout=120):
     """关闭计算机"""
     try:
@@ -91,8 +107,15 @@ def shutdown(timeout=120):
             print(CLEAR_LINE + f"JavSP整理完成，将在 {i} 秒后关机。按'Ctrl+C'取消", end='')
             time.sleep(1)
         logger.info('整理完成，自动关机')
-        #TODO: 当前仅支持Windows平台
-        os.system('shutdown -s')
+        cmd = system_shutdown_command()
+        try:
+            # 参数均为常量且不经过 shell, 不存在命令注入面; 类 Unix 下普通用户通常
+            # 无权关机, 此时降级为提示, 不让异常打断整理收尾
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.warning('自动关机失败(可能缺少权限), 请手动关机: ' + (result.stderr or '').strip())
+        except FileNotFoundError:
+            logger.warning(f'当前平台没有可用的关机命令({cmd[0]}), 请手动关机')
     except KeyboardInterrupt:
         return
 
@@ -172,14 +195,22 @@ def check_update(allow_check=True, auto_update=True):
         print('=' * display_width)
         print('')
 
-    # 使用pyinstaller打包exe时生成hook，运行时由该hook将版本信息注入到sys中
-    local_version = meta.version('javsp')
-    if local_version == "":
+    # 版本号: 优先用打包exe时由hook注入的 sys.javsp_version, 否则回落到单一版本源。
+    # 上游这里直接 meta.version('javsp') —— 以源码方式启动时包并未安装, 会抛
+    # PackageNotFoundError 把整个 CLI 启动流程带崩(B-008); 这里容错后跳过检查。
+    local_version = getattr(sys, 'javsp_version', '') or ''
+    if not local_version:
+        try:
+            local_version = get_version()
+        except Exception as e:
+            logger.debug('无法确定本地版本号: ' + repr(e))
+            local_version = ''
+    if not local_version or local_version == FALLBACK_VERSION:
         return
-    # 检查更新
+    # 检查更新(查本 fork 自己的 releases: 上游仓库的版本号对本 fork 没有意义)
     if allow_check:
-        api_url = 'https://api.github.com/repos/Yuukiy/JavSP/releases/latest'
-        release_url = 'https://github.com/Yuukiy/JavSP/releases/latest'
+        api_url = API_LATEST
+        release_url = RELEASES_PAGE
         print('正在检查更新...', end='')
         try:
             data = request_get(api_url, timeout=3).json()
@@ -244,13 +275,38 @@ def check_update(allow_check=True, auto_update=True):
                 print()     # 输出空行，作为新旧程序的分隔
 
 
+def safe_extract(zip_path, dest='.'):
+    """安全解压 zip: 拒绝任何会写到 dest 之外的成员(zip slip)
+
+    上游直接 `extractall()`: 若包里出现 `../evil.exe` 或绝对路径这类成员名, 会
+    被写到目标目录之外。这里**先全量校验、校验通过才解压**, 非法成员直接中止,
+    不会在盘上留下半个解压结果。
+    """
+    dest = os.path.abspath(dest)
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for member in zip_ref.infolist():
+            if not member.filename:
+                continue
+            target = os.path.abspath(os.path.join(dest, member.filename))
+            # normcase: Windows 文件系统大小写不敏感, 只比字符串会漏判
+            target_n, dest_n = os.path.normcase(target), os.path.normcase(dest)
+            if target_n != dest_n and not target_n.startswith(dest_n.rstrip(os.sep) + os.sep):
+                raise ValueError(f'更新包内含非法路径, 已中止解压: {member.filename}')
+        zip_ref.extractall(dest)
+
+
 def download_update(rel_info):
     """下载版本更新
 
     Args:
         rel_info (json): 调用Github API得到的最新版的release信息
     """
-    if rel_info.get('assets') and getattr(sys, 'frozen', False):
+    if not getattr(sys, 'frozen', False):
+        # 源码方式运行时 sys.executable 指向 Python 解释器 —— 下面的"备份并替换
+        # 可执行文件"会去重命名解释器本身, 必须在这里拦住(上游无此判断)
+        logger.warning('以源码方式运行时不支持自动更新, 请自行前往发布页下载新版')
+        return
+    if rel_info.get('assets'):
         down_url = rel_info['assets'][0]['browser_download_url']
         asset_name = rel_info['assets'][0]['name']
         desc = '下载更新' if shutil.get_terminal_size().columns < 120 else '下载更新: '+asset_name
@@ -262,9 +318,8 @@ def download_update(rel_info):
             if os.path.exists(backup_name):
                 os.remove(backup_name)
             os.rename(sys.executable, backup_name)
-            # 解压下载的zip文件
-            with zipfile.ZipFile(asset_name, 'r') as zip_ref:
-                zip_ref.extractall()
+            # 解压下载的zip文件(带 zip slip 防护)
+            safe_extract(asset_name)
             logger.info('更新完成，启动新版本程序...')
             args = [sys.executable] + sys.argv[1:]
             p = subprocess.Popen(args, start_new_session=True)

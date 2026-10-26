@@ -19,25 +19,27 @@
   → 旧目录改名备份 → 新版落地 → 保留 config.yml → 启动新版;
 - Docker 部署无法替换自身镜像, 只给指引(load 命令 + 发布页), 由用户执行。
 """
+import hashlib
+import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
-import zipfile
 
 import requests
 
-from javsp.config import Cfg
 from javsp.version import get_version
 from javsp.web.base import read_proxy, tls_verify
+
+logger = logging.getLogger(__name__)
 
 
 __all__ = ['check_latest', 'download_asset', 'select_windows_asset', 'is_newer',
            'local_version', 'is_frozen', 'is_container', 'apply_windows_update',
-           'RELEASES_PAGE', 'docker_upgrade_hint']
+           'sha256_file', 'select_checksum_asset', 'fetch_expected_checksum',
+           'is_path_within', 'RELEASES_PAGE', 'docker_upgrade_hint']
 
 
 REPO_OWNER = 'luckwalter'
@@ -51,6 +53,10 @@ REPO_PAGE = f'https://github.com/{REPO_OWNER}/{REPO_NAME}'
 CHECK_TIMEOUT = 3
 # 下载更新包的超时(秒) —— 40MB 左右的 zip, 给足时间
 DOWNLOAD_TIMEOUT = 900
+# 抓取 sha256 清单的超时(秒)。清单只有几百字节, 但 GitHub 资产会 302 到
+# objects.githubusercontent.com, 3 秒的检查超时实测不够(Read timed out),
+# 会白白降级成大小校验, 故单独放宽。
+CHECKSUM_TIMEOUT = 20
 # 检查结果缓存时长(秒)
 CACHE_TTL = 6 * 3600
 
@@ -109,7 +115,10 @@ def docker_upgrade_hint(version: str) -> str:
 def _fetch_release(timeout: int = CHECK_TIMEOUT) -> dict:
     """查询 GitHub 上本 fork 的最新 release; 失败抛异常由调用方消化"""
     proxies = read_proxy()
-    r = requests.get(API_LATEST, headers=_HEADERS, proxies=proxies, timeout=timeout)
+    # verify=tls_verify(): 与爬虫链路保持一致 —— 做 TLS 解密的代理(MITM)环境里,
+    # 不传会直接 SSLCertVerificationError, 表现为"永远查不到新版本"且失败静默。
+    r = requests.get(API_LATEST, headers=_HEADERS, proxies=proxies, timeout=timeout,
+                     verify=tls_verify())
     r.raise_for_status()
     return r.json()
 
@@ -170,16 +179,82 @@ def select_windows_asset(release: dict) -> dict:
     return None
 
 
-def download_asset(url: str, dest: str, progress_cb=None) -> str:
-    """下载 release 资产到指定路径, 附带进度回调
+def is_path_within(child: str, parent: str) -> bool:
+    """child 是否位于 parent 目录之内(大小写无关)
+
+    Windows 文件系统大小写不敏感, 但字符串 startswith 比较是大小写敏感的 ——
+    盘符/目录名写法不一致时会把合法路径误判成非法(B-009)。这里统一 normcase
+    后再比较; parent 自身不算"之内", 必须多出一层路径分隔。
+    """
+    child_n = os.path.normcase(os.path.abspath(child))
+    parent_n = os.path.normcase(os.path.abspath(parent))
+    if child_n == parent_n:
+        return False
+    return child_n.startswith(parent_n.rstrip(os.sep) + os.sep)
+
+
+def sha256_file(path: str, chunk: int = 1 << 20) -> str:
+    """分块计算文件 SHA-256(40MB 级的包也不占内存)"""
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(chunk), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def select_checksum_asset(release: dict) -> dict:
+    """从 release 资产里挑出 sha256 清单文件"""
+    if not release:
+        return None
+    for a in release.get('assets', []):
+        if (a.get('name') or '').lower().endswith('.sha256'):
+            return a
+    return None
+
+
+def fetch_expected_checksum(release: dict, asset_name: str, timeout: int = CHECKSUM_TIMEOUT) -> str:
+    """取指定资产在发布清单里登记的 sha256; 取不到返回空串
+
+    清单格式为 sha256sum 标准输出: `<hex>  <filename>`。
+    清单缺失 / 下载失败 / 不含该文件时一律返回 '', 由调用方降级, 不抛异常 ——
+    校验能力缺失不应直接阻断升级。
+    """
+    asset = select_checksum_asset(release)
+    if not asset or not asset.get('url'):
+        return ''
+    try:
+        proxies = read_proxy()
+        r = requests.get(asset['url'], headers=_HEADERS, proxies=proxies,
+                         timeout=timeout, verify=tls_verify())
+        r.raise_for_status()
+    except Exception as e:      # noqa: BLE001 清单只是增强校验, 失败应降级而非中断
+        logger.warning(f'获取校验清单失败(降级为大小校验): {e}')
+        return ''
+    target = os.path.basename(asset_name).strip().lower()
+    for line in r.text.splitlines():
+        parts = line.split()
+        # 兼容可能带 '*'(二进制模式)标记的 sha256sum 输出
+        if len(parts) >= 2 and os.path.basename(parts[-1].strip('*')).lower() == target:
+            return parts[0].strip()
+    return ''
+
+
+def download_asset(url: str, dest: str, progress_cb=None, expect: dict = None) -> str:
+    """下载 release 资产到指定路径, 附带进度回调与完整性校验
 
     progress_cb(downloaded_bytes, total_bytes) —— total 为 0 时表示未知大小。
     走项目通用代理; GitHub 资产会 302 到 objects.githubusercontent.com,
     requests 默认跟随重定向, 代理同样生效。
+
+    expect 为可选校验依据 {'sha256': 十六进制串, 'size': 字节数}:
+      - 给了 sha256: 下载后计算比对, 不符则**删除该文件**并抛 ValueError
+        (绝不把损坏/被篡改的包留在盘上等着被解压执行);
+      - 只给了 size: 退化为字节数比对, 同样失败即删;
+      - 两者都无: 记 warning 并放行, 保持旧行为(清单缺失不该阻断升级)。
     """
     proxies = read_proxy()
     with requests.get(url, headers=_HEADERS, proxies=proxies, timeout=DOWNLOAD_TIMEOUT,
-                      stream=True) as r:
+                      stream=True, verify=tls_verify()) as r:
         r.raise_for_status()
         total = int(r.headers.get('Content-Length') or 0)
         done = 0
@@ -195,7 +270,35 @@ def download_asset(url: str, dest: str, progress_cb=None) -> str:
                         progress_cb(done, total)
                     except Exception:
                         pass
+
+    _verify_download(dest, expect)
     return dest
+
+
+def _verify_download(path: str, expect: dict = None) -> None:
+    """校验已下载文件的完整性, 不符则删文件并抛 ValueError"""
+    expect = expect or {}
+    exp_sha = (expect.get('sha256') or '').strip().lower()
+    exp_size = int(expect.get('size') or 0)
+    got_size = os.path.getsize(path) if os.path.isfile(path) else -1
+
+    def _discard():
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    if exp_sha:
+        got_sha = sha256_file(path)
+        if got_sha != exp_sha:
+            _discard()
+            raise ValueError(f'更新包完整性校验失败(SHA-256 不符), 已删除: 期望 {exp_sha}, 实际 {got_sha}')
+        logger.info(f'更新包 SHA-256 校验通过: {os.path.basename(path)}')
+    elif exp_size > 0 and got_size != exp_size:
+        _discard()
+        raise ValueError(f'更新包完整性校验失败(大小不符), 已删除: 期望 {exp_size}, 实际 {got_size}')
+    elif exp_size <= 0:
+        logger.warning('更新包缺少校验依据(无 sha256 清单也无 size), 跳过完整性校验')
 
 
 # --------------------------------------------------------------------------

@@ -365,11 +365,6 @@ def parse_mono_dvd_page(movie: MovieInfo, html):
     movie.uncensored = False    # 服务器在日本且面向日本国内公开发售，不会包含无码片
 
 
-# 通販(mono/dvd)页走上面的新解析
-parse_dvd_page = parse_mono_dvd_page
-parse_ppr_page = parse_videoa_page
-parse_nikkatsu_page = parse_videoa_page
-parse_doujin_page = parse_anime_page
 
 
 if __name__ == "__main__":

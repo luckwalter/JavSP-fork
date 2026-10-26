@@ -128,7 +128,6 @@ def parallel_crawler(movie: Movie, tqdm_bar=None, progress_cb: ProgressCb = None
     def wrapper(parser, info: MovieInfo, retry, crawler_name=None):
         """对抓取器函数进行包装，便于更新提示信息和自动重试"""
         crawler_name = crawler_name or threading.current_thread().name
-        task_info = f'Crawler: {crawler_name}: {info.dvdid}'
         _notify(progress_cb, crawler_name, 'start')
         for cnt in range(retry):
             try:
@@ -404,7 +403,6 @@ def _root_save_dir(pattern_dir: str, movie: Movie) -> str:
     return os.path.join(base, pattern_dir)
 
 
-OUTPUT_TOGGLES = ('poster', 'fanart', 'extrafanart', 'nfo')
 
 
 def output_enabled(kind: str) -> bool:
@@ -457,7 +455,6 @@ def generate_names(movie: Movie):
     setattr(info, 'nfo_title', nfo_title)
 
     # 使用字典填充模板，生成相关文件的路径（多分片影片要考虑CD-x部分）
-    cdx = '' if len(movie.files) <= 1 else '-CD1'
     if hasattr(info, 'title_break'):
         title_break = info.title_break
     else:

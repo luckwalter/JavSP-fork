@@ -200,6 +200,32 @@ except Exception as e:      # noqa: BLE001
 # 状态检查全部会失败(它们不会带会话 Cookie)。认证接口本身也需免登录, 否则没法登录。
 _AUTH_WHITELIST = {'/api/health', '/api/auth/login', '/api/auth/status'}
 
+# 高危端点: **即使全局认证未启用**也要求请求来自已登录会话(见 auth_middleware)。
+# /api/update/download 会把远程文件拉到本机落盘, /api/update/apply 会启进程替换程序
+# 目录并退出主进程 —— 二者权限都远高于普通读写。认证整体默认关闭是为了兼容既有部署,
+# 但一旦用户用 JAVSP_ALLOWED_HOSTS 把服务放开到局域网, 收紧前任何人都能触发它们。
+_AUTH_REQUIRED_ALWAYS = {'/api/update/download', '/api/update/apply'}
+
+
+def _is_loopback(request: Request) -> bool:
+    """请求是否来自本机回环地址(桌面版 pywebview 壳 / 容器内本地运维)
+
+    注意必须处理 **IPv4 映射的 IPv6 地址**: uvicorn 双栈监听(绑定 `::`)时,
+    IPv4 客户端连入会写成 `::ffff:127.0.0.1`, 而 `IPv6Address.is_loopback`
+    对它是 False —— 不拆解就会把桌面版的本地请求误判成"远程"而拒掉一键升级。
+    """
+    host = (request.client.host if request.client else '') or ''
+    if host in ('127.0.0.1', '::1', 'localhost'):
+        return True
+    try:
+        import ipaddress
+        addr = ipaddress.ip_address(host)
+        if getattr(addr, 'ipv4_mapped', None):    # ::ffff:127.0.0.1 -> 127.0.0.1
+            addr = addr.ipv4_mapped
+        return bool(addr.is_loopback)
+    except ValueError:
+        return False
+
 
 @app.middleware('http')
 async def auth_middleware(request: Request, call_next):
@@ -211,6 +237,18 @@ async def auth_middleware(request: Request, call_next):
     中间件是"默认拒绝", 新增接口自动受保护。
     """
     if not auth.is_enabled():
+        # 全局认证未启用: 一般接口维持免登录(向后兼容), 但高危端点单独收紧。
+        # 回环地址(桌面版本地窗口 / 容器内 curl)无条件放行 —— 那本就是用户自己的机器,
+        # 收紧它只会让桌面版一键升级失效。
+        mode = auth.update_auth_mode()
+        if (mode == 'on' or (mode == 'auto' and not _is_loopback(request))) \
+                and request.url.path in _AUTH_REQUIRED_ALWAYS:
+            if not auth.has_valid_session(request.cookies.get(auth.SESSION_COOKIE)):
+                return JSONResponse(
+                    {'detail': '该操作需要登录：未设置 JAVSP_AUTH_PASSWORD 时无法登录, '
+                               '可设置密码后重试, 或用 JAVSP_UPDATE_AUTH=off 关闭此限制',
+                     'code': 'unauthorized'},
+                    status_code=401)
         return await call_next(request)
     path = request.url.path
     if path in _AUTH_WHITELIST or not path.startswith('/api/'):
@@ -1035,7 +1073,13 @@ def api_update_download():
             try:
                 def progress(done, total):
                     q.put({'type': 'progress', 'downloaded': done, 'total': total})
-                update_mod.download_asset(asset['url'], dest, progress)
+                # 先取发布清单里登记的 sha256(取不到则退化为 size 校验),
+                # 下载完成后由 download_asset 自行比对, 不符直接删包报错。
+                expect = {'size': int(asset.get('size') or 0)}
+                sha = update_mod.fetch_expected_checksum(info, asset['name'])
+                if sha:
+                    expect['sha256'] = sha
+                update_mod.download_asset(asset['url'], dest, progress, expect=expect)
                 q.put({'type': 'result', 'path': dest, 'size': os.path.getsize(dest)})
             except Exception as e:
                 q.put({'type': 'error', 'msg': str(e)})
@@ -1063,8 +1107,9 @@ def api_update_apply(req: 'UpdateApplyRequest'):
         raise HTTPException(status_code=400, detail='当前不是桌面版(exe)部署, 请改用镜像/源码方式更新')
     zip_path = os.path.abspath(req.zip_path)
     allowed = os.path.abspath(_update_dir())
-    # 只允许应用自己下载目录里的包, 避免被诱导覆盖任意路径
-    if not zip_path.startswith(allowed + os.sep) or not zip_path.lower().endswith('.zip'):
+    # 只允许应用自己下载目录里的包, 避免被诱导覆盖任意路径。
+    # 大小写无关比较: Windows 路径大小写不敏感, 用 startswith 会误拒合法路径。
+    if not update_mod.is_path_within(zip_path, allowed) or not zip_path.lower().endswith('.zip'):
         raise HTTPException(status_code=400, detail='非法的更新包路径')
     if not os.path.isfile(zip_path):
         raise HTTPException(status_code=404, detail='更新包不存在, 请先下载')

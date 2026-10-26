@@ -79,16 +79,18 @@
           <p v-if="!single" class="layer-hint">层与层之间以 <code>/</code> 分隔形成目录; 层内元素可直接拖动排序</p>
         </div>
 
-        <!-- 右栏: 实时预览 -->
+        <!-- 预览区: 整行置于设置区下方, 不再与设置区争抢横向空间(B-001) -->
         <div class="builder-preview">
           <p class="preview-title">实时预览</p>
-          <p class="preview-path">{{ rendered || '(空)' }}</p>
+          <div class="preview-row">
+            <p class="preview-path">{{ rendered || '(空)' }}</p>
+            <p class="preview-length" :class="{ 'preview-length--over': overLimit }">
+              长度 {{ measured }} / {{ lengthMax || '∞' }} {{ byByte ? '字节' : '字符' }}
+            </p>
+          </div>
           <div class="preview-meter" :class="{ 'preview-meter--over': overLimit }">
             <div class="preview-meter-bar" :style="{ width: meterPct + '%' }"></div>
           </div>
-          <p class="preview-length" :class="{ 'preview-length--over': overLimit }">
-            长度 {{ measured }} / {{ lengthMax || '∞' }} {{ byByte ? '字节' : '字符' }}
-          </p>
           <p v-if="unknown.length" class="preview-alert preview-alert--danger">
             ⚠ 未知占位符 {{ unknown.map((u) => '{' + u + '}').join(' ') }}: 后端无法渲染, 整理时会报错, 请删除或改为左侧已有变量
           </p>
@@ -379,14 +381,25 @@ onBeforeUnmount(() => {
 .seg-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* ---------- 三栏主体 ---------- */
+/* 变量面板与设置区并列, 预览整行放在两者下方 —— 原本三栏横向排布在桌面
+   窗口未最大化时会把中间的设置区挤到被预览框压住(B-001) */
 .builder-body {
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr) 176px;
+  grid-template-columns: 208px minmax(0, 1fr);
+  grid-template-areas:
+    "vars    layers"
+    "preview preview";
   gap: var(--space-3);
   align-items: start;
 }
+.var-panel { grid-area: vars; }
+.layer-tree { grid-area: layers; }
+.builder-preview { grid-area: preview; }
 @media (max-width: 1100px) {
-  .builder-body { grid-template-columns: 1fr; }
+  .builder-body {
+    grid-template-columns: 1fr;
+    grid-template-areas: "vars" "layers" "preview";
+  }
 }
 
 /* 左栏: 变量面板 */
@@ -603,7 +616,16 @@ onBeforeUnmount(() => {
 }
 .preview-meter-bar { height: 100%; background: var(--color-primary); border-radius: var(--radius-full); transition: width var(--transition-base); }
 .preview-meter--over .preview-meter-bar { background: var(--color-danger); }
-.preview-length { margin-top: var(--space-1); font-size: var(--font-xs); color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
+/* 预览独占一行: 路径与长度左右分置, 窄屏下自动换行 */
+.preview-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+.preview-path { flex: 1 1 auto; min-width: 0; }
+.preview-length { flex: 0 0 auto; font-size: var(--font-xs); color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
 .preview-length--over { color: var(--color-danger); }
 
 .preview-alert { margin-top: var(--space-2); font-size: var(--font-xs); line-height: 1.5; }

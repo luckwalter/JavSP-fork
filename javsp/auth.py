@@ -69,7 +69,9 @@ def _read_config():
     password = os.getenv('JAVSP_AUTH_PASSWORD', '')
     if not password:
         _auth_enabled = False
-        logger.info('认证未启用(未设置 JAVSP_AUTH_PASSWORD), 所有接口维持免登录')
+        logger.info('认证未启用(未设置 JAVSP_AUTH_PASSWORD), 所有接口维持免登录; '
+                    '但 /api/update/download 与 /api/update/apply 仍要求已登录会话'
+                    '(可用 JAVSP_UPDATE_AUTH=off 关闭该收紧)')
         return
     _pwd_salt = secrets.token_bytes(16)
     _pwd_digest = hashlib.pbkdf2_hmac(
@@ -99,6 +101,42 @@ def _verify_password(candidate: str) -> bool:
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+# 高危更新端点的鉴权模式, 由环境变量 JAVSP_UPDATE_AUTH 控制:
+#   auto(默认) —— 回环地址放行, 远程地址要求已登录会话
+#   on         —— 一律要求已登录会话(含回环)
+#   off        —— 关闭收紧, 恢复与其余接口一致的免登录行为
+# 为什么要单独留一个开关: 认证整体默认关闭是为了兼容既有部署(升级后不会被锁在门外),
+# 但 /api/update/apply 会拉包、替换程序目录并退出进程, 权限远高于一般接口;
+# 给用户一个明确的降级出口, 比"硬拦且无解"更符合自部署场景。
+UPDATE_AUTH_MODES = ('auto', 'on', 'off')
+
+
+def update_auth_mode() -> str:
+    """返回高危更新端点的鉴权模式; 非法值一律退化为 'auto'(即偏向更安全的那一侧)"""
+    mode = (os.getenv('JAVSP_UPDATE_AUTH', 'auto') or 'auto').strip().lower()
+    return mode if mode in UPDATE_AUTH_MODES else 'auto'
+
+
+def has_valid_session(token: Optional[str]) -> bool:
+    """是否存在**真实**的有效会话 —— 不含「未启用认证则放行」的短路
+
+    与 `verify_token` 的唯一区别: 后者在未启用认证时直接返回 True(让所有既有接口
+    维持免登录), 因此它无法回答"调用方是否真的登录过"。高危端点需要真实会话作为
+    凭据, 故单独提供本函数。
+
+    与 `verify_token` 不同, 这里**不做滑动续期** —— 它只是凭据检查; 续期应由正常
+    请求路径负责, 否则一次凭据探测会悄悄延长会话寿命。
+    """
+    if not token:
+        return False
+    th = _token_hash(token)
+    with _lock:
+        s = _sessions.get(th)
+        if not s:
+            return False
+        return s['expires'] >= time.time()
 
 
 def lockout_remaining() -> float:

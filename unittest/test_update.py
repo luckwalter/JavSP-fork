@@ -11,6 +11,9 @@ import os
 import sys
 import tempfile
 
+import json
+import time
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from javsp import update as u
@@ -120,3 +123,255 @@ def test_helper_script_content_and_bom():
     assert 'Expand-Archive' in text, '需用 PowerShell 解压 zip'
     assert 'Start-Process' in text, '升级后需启动新版本'
     assert '已回滚' in text or 'Move-Item -Path $bak -Destination $exeDir' in text, '失败需能回滚'
+
+
+# ---------------------------------------------------------------------------
+# v0.4.2+ 修复项回归
+# ---------------------------------------------------------------------------
+
+def test_is_path_within_case_insensitive():
+    """B-009: Windows 路径大小写不敏感, 白名单比较必须大小写无关"""
+    assert u.is_path_within(r'C:\JavSP\update\a.zip', r'C:\JavSP\update') is True
+    assert u.is_path_within(r'c:\javsp\update\a.zip', r'C:\JavSP\UPDATE') is True
+    assert u.is_path_within('/app/update/a.zip', '/app/update') is True
+
+
+def test_is_path_within_rejects_escape():
+    """安全边界: 目录自身、同级前缀欺骗、目录外一律拒绝"""
+    assert u.is_path_within(r'C:\JavSP\update', r'C:\JavSP\update') is False       # 目录自身
+    assert u.is_path_within(r'C:\JavSP\update_other\a.zip', r'C:\JavSP\update') is False  # 前缀欺骗
+    assert u.is_path_within(r'C:\JavSP\a.zip', r'C:\JavSP\update') is False        # 父级
+    assert u.is_path_within('/app/updateX/a.zip', '/app/update') is False
+
+
+def test_sha256_file_matches_hashlib():
+    """B-004: 分块哈希必须与一次性计算一致(含跨块场景)"""
+    import hashlib
+    with tempfile.TemporaryDirectory() as tmp:
+        small = os.path.join(tmp, 'small.bin')
+        with open(small, 'wb') as f:
+            f.write(b'javsp' * 1000)
+        big = os.path.join(tmp, 'big.bin')
+        with open(big, 'wb') as f:
+            for _ in range(300):
+                f.write(os.urandom(8192))       # >2MB, 跨越默认 chunk
+        for p in (small, big):
+            assert u.sha256_file(p) == hashlib.sha256(open(p, 'rb').read()).hexdigest()
+
+
+def test_verify_download_sha_mismatch_discards_file():
+    """B-004: 哈希不符必须删文件 + 抛错, 绝不留损坏包在盘上"""
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = os.path.join(tmp, 'bad.zip')
+        with open(bad, 'wb') as f:
+            f.write(b'broken')
+        try:
+            u._verify_download(bad, {'sha256': '0' * 64, 'size': 6})
+            assert False, '哈希不符必须抛异常'
+        except ValueError as e:
+            assert 'SHA-256' in str(e)
+        assert not os.path.exists(bad), '校验失败必须删除文件'
+
+
+def test_verify_download_falls_back_to_size():
+    """B-004: 无 sha256 时退化为大小校验; 无依据时放行(保持旧行为)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        ok_file = os.path.join(tmp, 'ok.zip')
+        with open(ok_file, 'wb') as f:
+            f.write(b'abc')
+        u._verify_download(ok_file, {'size': 3})            # 大小匹配 -> 通过
+        assert os.path.exists(ok_file)
+        try:
+            u._verify_download(ok_file, {'size': 999})
+            assert False, '大小不符必须抛异常'
+        except ValueError:
+            pass
+        assert not os.path.exists(ok_file), '校验失败必须删除文件'
+
+        keep = os.path.join(tmp, 'keep.zip')
+        with open(keep, 'wb') as f:
+            f.write(b'abc')
+        u._verify_download(keep, None)                      # 无依据 -> 放行
+        assert os.path.exists(keep)
+
+
+def test_fetch_expected_checksum_parses_manifest(monkeypatch):
+    """B-004: 从 sha256sum 格式的清单里解析出目标文件的哈希"""
+
+    class FakeResp:
+        status_code = 200
+        text = ('aaaa  JavSP-0.4.2-windows.zip\n'
+                'bbbb  javsp-fork-0.4.2-image.tar.gz\n')
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(u.requests, 'get', lambda *a, **k: FakeResp())
+    release = {'assets': [{'name': 'javsp-fork-0.4.2.sha256', 'url': 'https://example.invalid/s'}]}
+    assert u.fetch_expected_checksum(release, 'JavSP-0.4.2-windows.zip') == 'aaaa'
+    assert u.fetch_expected_checksum(release, 'javsp-fork-0.4.2-image.tar.gz') == 'bbbb'
+    assert u.fetch_expected_checksum(release, 'not-in-manifest.zip') == ''
+
+
+def test_fetch_expected_checksum_degrades_when_missing(monkeypatch):
+    """B-004: 清单缺失/下载失败必须返回空串降级, 不能抛异常阻断升级"""
+    assert u.fetch_expected_checksum({'assets': []}, 'x.zip') == ''
+    assert u.fetch_expected_checksum(None, 'x.zip') == ''
+
+    def boom(*a, **k):
+        raise OSError('network down')
+
+    monkeypatch.setattr(u.requests, 'get', boom)
+    release = {'assets': [{'name': 'javsp-fork-0.4.2.sha256', 'url': 'https://example.invalid/s'}]}
+    assert u.fetch_expected_checksum(release, 'x.zip') == ''
+
+
+# ---------------- B-006 · 高危更新端点的鉴权收紧(v0.4.2) ----------------
+
+def _auth_snapshot():
+    """保存 auth 模块的可变全局状态, 供用例结束后还原(避免污染同进程其他用例)"""
+    from javsp import auth
+    return dict(sessions=dict(auth._sessions), enabled=auth._auth_enabled,
+                salt=auth._pwd_salt, digest=auth._pwd_digest)
+
+
+def _auth_restore(snap):
+    from javsp import auth
+    auth._sessions.clear()
+    auth._sessions.update(snap['sessions'])
+    auth._auth_enabled = snap['enabled']
+    auth._pwd_salt = snap['salt']
+    auth._pwd_digest = snap['digest']
+
+
+def test_has_valid_session_is_strict():
+    """has_valid_session **不含**「未启用认证则放行」的短路 —— 这是它能当凭据用的前提
+
+    对照 verify_token: 后者在未启用认证时返回 True(让所有既有接口维持免登录)。
+    若两者语义一致, 高危端点的收紧就会形同虚设, 故此处显式断言二者不同。
+    """
+    import secrets as _sec
+    import hashlib as _hl
+
+    from javsp import auth
+    snap = _auth_snapshot()
+    try:
+        auth._sessions.clear()
+        auth._auth_enabled = False
+        assert auth.has_valid_session(None) is False
+        assert auth.has_valid_session('') is False
+        assert auth.has_valid_session('garbage-token') is False
+        assert auth.verify_token('garbage-token') is True   # 对照组: 放行
+
+        # 真实登录后应能通过, 且换一个 token 就不通过
+        auth._pwd_salt = _sec.token_bytes(16)
+        auth._pwd_digest = _hl.pbkdf2_hmac(
+            'sha256', b'batch2-pw', auth._pwd_salt, auth.PBKDF2_ITERATIONS)
+        auth._auth_enabled = True
+        res = auth.login('admin', 'batch2-pw')
+        assert res['ok'] is True and res['token']
+        assert auth.has_valid_session(res['token']) is True
+        assert auth.has_valid_session('wrong-' + res['token']) is False
+    finally:
+        _auth_restore(snap)
+
+
+def test_update_auth_mode_values():
+    """模式取值: auto/on/off 合法, 非法值与空值一律退化为 auto(偏向更安全的一侧)"""
+    from javsp import auth
+    key = 'JAVSP_UPDATE_AUTH'
+    backup = os.environ.pop(key, None)
+    try:
+        assert auth.update_auth_mode() == 'auto'
+        for raw, want in (('on', 'on'), ('off', 'off'), ('AUTO', 'auto'),
+                          ('bogus', 'auto'), ('', 'auto'), ('  ON  ', 'on')):
+            os.environ[key] = raw
+            assert auth.update_auth_mode() == want, f'{raw!r} -> {want}'
+    finally:
+        os.environ.pop(key, None)
+        if backup is not None:
+            os.environ[key] = backup
+
+
+def test_is_loopback_covers_ipv4_mapped():
+    """双栈监听下来源会写成 ::ffff:127.0.0.1, 必须识别为回环
+
+    否则桌面版(pywebview 访问 127.0.0.1)会被误判成"远程请求", 一键升级被 401 拒掉。
+    """
+    from javsp.server import _is_loopback
+
+    class _Req:
+        def __init__(self, host):
+            self.client = type('C', (), {'host': host})()
+
+    for host, want in (('127.0.0.1', True), ('::1', True), ('localhost', True),
+                       ('::ffff:127.0.0.1', True),
+                       ('198.51.100.100', False), ('203.0.113.9', False), ('', False)):
+        assert _is_loopback(_Req(host)) is want, f'{host!r} -> {want}'
+
+
+def test_high_risk_update_endpoints_require_session():
+    """auto 模式下: 远程调用高危端点必须 401; 回环放行; 非高危端点不受影响
+
+    用手工构造的 ASGI scope 驱动中间件, 以便精确控制来源地址 —— TestClient 的
+    默认来源地址是 'testclient'(非回环), 不能用来验证"回环放行"这一豁免路径。
+    """
+    import asyncio
+    import secrets as _sec
+    import time as _time
+
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+    from javsp import auth
+    from javsp.server import _AUTH_REQUIRED_ALWAYS, app, auth_middleware
+
+    assert _AUTH_REQUIRED_ALWAYS == {'/api/update/download', '/api/update/apply'}
+
+    async def _call_next(request):      # noqa: ARG001
+        return JSONResponse({'passed': True})
+
+    def drive(path, host, cookie=None):
+        headers = [(b'cookie', cookie.encode('utf-8'))] if cookie else []
+        scope = {'type': 'http', 'http_version': '1.1', 'method': 'POST',
+                 'scheme': 'http', 'path': path, 'raw_path': path.encode(),
+                 'query_string': b'', 'root_path': '', 'headers': headers,
+                 'client': (host, 51234), 'server': ('testserver', 80)}
+        return asyncio.run(auth_middleware(Request(scope), _call_next))
+
+    snap = _auth_snapshot()
+    backup = os.environ.pop('JAVSP_UPDATE_AUTH', None)
+    try:
+        # 1) 远程未登录 -> 拒绝
+        r = drive('/api/update/apply', '203.0.113.9')
+        assert r.status_code == 401, r.body
+        assert 'JAVSP_AUTH_PASSWORD' in r.body.decode('utf-8', 'replace')
+
+        # 2) 远程已登录 -> 放行(证明收紧的是凭据, 不是一刀切封来源)
+        tok = _sec.token_urlsafe(32)
+        auth._sessions[auth._token_hash(tok)] = {
+            'created': _time.time(), 'expires': _time.time() + 3600, 'ttl': 3600}
+        try:
+            r = drive('/api/update/apply', '203.0.113.9',
+                      cookie=f'{auth.SESSION_COOKIE}={tok}')
+            body = json.loads(r.body.decode('utf-8'))
+            assert r.status_code == 200 and body.get('passed') is True
+        finally:
+            auth._sessions.pop(auth._token_hash(tok), None)
+
+        # 3) 回环 -> 放行(桌面版一键升级不受影响)
+        r = drive('/api/update/apply', '127.0.0.1')
+        assert r.status_code == 200, r.body
+
+        # 4) 非高危端点不受收紧影响
+        r = drive('/api/config', '203.0.113.9')
+        assert r.status_code == 200, r.body
+
+        # 5) off 模式 -> 放行
+        os.environ['JAVSP_UPDATE_AUTH'] = 'off'
+        r = drive('/api/update/apply', '203.0.113.9')
+        assert r.status_code == 200, r.body
+    finally:
+        os.environ.pop('JAVSP_UPDATE_AUTH', None)
+        if backup is not None:
+            os.environ['JAVSP_UPDATE_AUTH'] = backup
+        _auth_restore(snap)

@@ -61,8 +61,6 @@ def parse_data(movie: MovieInfo):
     producer = None
     genre = []
     actress = []
-
-    detail_dic = {}
     for item in container.xpath("//div[@class='detail-item']/div"):
         item_title = item.xpath('span/text()')[0]
         if "タグ:" in item_title:

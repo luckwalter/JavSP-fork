@@ -18,7 +18,7 @@ def get_bound_box_by_face(face: tuple[int, int, int, int], image_shape: tuple[in
     fx, fy, fw, fh = face
 
     # face center
-    cx, cy = fx + fw / 2, fy + fh / 2
+    cx = fx + fw / 2
 
     poster_left = max(cx - poster_w / 2, 0)
     poster_left = min(poster_left, fanart_w - poster_w)
