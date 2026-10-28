@@ -134,6 +134,19 @@ export async function putConfig(cfg) {
   return r.json()
 }
 
+// 翻译引擎连通性测试: 用界面当前(可能尚未保存)的配置真实翻译一句, 验证引擎、
+// 密钥、端点与代理是否配对。对所有引擎通用; 会消耗极少量配额, 仅在用户点
+// 「测试」时调用, 不写入 config.yml。
+export async function testTranslate(payload) {
+  const r = await request('/api/translate/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!r.ok) throw new Error(await readDetail(r, '翻译测试失败'))
+  return r.json()
+}
+
 // 消费 SSE 流(POST + ReadableStream), onEvent 收到每个 data 事件
 export function scrapeStream(payload, onEvent) {
   return consumeSSE(BASE + '/api/scrape', payload, onEvent)
@@ -336,5 +349,21 @@ export async function getThumbsCache() {
 export async function clearThumbsCache() {
   const r = await request('/api/cache/thumbs', { method: 'DELETE' })
   if (!r.ok) throw new Error(await readDetail(r, '清除缓存失败'))
+  return r.json()
+}
+
+// ---- 翻译结果缓存 ----
+
+/** 翻译缓存统计(条数 / 占用 / 目录 / 开关 / 保留天数) */
+export async function getTranslationCache() {
+  const r = await request('/api/cache/translations')
+  if (!r.ok) throw new Error(await readDetail(r, '读取翻译缓存统计失败'))
+  return r.json()
+}
+
+/** 手动清空翻译缓存(换模型/提示词后想强制重译时用) */
+export async function clearTranslationCache() {
+  const r = await request('/api/cache/translations', { method: 'DELETE' })
+  if (!r.ok) throw new Error(await readDetail(r, '清除翻译缓存失败'))
   return r.json()
 }

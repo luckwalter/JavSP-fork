@@ -104,11 +104,15 @@ async function load() {
     cfg.value = await api.getConfig()
     // 旧配置文件里没有 cache 段(本功能新增)—— 补默认值, 否则 v-model 会报错
     if (!cfg.value.cache) {
-      cfg.value.cache = { thumbs_dir: '', auto_clean: true, retention_days: 7 }
+      cfg.value.cache = {
+        thumbs_dir: '', auto_clean: true, retention_days: 7,
+        translation_enabled: true, translation_dir: '', translation_retention_days: 30,
+      }
     }
     runtime.value = await api.getConfigRuntime().catch(() => null)
     serverVersion.value = await api.getHealth().then((r) => r.version || '').catch(() => '')
     await loadThumbsCache()
+    await loadTransCache()
   } catch (e) {
     err.value = e.message
   } finally {
@@ -148,6 +152,33 @@ async function clearThumbs() {
     thumbsMsg.value = `清除失败：${e.message}`
   } finally {
     clearingThumbs.value = false
+  }
+}
+
+// ---- 翻译结果缓存管理 ----
+const transCache = ref(null)
+const transMsg = ref('')
+const clearingTrans = ref(false)
+
+async function loadTransCache() {
+  try {
+    transCache.value = await api.getTranslationCache()
+  } catch (e) {
+    transCache.value = null
+  }
+}
+
+async function clearTrans() {
+  clearingTrans.value = true
+  transMsg.value = ''
+  try {
+    const r = await api.clearTranslationCache()
+    transMsg.value = `已清除 ${r.removed ?? 0} 条译文`
+    await loadTransCache()
+  } catch (e) {
+    transMsg.value = `清除失败：${e.message}`
+  } finally {
+    clearingTrans.value = false
   }
 }
 
@@ -284,6 +315,15 @@ const LLM_PRESETS = [
   { label: 'Gemini(OpenAI 兼容)', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', model: 'gemini-2.5-flash', local: false },
 ]
 
+// Claude 模型候选(给 datalist 用, 也可直接手写)。
+// ⚠️ 旧默认 claude-3-haiku-20240307 已被 Anthropic **硬退役**: 自 2026-04-20 起
+// 对该模型 ID 的请求直接报错, 故默认改为在役的 Haiku 4.5。
+const CLAUDE_PRESETS = [
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5（默认·最经济）' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6（质量更好·更贵）' },
+  { value: 'claude-opus-4-7', label: 'Opus 4.7（最强·最贵）' },
+]
+
 const engineObj = computed(() => {
   const e = cfg.value?.translator?.engine
   return (e && typeof e === 'object') ? e : null
@@ -299,9 +339,15 @@ const engineName = computed({
     // 切换引擎时按目标引擎重建 dict; 密钥类字段沿用它引擎已有值(可能是掩码,
     // 后端 unmask_secrets 会还原成真实密钥, 不会因切换引擎丢密钥)。
     const base = { name }
-    if (name === 'baidu') Object.assign(base, { app_id: prev.app_id ?? '', api_key: prev.api_key ?? '' })
-    if (name === 'bing') Object.assign(base, { api_key: prev.api_key ?? '' })
-    if (name === 'claude') Object.assign(base, { api_key: prev.api_key ?? '', use_proxy: prev.use_proxy ?? false })
+    if (name === 'baidu') Object.assign(base, {
+      app_id: prev.app_id ?? '', api_key: prev.api_key ?? '', qps: prev.qps ?? 1,
+    })
+    if (name === 'bing') Object.assign(base, { api_key: prev.api_key ?? '', region: prev.region ?? 'global' })
+    if (name === 'claude') Object.assign(base, {
+      api_key: prev.api_key ?? '',
+      model: prev.model || CLAUDE_PRESETS[0].value,
+      use_proxy: prev.use_proxy ?? false,
+    })
     if (name === 'openai') Object.assign(base, {
       url: prev.url || LLM_PRESETS[0].url,
       api_key: prev.api_key ?? '',
@@ -333,10 +379,54 @@ const engApiKeySet = computed(() => {
   const v = engineObj.value?.api_key
   return typeof v === 'string' && v.length > 0
 })
-const engUseProxy = computed({
-  get: () => !!engineObj.value?.use_proxy,
-  set: (v) => { if (engineObj.value) engineObj.value.use_proxy = v },
+// 百度 QPS: 标准版额度 1, 高级版/企业版可达 10(超限会被拒, 错误码 54003)
+const engQps = computed({
+  get: () => engineObj.value?.qps ?? 1,
+  set: (v) => { if (engineObj.value) engineObj.value.qps = Number(v) || 1 },
 })
+// Bing/Azure 资源区域: 单服务资源必须填真实区域, 否则报 401001 且看不出原因
+const engRegion = computed({
+  get: () => engineObj.value?.region ?? 'global',
+  set: (v) => { if (engineObj.value) engineObj.value.region = v || 'global' },
+})
+// 通用代理开关: 位于 translator 顶层, 对**所有**翻译引擎生效(Google/百度/Bing/
+// 大模型一视同仁), 不再是 LLM 引擎专属。旧配置没有该字段时回落到 engine.use_proxy,
+// 保证界面显示与后端实际行为一致(后端 _resolve_use_proxy 是同样的回落顺序)。
+const translatorUseProxy = computed({
+  get: () => {
+    const t = cfg.value?.translator
+    if (!t) return false
+    if (t.use_proxy !== null && t.use_proxy !== undefined) return !!t.use_proxy
+    return !!engineObj.value?.use_proxy
+  },
+  set: (v) => { if (cfg.value?.translator) cfg.value.translator.use_proxy = !!v },
+})
+
+// 翻译连通性测试: 把界面当前(可尚未保存)的引擎配置、目标语种与代理开关发给后端
+// 真实翻译一句, 结果直接写进 msg/err 通知条。对所有引擎通用, 不写入 config.yml。
+const testing = ref(false)
+async function testTranslate() {
+  testing.value = true
+  err.value = ''
+  msg.value = ''
+  try {
+    const t = cfg.value?.translator || {}
+    const r = await api.testTranslate({
+      engine: t.engine ?? null,
+      language: t.language || 'zh_CN',
+      use_proxy: translatorUseProxy.value,
+    })
+    if (r.ok) {
+      msg.value = `翻译测试成功（${r.engine} → ${r.language}）：${r.source} ⇒ ${r.translated}`
+    } else {
+      err.value = `翻译测试失败（${r.engine} → ${r.language}）：${r.error}`
+    }
+  } catch (e) {
+    err.value = e?.message || '翻译测试失败'
+  } finally {
+    testing.value = false
+  }
+}
 
 const presetSel = ref('')
 function onPresetChange() {
@@ -346,8 +436,9 @@ function onPresetChange() {
   if (!p) return
   e.url = p.url
   e.model = p.model
-  // 本地/局域网地址默认不走代理; 云端源默认打开(国内直连不通, 需走项目代理)
-  e.use_proxy = !p.local
+  // 本地/局域网地址默认不走代理; 云端源默认打开(国内直连不通, 需走项目代理)。
+  // 写通用开关(translator 顶层)而非引擎内字段, 对所有引擎一致生效。
+  translatorUseProxy.value = !p.local
   presetSel.value = ''
 }
 
@@ -386,6 +477,12 @@ onMounted(load)
             <button class="btn btn--primary" :disabled="saving" @click="save">
               <span v-if="saving" class="spinner" aria-hidden="true"></span>
               {{ saving ? '保存中' : '保存并生效' }}
+            </button>
+            <button v-if="currentGroup.key === 'translator'" class="btn" :disabled="testing"
+                    @click="testTranslate"
+                    title="用当前配置真实翻译一句, 验证引擎/密钥/端点/代理是否可用">
+              <span v-if="testing" class="spinner" aria-hidden="true"></span>
+              {{ testing ? '测试中' : '测试翻译' }}
             </button>
             <button class="btn" @click="load">放弃修改</button>
             <span v-if="coverEngineText" class="pill pill--muted">
@@ -720,6 +817,21 @@ onMounted(load)
               </p>
             </div>
 
+            <!-- 使用统一代理: 通用选项, 对所有翻译引擎生效(Google/百度/Bing/大模型
+                 一视同仁)。位置固定在「翻译引擎」「目标语种」下方, 切换引擎时不变。 -->
+            <div v-if="engineName" class="switch-list" style="margin-bottom: var(--space-4);">
+              <label class="switch-row">
+                <input v-model="translatorUseProxy" type="checkbox" />
+                <span class="switch-text">
+                  <span class="switch-title">使用统一代理</span>
+                  <span class="switch-desc">
+                    勾选后翻译请求走「网络与容错」里配置的出口代理, 无需重复填写;
+                    对所有翻译引擎生效。本地/局域网部署的模型请勿勾选
+                  </span>
+                </span>
+              </label>
+            </div>
+
             <!-- OpenAI 兼容引擎: 端点预设 + 接口地址 + 模型名 -->
             <template v-if="engineName === 'openai'">
               <div class="field">
@@ -765,6 +877,17 @@ onMounted(load)
                        :placeholder="engApiKeySet ? '已配置, 输入可替换(清空并保存= 清除)' : '百度翻译开放平台 API 密钥'" />
               </div>
             </div>
+            <!-- 百度: QPS 上限(标准版 1, 高级版可达 10) -->
+            <div v-if="engineName === 'baidu'" class="field">
+              <label class="field-label">每秒请求上限（QPS）</label>
+              <div style="display: flex; align-items: center; gap: var(--space-3);">
+                <input v-model.number="engQps" type="number" min="0.1" max="20" step="0.1"
+                       class="input" style="width: 110px;" />
+                <span class="field-hint" style="margin: 0;">
+                  标准版额度为 1（默认），高级版/企业版可填 10；超限时百度会拒绝请求
+                </span>
+              </div>
+            </div>
             <!-- 其余需要密钥的引擎 -->
             <div v-else-if="engineName && engineName !== 'google'" class="field">
               <label class="field-label">API 密钥</label>
@@ -776,20 +899,38 @@ onMounted(load)
               </p>
             </div>
 
-            <!-- 代理开关: 仅 LLM 引擎(openai/claude); 本地部署不要勾 -->
-            <div v-if="engineName === 'openai' || engineName === 'claude'" class="switch-list"
-                 style="margin-bottom: var(--space-4);">
-              <label class="switch-row">
-                <input v-model="engUseProxy" type="checkbox" />
-                <span class="switch-text">
-                  <span class="switch-title">使用通用代理</span>
-                  <span class="switch-desc">
-                    勾选后翻译请求直接走「网络与容错」里配置的出口代理, 无需重复填写;
-                    本地/局域网部署的模型请勿勾选
-                  </span>
-                </span>
-              </label>
+            <!-- Bing: Azure 资源区域(单服务资源必须填实际区域) -->
+            <div v-if="engineName === 'bing'" class="field">
+              <label class="field-label">资源区域</label>
+              <input v-model="engRegion" class="input input--mono" style="max-width: 240px;" spellcheck="false"
+                     placeholder="global" />
+              <p class="field-hint">
+                多服务/全球资源填 <code>global</code>（默认）；单服务资源必须填实际区域（如
+                <code>eastasia</code>），否则会返回 401001 而看不出原因
+              </p>
             </div>
+
+            <!-- Claude: 模型可选(旧的 haiku 3 已被官方硬退役) -->
+            <div v-if="engineName === 'claude'" class="field">
+              <label class="field-label">模型</label>
+              <input v-model="engModel" class="input input--mono" style="max-width: 320px;" spellcheck="false"
+                     list="claude-model-presets" placeholder="claude-haiku-4-5-20251001" />
+              <datalist id="claude-model-presets">
+                <option v-for="m in CLAUDE_PRESETS" :key="m.value" :value="m.value">{{ m.label }}</option>
+              </datalist>
+              <p class="field-hint">
+                ⚠️ 旧默认 <code>claude-3-haiku-20240307</code> 已被 Anthropic 硬退役（2026-04-20 起请求直接报错），
+                若沿用旧配置请改成在役型号。列表可选，也可直接手写
+              </p>
+            </div>
+
+            <!-- OpenAI 兼容: 本地 Ollama / LM Studio 的密钥可留空 -->
+            <p v-if="engineName === 'openai'" class="field-hint" style="margin-top: var(--space-1);">
+              本地部署（Ollama / LM Studio）不需要密钥，<strong>留空即可</strong>；留空时不会发送鉴权头。
+            </p>
+
+            <!-- 「使用统一代理」已上移至「翻译引擎」下拉框下方——它是通用选项,
+                 对所有引擎生效, 切换引擎时位置保持不变 -->
 
             <div class="switch-list">
               <label class="switch-row">
@@ -913,6 +1054,59 @@ onMounted(load)
                     v-model.number="cfg.cache.retention_days"
                     @change="save" />
                   <span class="field-hint" style="margin: 0;">天（默认 7 天，仅在自动清理打开时生效）</span>
+                </div>
+              </div>
+
+              <!-- 翻译结果缓存 -->
+              <div class="field" style="margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--color-border-light);">
+                <label class="field-label">翻译缓存</label>
+                <p class="field-hint" style="margin-top: 0;">
+                  复用已翻译过的标题/简介，避免重复调用引擎（省配额、提速）。
+                  换引擎、换模型、改目标语种或文本内容变化都会自动重新翻译。
+                </p>
+
+                <div v-if="transCache" style="margin-top: var(--space-3); display: flex; gap: var(--space-4); flex-wrap: wrap;">
+                  <span class="field-hint" style="margin: 0;">已缓存 <strong>{{ transCache.count }}</strong> 条</span>
+                  <span class="field-hint" style="margin: 0;">占用 <strong>{{ formatBytes(transCache.bytes) }}</strong></span>
+                </div>
+                <p v-if="transCache" class="field-hint" style="margin-top: var(--space-2);">
+                  目录：<code>{{ transCache.dir }}</code>
+                </p>
+
+                <div class="field" style="margin-top: var(--space-3);">
+                  <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+                    <button class="btn btn--sm" :disabled="clearingTrans" @click="clearTrans">
+                      <span v-if="clearingTrans" class="spinner" aria-hidden="true"></span>
+                      {{ clearingTrans ? '清除中…' : '立即清除全部译文' }}
+                    </button>
+                    <span v-if="transMsg" class="field-hint" style="margin: 0;">{{ transMsg }}</span>
+                    <span v-else class="field-hint" style="margin: 0;">清零后下次刮削会重新调用引擎</span>
+                  </div>
+                </div>
+
+                <div class="field" style="margin-top: var(--space-3);">
+                  <label class="switch">
+                    <input type="checkbox" v-model="cfg.cache.translation_enabled" @change="save" />
+                    <span class="switch-text">
+                      <span class="switch-title">启用翻译缓存</span>
+                      <span class="switch-desc">关闭后每次都重新调用引擎（调试译文效果时可关）</span>
+                    </span>
+                  </label>
+                </div>
+
+                <div class="field" style="margin-top: var(--space-3);">
+                  <label class="field-label">译文保留天数</label>
+                  <div style="display: flex; align-items: center; gap: var(--space-3);">
+                    <input
+                      type="number"
+                      class="input"
+                      style="width: 96px;"
+                      min="1"
+                      max="365"
+                      v-model.number="cfg.cache.translation_retention_days"
+                      @change="save" />
+                    <span class="field-hint" style="margin: 0;">天（默认 30 天，启动时自动清理超期译文）</span>
+                  </div>
                 </div>
               </div>
             </div>
