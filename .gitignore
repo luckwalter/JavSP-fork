@@ -160,3 +160,7 @@ tmp_*.py
 .local_*.py
 smoke_tasks.py
 
+# 运行时本地缓存目录(源码运行时落在项目根 cache/ 下: 缩略图 thumbs/ 与
+# 翻译结果 translations/)。容器/桌面版各有自己的路径, 这里只针对源码运行。
+cache/
+

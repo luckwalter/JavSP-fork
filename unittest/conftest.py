@@ -29,6 +29,22 @@ def crawler(request):
     return request.config.getoption("--only")
 
 
+@pytest.fixture(autouse=True)
+def _no_translation_cache(monkeypatch):
+    """单测一律禁用翻译缓存
+
+    缓存是进程级的全局状态(sqlite 落在真实缓存目录), 若不禁掉:
+    ① 先跑的用例写入译文后, 后跑的用例会命中缓存而根本不打引擎 —— 断言
+       "请求了几次/失败了什么" 直接失真(实测就是这样挂掉的);
+    ② 用例之间互相污染, 单跑能过、整套跑就红。
+    """
+    try:
+        from javsp import transcache
+    except Exception:
+        return
+    monkeypatch.setattr(transcache, 'enabled', lambda: False)
+
+
 def pytest_generate_tests(metafunc):
     if 'crawler_params' in metafunc.fixturenames:
         # 根据测试数据文件夹中的文件生成测试数据

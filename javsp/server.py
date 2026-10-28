@@ -19,10 +19,10 @@ from typing import List, Optional, Tuple
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from javsp.config import Cfg, get_config_source
+from javsp.config import Cfg, get_config_source, TranslateEngine
 from javsp.config_io import diff_leaves, mask_secrets, unmask_secrets
 from javsp.config_reload import apply_config_changes, describe_runtime, config_transaction
 from javsp.core import (
@@ -35,8 +35,9 @@ from javsp.task_store import TaskStore
 from javsp import auth
 from javsp import update as update_mod
 from javsp import thumbs as thumbs_mod
+from javsp import transcache
 from javsp.web import health as channel_health
-from javsp.web.translate import translate_movie_info
+from javsp.web.translate import translate, translate_movie_info, redact_url
 
 logger = logging.getLogger('javsp.server')
 
@@ -117,14 +118,22 @@ async def lifespan(app: FastAPI):
     def _thumbs_cleanup_once():
         time.sleep(3)
         try:
-            if not getattr(Cfg().cache, 'auto_clean', True):
-                return
-            days = int(getattr(Cfg().cache, 'retention_days', 7))
-            n = thumbs_mod.cleanup_expired(days)
-            if n:
-                logger.info(f'已清理过期缩略图 {n} 张(保留 {days} 天)')
+            if getattr(Cfg().cache, 'auto_clean', True):
+                days = int(getattr(Cfg().cache, 'retention_days', 7))
+                n = thumbs_mod.cleanup_expired(days)
+                if n:
+                    logger.info(f'已清理过期缩略图 {n} 张(保留 {days} 天)')
         except Exception as e:      # noqa: BLE001
             logger.warning(f'清理过期缩略图失败(忽略): {e}')
+        # 翻译结果缓存的过期清理(同一维护线程内跑, 独立 try —— 一项失败不影响另一项)
+        try:
+            if getattr(Cfg().cache, 'translation_enabled', True):
+                tdays = int(getattr(Cfg().cache, 'translation_retention_days', 30))
+                n = transcache.prune(tdays)
+                if n:
+                    logger.info(f'已清理过期翻译缓存 {n} 条(保留 {tdays} 天)')
+        except Exception as e:      # noqa: BLE001
+            logger.warning(f'清理过期翻译缓存失败(忽略): {e}')
 
     threading.Thread(target=_thumbs_cleanup_once, daemon=True, name='thumbs-cleanup').start()
     # 定期清理过期会话: daemon 线程 + 周期等待, 启动后先等一个周期(启动时刚加载
@@ -562,6 +571,149 @@ def api_channels_check(sources: Optional[List[str]] = None):
     except Exception as e:      # noqa: BLE001
         raise HTTPException(status_code=500, detail=f'探活失败: {channel_health._sanitize(str(e))}')
     return {'sources': rows, 'summary': channel_health.summary_for_log()}
+
+
+# ---- 翻译测试端点的安全边界 ----
+# 该端点会带着界面上(可能尚未保存的)配置**真实发起一次外部请求**, 所以同时是
+# SSRF 面、凭据回显面和配额消耗面:
+#   · openai 兼容端的 url 由调用方任意指定(本地 Ollama 是合法用法, 不能一刀切禁)
+#   · 失败详情会直接显示在设置页上, 而 pydantic 的默认报错会**原样回显输入值**
+#     (含 api_key、url 上的签名)
+#   · 一次调用就消耗一次真实配额, 无成本故可被脚本反复触发
+# 取舍: 私有/回环网段**不禁止** —— 禁掉就直接废掉本地 Ollama 与局域网自建 LLM
+# 这个核心场景; 改为只允许 http(s)、屏蔽云元数据地址、按客户端限流、错误信息
+# 脱敏。要真正防"别人用你的额度", 应当开启认证(JAVSP_AUTH_PASSWORD)。
+_TEST_URL_SCHEMES = ('http', 'https')
+# 云厂商实例元数据地址(命中即拒): 这类地址一旦可被探测, 攻击者能直接取到实例
+# 上的临时凭据(远比扫一个内网端口严重), 而对任何正常用法都没有影响。
+_METADATA_HOSTS = {
+    '169.254.169.254',   # AWS / Azure / OpenStack / 腾讯云
+    '169.254.170.2',     # ECS task metadata
+    '100.100.100.200',   # 阿里云
+    'fd00:ec2::254',     # AWS IPv6
+    'metadata.google.internal',
+    'metadata.goog',
+    'metadata',
+}
+# 同一客户端两次「测试」的最小间隔(秒): 挡住脚本反复触发消耗付费额度,
+# 不影响人手点按钮(一次点完看结果远不止 3 秒)。
+_TEST_MIN_INTERVAL = 3.0
+_test_call_lock = threading.Lock()
+_test_last_call = {}
+
+
+def _validate_test_url(url) -> str:
+    """校验 openai 兼容端 url: 通过返回 '', 否则返回错误说明"""
+    from urllib.parse import urlparse
+    import ipaddress
+    try:
+        p = urlparse(str(url))
+    except Exception:       # noqa: BLE001
+        return 'URL 无法解析'
+    if p.scheme.lower() not in _TEST_URL_SCHEMES:
+        return f'不支持的协议 {p.scheme or "(空)"}, 只允许 http/https'
+    host = (p.hostname or '').strip().lower().rstrip('.')
+    if not host:
+        return 'URL 缺少主机名'
+    if host in _METADATA_HOSTS:
+        return f'{host} 是云厂商实例元数据地址, 不允许作为翻译端点'
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        # 域名形态: 刻意**不做** DNS 解析(解析本身就是新的 SSRF 面, 且存在
+        # DNS rebinding), 只挡上面那份已知元数据域名清单
+        return ''
+    a = getattr(addr, 'ipv4_mapped', None) or addr   # ::ffff:169.254.169.254 -> IPv4
+    if a.is_link_local or a.is_unspecified or a.is_multicast or a.is_reserved:
+        return f'{host} 属于链路本地/保留网段, 不允许作为翻译端点'
+    return ''
+
+
+def _test_too_soon(client: str) -> bool:
+    """同一客户端是否在最小间隔内重复触发"""
+    now = time.time()
+    with _test_call_lock:
+        last = _test_last_call.get(client, 0.0)
+        if now - last < _TEST_MIN_INTERVAL:
+            return True
+        # 顺带回收长期不活跃的条目, 防止字典随客户端数量无限增长
+        if len(_test_last_call) > 256:
+            for k in [k for k, v in _test_last_call.items() if now - v > 3600]:
+                _test_last_call.pop(k, None)
+        _test_last_call[client] = now
+        return False
+
+
+class TranslateTestRequest(BaseModel):
+    """翻译引擎连通性测试请求
+
+    传的是**界面上当前(可能尚未保存)**的配置; 后端据此真实跑一次翻译, 让用户
+    在保存之前就知道引擎、密钥、端点与代理是否配对。
+    """
+    engine: Optional[dict] = None
+    language: Optional[str] = None
+    use_proxy: Optional[bool] = None
+
+
+@app.post('/api/translate/test')
+def api_translate_test(payload: TranslateTestRequest, request: Request):
+    """用当前翻译配置跑一次真实翻译, 验证该通道是否可用 —— 对所有引擎通用
+
+    覆盖 Google / 百度 / Bing / Claude / OpenAI 兼容(含本地 Ollama)全部引擎。
+    会真实调用一次外部接口(消耗极少量配额), 因此只在用户主动点「测试」时触发。
+
+    安全约束见上方 _validate_test_url / _test_too_soon: URL 只允许 http(s)、
+    屏蔽云元数据地址、按客户端限流、错误信息脱敏(不回显 api_key 与 URL 查询串)。
+    """
+    raw = payload.engine
+    if not isinstance(raw, dict) or not raw.get('name'):
+        raise HTTPException(status_code=400, detail='未选择翻译引擎')
+    try:
+        engine = TypeAdapter(TranslateEngine).validate_python(raw)
+    except ValidationError as e:
+        # pydantic 的默认报错会**原样回显输入值**(含 api_key、以及 url 查询串里
+        # 的签名), 而这段文本会直接显示在设置页上、也会被用户贴进 issue。
+        # 只保留字段位置与原因, 不回显输入。
+        detail = '; '.join(
+            '{}{}'.format('.'.join(str(x) for x in err.get('loc', ())) + ': ' if err.get('loc') else '',
+                          err.get('msg', ''))
+            for err in e.errors())
+        raise HTTPException(status_code=400, detail=f'翻译引擎配置无效: {detail}')
+    except Exception as e:      # noqa: BLE001
+        raise HTTPException(status_code=400,
+                            detail=f'翻译引擎配置无效: {type(e).__name__}')
+    if engine is None:
+        raise HTTPException(status_code=400, detail='未选择翻译引擎')
+
+    # 只有 openai 兼容端带自定义 url, 其余引擎的端点由本模块固定
+    url = getattr(engine, 'url', None)
+    if url:
+        reason = _validate_test_url(url)
+        if reason:
+            raise HTTPException(status_code=400, detail=f'翻译端点不被允许: {reason}')
+    client = (request.client.host if request.client else '') or 'unknown'
+    if _test_too_soon(client):
+        raise HTTPException(
+            status_code=429,
+            detail=f'测试过于频繁, 请 {_TEST_MIN_INTERVAL:.0f} 秒后再试(每次测试都会消耗真实配额)')
+
+    to = payload.language or 'zh_CN'
+    # 样本文本必须避开「同语言跳过」: 源文本已是目标语种时 translate() 会直接
+    # 返回原文而不打引擎, 那样测不出连通性。目标为日语时用中文样本, 其余用日语。
+    sample = ('这是一段翻译连通性测试文本。' if to == 'ja'
+              else 'こんにちは、これは翻訳のテストです。')
+    try:
+        result = translate(sample, engine, actress=[], to=to,
+                           use_proxy=payload.use_proxy)
+    except Exception as e:      # noqa: BLE001
+        # 同样要脱敏: 异常里可能带着完整 URL(百度把 appid/sign 放在查询串上)
+        raise HTTPException(status_code=500,
+                            detail=f'翻译测试异常: {type(e).__name__}: {redact_url(str(e))[:300]}')
+    if 'trans' in result:
+        return {'ok': True, 'engine': engine.name, 'language': to,
+                'source': sample, 'translated': result['trans']}
+    return {'ok': False, 'engine': engine.name, 'language': to,
+            'source': sample, 'error': redact_url(result.get('error', '未知错误'))}
 
 
 @app.get('/api/browse')
@@ -1180,6 +1332,35 @@ def api_cache_thumbs():
 def api_cache_thumbs_clear():
     """手动清空缩略图缓存(只删缓存目录内的缩略图, 不触碰已整理的封面文件)"""
     removed = thumbs_mod.clear_all()
+    return {'ok': True, 'removed': removed}
+
+
+@app.get('/api/cache/translations')
+def api_cache_translations():
+    """翻译结果缓存统计(条数 / 占用 / 目录 / 开关 / 保留天数)"""
+    st = transcache.stats()
+    try:
+        enabled = bool(getattr(Cfg().cache, 'translation_enabled', True))
+        retention = int(getattr(Cfg().cache, 'translation_retention_days', 30))
+    except Exception:
+        enabled, retention = True, 30
+    return {
+        'dir': st['dir'],
+        'count': st['count'],
+        'bytes': st['size'],
+        'enabled': enabled,
+        'retention_days': retention,
+    }
+
+
+@app.delete('/api/cache/translations')
+def api_cache_translations_clear():
+    """手动清空翻译缓存(不影响缩略图, 也不触碰已生成的 NFO/文件名)
+
+    用途: 换了模型或提示词后想强制重新翻译(虽然这两者变化会自动 miss, 但用户
+    可能就是想重来一次), 或单纯想释放空间。
+    """
+    removed = transcache.clear()
     return {'ok': True, 'removed': removed}
 
 

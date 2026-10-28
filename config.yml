@@ -191,18 +191,28 @@ translator:
   #   # 百度翻译的APP ID和密钥
   #   app_id: ''
   #   api_key: ''
+  #   # 每秒请求上限(QPS): 标准版额度为 1, 高级版/企业版可达 10。
+  #   # 超限会被百度拒绝(错误码 54003), 默认 1 与旧版行为一致。
+  #   qps: 1
   ## }}}
-  ## 使用必应翻译: {{{
+  ## 使用必应翻译(Azure 认知服务 - 翻译): {{{
   # engine: 
   #   name: bing
   #   # 微软必应翻译（Azure 认知服务 → 翻译）的密钥
   #   api_key: ''
+  #   # Azure 资源所在区域。多服务/全球资源填 global(默认); 单服务资源必须填
+  #   # 实际区域(如 eastasia), 否则会返回 401001 而看不出原因。
+  #   region: global
   ## }}}
   ## 使用Claude翻译: {{{
   # engine: 
   #   name: claude
-  #   # Claude的密钥 (使用haiku模型)
+  #   # Claude的密钥 (默认使用 haiku 模型)
   #   api_key: ''
+  #   # 模型名。默认 claude-haiku-4-5-20251001。
+  #   # ⚠️ 旧默认 claude-3-haiku-20240307 已被 Anthropic **硬退役**(2026-04-20 起
+  #   # 对该模型 ID 的请求直接报错), 沿用旧配置请务必改成在役型号。
+  #   model: claude-haiku-4-5-20251001
   #   # 国内访问 Anthropic 需代理: 打开后翻译请求走 network.proxy_server(与爬虫共用)
   #   use_proxy: false
   ## }}}
@@ -230,11 +240,19 @@ translator:
   # engine:
   #   name: openai
   #   url: 'http://127.0.0.1:11434/v1/chat/completions'   # 局域网内换成对应主机 IP
-  #   api_key: 'ollama'                                    # 本地不校验, 随意填写
+  #   api_key: ''                                          # 本地不校验, 可留空(留空时不发送鉴权头)
   #   model: 'qwen3:14b'                                   # ollama list 里的模型名; CJK 翻译也可选 glm-4-9b / translategemma:12b
   #   use_proxy: false
   ## }}}
-  
+
+  # 翻译请求是否走「网络与容错」里配置的出口代理(network.proxy_server)。
+  # **通用选项**: 对所有翻译引擎一视同仁(Google/百度/Bing/Claude/OpenAI 兼容),
+  # 界面上位于「翻译引擎」下拉框下方, 切换引擎时位置保持不变。
+  # 不设置(保持注释)时回落引擎自身的 use_proxy 字段以兼容旧配置; Google/百度/Bing
+  # 没有该字段, 按 false 处理 —— 即不勾选就不走代理。
+  # 国内使用 Google 翻译必须打开(直连基本不可达); 本地/局域网大模型请保持关闭。
+  # use_proxy: false
+
   # 是否翻译各个字段
   fields:
     # 是否翻译标题
@@ -267,3 +285,12 @@ cache:
   auto_clean: true
   # 缩略图保留天数（仅在 auto_clean 打开时生效）
   retention_days: 7
+  # ---- 翻译结果缓存 ----
+  # 是否缓存翻译结果: 刮削同一部影片(或重跑失败任务)时直接复用上次译文,
+  # 省 API 调用与配额。换引擎/模型/目标语种/原文 任一变化都会自动失效。
+  translation_enabled: true
+  # 翻译缓存目录。留空 = 与缩略图同级目录下的 translations
+  # (容器 /data/.javsp_cache/translations, 桌面版 exe 同级 cache/translations)
+  translation_dir: ''
+  # 翻译缓存保留天数
+  translation_retention_days: 30
