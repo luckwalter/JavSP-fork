@@ -164,3 +164,8 @@ smoke_tasks.py
 # 翻译结果 translations/)。容器/桌面版各有自己的路径, 这里只针对源码运行。
 cache/
 
+# GitHub Release 资产暂存目录(镜像 tar.gz + Windows zip, 约 120MB+)。
+# 发版时先放到这里再上传 Release, 属本地产物, 绝不入库。
+release_assets/
+release/
+

@@ -1,8 +1,19 @@
 # ---------- 前端构建 (Vite) ----------
 FROM node:20-slim AS frontend
 WORKDIR /frontend
-COPY frontend/package.json ./
-RUN npm install
+# 必须同时 COPY package.json 与 package-lock.json:
+# 只拷 package.json 时 npm 会重新解析依赖, 装到 rollup 最新版(>=4.65), 而 rollup 4.65+
+# 的原生模块(@rollup/rollup-linux-x64-gnu)需要 AVX2 指令, 在无 AVX2 的宿主 CPU
+# (如 Xeon E3-1230 V2 / 部分 NAS)上执行即 "Illegal instruction (core dumped)"(exit 132),
+# 导致 vite build 失败。带上 lock 可复现依赖版本, 配合 package.json 的 overrides
+# 把 rollup 钉在 4.64.0(最后一个不依赖 AVX2 的版本)。
+COPY frontend/package.json frontend/package-lock.json ./
+# npm install 后校验 esbuild 原生二进制可用性(装包经代理时偶发下载损坏),
+# 不可用则清缓存重装一次, 避免整轮 build 失败。
+RUN npm install && \
+    (node_modules/.bin/esbuild --version >/dev/null 2>&1 || \
+     (echo "esbuild binary broken, reinstalling..." && \
+      npm cache clean --force && rm -rf node_modules && npm install))
 COPY frontend/ ./
 RUN npm run build
 

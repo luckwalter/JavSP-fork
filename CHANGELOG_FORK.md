@@ -152,6 +152,43 @@ Claude / OpenAI 沿用各自引擎级的旧开关，其余引擎回落 false。
   `unittest/test_translate_hardening.py`（21 项，逐条覆盖上表 B-014 ~ B-020）。
 - 前端构建通过。
 
+### 🐛 部署修复：Docker 镜像在无 AVX2 的 NAS 上构建失败（2026-10-31）
+
+在飞牛 NAS（Intel Xeon E3-1230 V2）上完整重建镜像时，前端构建阶段崩溃：
+
+```
+> vite build
+Illegal instruction (core dumped)
+The command '/bin/sh -c npm run build' returned a non-zero code: 132
+```
+
+**根因**：Rollup **4.65 及以上**的原生模块（`@rollup/rollup-linux-x64-gnu`，Rust/napi-rs 编写）
+需要 **AVX2 指令集**，而部分 NAS / 旧款服务器 CPU（如 Sandy Bridge 时代的 Xeon E3-1230 V2）
+只有 `avx`/`f16c`/`sse4_2`，**没有 AVX2** → 加载即触发 SIGILL 非法指令。
+（`esbuild` 无此问题，其二进制不依赖 AVX2。）
+
+**为什么以前没暴露**：`docker/Dockerfile` 的前端阶段只 `COPY frontend/package.json ./`，
+**没有拷贝 `package-lock.json`**。npm 因此在每次构建时重新解析依赖，装到当时最新的 Rollup
+（本次为 4.67.2），必然命中该问题。定位手段：
+
+```bash
+node -e "require('@rollup/rollup-linux-x64-gnu')"   # 无 AVX2 宿主上直接 SIGILL
+grep -c avx2 /proc/cpuinfo                             # 输出 0 即无 AVX2
+```
+
+**修复**：
+
+| 文件 | 改动 |
+|---|---|
+| `docker/Dockerfile` | 前端阶段改为 `COPY frontend/package.json frontend/package-lock.json ./`，使依赖树可复现；并在 `npm install` 后校验 esbuild 二进制可用性，损坏则清缓存重装一次（经代理装包时二进制偶发下载不完整）。 |
+| `frontend/package.json` | 新增 `"overrides": { "rollup": "4.64.0" }` —— 4.64.0 是最后一个不依赖 AVX2 的可用版本，**把版本钉死，后续持续升级也不会被 Rollup 新版打回**。 |
+
+**验证**：在上述无 AVX2 的 NAS 上重新 `docker build` 成功，产物与预期一致
+（前端资产 `index-D6-GW-9m.js`）；`npm ci` 与 `npm install` 两种装包方式均通过。
+
+> ⚠️ 若你的部署环境是较老的服务器 CPU，遇到 `exit 132 / Illegal instruction` 时同样适用；
+> 升级 Rollup 前请先确认目标 CPU 是否支持 AVX2。
+
 ---
 
 ---
