@@ -61,6 +61,61 @@ def _split_leading_brackets(text):
     return cands, (text or '')[len(m.group(1)):].strip()
 
 
+# 详情页 blockquote 内的元信息行前缀(逐行 <br> 分隔)。某行以这些前缀开头即认为它仍是
+# 元信息而非简介正文 —— 用于「该条目只有元信息、没有简介」的判定。
+_META_PREFIXES = ('発売日', '収録時間', '出演者', '監督', 'シリーズ', 'メーカー',
+                   'レーベル', 'ジャンル', '品番', '収録', '配信', '制作', '形式')
+
+
+def _split_paragraph_lines(p) -> list:
+    """把 <p> 的内容按 <br> 切成若干行文本(行内标签取其全部文本)"""
+    lines = []
+    cur = p.text or ''
+    for child in p:
+        if child.tag == 'br':
+            lines.append(cur)
+            cur = ''
+            cur += child.tail or ''
+        else:
+            cur += ''.join(child.itertext()) + (child.tail or '')
+    lines.append(cur)
+    return [' '.join(line.split()) for line in lines]
+
+
+def _extract_plot(doc) -> str | None:
+    """从详情页提取简介正文, 取不到返回 None
+
+    实测结构(2026-11-25, javfree.me):
+        <blockquote><p>発売日： ...<br>収録時間： ...<br>...<br>品番： <strong>xxx</strong><br>
+        【简介正文】
+        </p></blockquote>
+    元信息逐行 <br> 分隔, 最后一行才是简介正文。
+
+    只取 blockquote 里的 p 是有依据的: 含简介的条目把简介放在 blockquote 内;
+    而元信息直接铺在 entry-content/p 下的条目, 实测其末行是空行或样本视频链接,
+    本就没有简介正文 —— 那种条目判为「无简介」返回 None 才是对的
+    (若放宽到 entry-content/p, 会把样本链接当简介写进 NFO)。
+    另: 并非所有条目都有 blockquote, 缺失时静默返回 None, 不抛异常拖垮整条链路。
+    """
+    bqs = doc.xpath("//div[@class='entry-content']/blockquote")
+    if not bqs:
+        return None
+    ps = bqs[0].xpath('.//p')
+    if not ps:
+        return None
+    for line in reversed(_split_paragraph_lines(ps[0])):
+        if not line:
+            continue
+        # 末行仍是元信息 -> 该条目没有简介
+        if any(line.startswith(prefix) for prefix in _META_PREFIXES):
+            return None
+        # 末行是样本视频链接(纯 URL) -> 同样没有简介
+        if line.startswith(('http://', 'https://')):
+            return None
+        return line
+    return None
+
+
 def parse_data(movie: MovieInfo):
     """从 javfree.me 抓取并解析指定番号的数据, 直接写入 movie
 
@@ -135,6 +190,9 @@ def parse_data(movie: MovieInfo):
             pics.append(urljoin(detail_url, src))
     if pics:
         movie.preview_pics = pics
+
+    # 简介(plot): 元信息逐行 <br>, 末行才是简介正文; 无 blockquote 时为 None
+    movie.plot = _extract_plot(d)
 
     movie.url = detail_url
 
