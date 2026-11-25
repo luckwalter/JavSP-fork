@@ -246,6 +246,34 @@ def _try_insert_missing(lines, index, inserted, path, value):
     return False
 
 
+# 顶层段本身不是字典时, 用它在 new_sections 里承载标量值
+_SCALAR_SENTINEL = '__value__'
+
+
+def _try_append_new_section(lines, index, path, value, new_sections):
+    """顶层容器在文件中不存在时, 整段追加到文件末尾
+
+    背景: _try_insert_missing 只支持「在已存在的祖先容器内新建单级字段」。
+    新增顶层段(如 web:)时, 它的容器行本身在文件里就不存在, 该逻辑只能判 missing,
+    表现为「界面提示保存成功、配置却没写进文件」(issue #7 的主题入库依赖本函数)。
+
+    new_sections: {顶层段名: {子键: 值}}, 交由调用方统一渲染, 保证同一段只追加一次。
+    """
+    top = path[0]
+    if top in index:              # 顶层段已存在 -> 交回原逻辑处理
+        return False
+    sub = new_sections.setdefault(top, {})
+    if len(path) == 1:
+        # 整段新增: diff_leaves 对 dict 值给出的是整段路径, 直接展开其子键
+        if isinstance(value, dict):
+            sub.update(value)
+        else:
+            sub[_SCALAR_SENTINEL] = value
+        return True
+    sub[path[1]] = value
+    return True
+
+
 def _try_replace_flow_ancestor(lines, index, path, merged, to_replace, to_delete, done):
     """path 在文件中定位不到时, 尝试归并到最近的可定位祖先行(单行 flow 容器)
 
@@ -306,6 +334,7 @@ def write_config_preserving_comments(cfg_path, changes, merged=None):
     to_replace = {}                 # 行号 -> 新行内容
     to_delete = set()               # block 列表被替换成单行后需要删除的旧行
     inserted = []                    # (原行号, 新行内容): 在祖先容器行后插入缺失字段
+    new_sections = {}                # {顶层段名: {子键: 值}}: 文件里不存在的顶层段, 整段追加到末尾
     missing = []
     flow_done = set()               # 已被 flow 祖先回退处理过的祖先路径
 
@@ -336,7 +365,8 @@ def write_config_preserving_comments(cfg_path, changes, merged=None):
                                           to_replace, to_delete, flow_done):
                 continue
             if not _try_insert_missing(lines, index, inserted, path, value):
-                missing.append('.'.join(path))
+                if not _try_append_new_section(lines, index, path, value, new_sections):
+                    missing.append('.'.join(path))
 
     out_lines = []
     for i, line in enumerate(lines):
@@ -348,10 +378,24 @@ def write_config_preserving_comments(cfg_path, changes, merged=None):
             if ins_i == i:
                 out_lines.append(ins_line)
 
+    # 新增顶层段(文件中原本没有该容器): 整段追加到文件末尾
+    appended = 0
+    if new_sections:
+        eol = (_split_eol(lines[0])[1] or '\n') if lines else '\n'
+        for top, subs in new_sections.items():
+            if _SCALAR_SENTINEL in subs:
+                out_lines.append(_render_key(top) + ': ' + _render(subs[_SCALAR_SENTINEL]) + eol)
+                appended += 1
+                continue
+            out_lines.append(_render_key(top) + ':' + eol)
+            for k, v in subs.items():
+                out_lines.append('  ' + _render_key(k) + ': ' + _render(v) + eol)
+            appended += 1 + len(subs)
+
     _atomic_write(cfg_path, ''.join(out_lines))
-    # 写入计数要包含「新建的缺失字段」行(inserted), 否则 confz 热重载会因 n==0 被跳过,
-    # 表现为「文件已写入但运行时未生效」
-    return len(to_replace) + len(inserted), missing
+    # 写入计数要包含「新建的缺失字段」行(inserted)与「新增顶层段」行(appended),
+    # 否则 confz 热重载会因 n==0 被跳过, 表现为「文件已写入但运行时未生效」
+    return len(to_replace) + len(inserted) + appended, missing
 
 
 def _atomic_write(cfg_path, text):

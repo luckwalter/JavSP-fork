@@ -293,6 +293,19 @@ class Cache(BaseConfig):
     translation_dir: str = ''
     translation_retention_days: int = Field(30, ge=1, le=365)
 
+class Web(BaseConfig):
+    """WebUI 界面偏好
+
+    theme_mode: 主题模式(light/dark/auto/schedule)。原先主题只存在浏览器 localStorage,
+        换设备/换访问地址/桌面版 profile 丢失都会静默退回浅色(见 issue #7),
+        故改为入库统一管理, 前端 localStorage 只作首帧即时缓存。
+    theme_schedule_start / theme_schedule_end: 定时切换时段(HH:MM)。
+    用扁平字段而非嵌套 dict: confz 的环境变量源对 dict 字段解析不稳, 扁平更可靠。
+    """
+    theme_mode: str = 'light'
+    theme_schedule_start: str = '19:00'
+    theme_schedule_end: str = '07:00'
+
 def get_config_source():
     parser = ArgumentParser(prog='JavSP', description='汇总多站点数据的AV元数据刮削器', formatter_class=RawTextHelpFormatter)
     parser.add_argument('-c', '--config', help='使用指定的配置文件')
@@ -336,4 +349,5 @@ class Cfg(BaseConfig):
     translator: Translator
     other: Other
     cache: Cache = Cache()
+    web: Web = Web()
     CONFIG_SOURCES=get_config_source()

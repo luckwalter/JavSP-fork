@@ -14,11 +14,13 @@
  *     组件零改动即可换肤。
  */
 import { ref, computed, watch } from 'vue'
+import { getConfig, putConfig } from '../api'
+import { resolveThemeFromConfig, THEME_MODES, DEFAULT_SCHEDULE } from './themeResolve'
+
+export { THEME_MODES, DEFAULT_SCHEDULE }
 
 const STORAGE_MODE = 'javsp:theme-mode'
 const STORAGE_SCHEDULE = 'javsp:theme-schedule'
-export const THEME_MODES = ['light', 'dark', 'auto', 'schedule']
-export const DEFAULT_SCHEDULE = { start: '19:00', end: '07:00' }
 
 /** 读取 JSON 存储, 脏数据/隐私模式一律回退默认值 */
 function readStorage(key, fallback) {
@@ -106,12 +108,68 @@ function ensureStarted() {
 
   // 任何输入变化都重新 apply(immediate: 首帧即应用, 供挂载前防闪烁)
   watch([mode, schedule, systemDark, tick], apply, { immediate: true })
+
+  // 启动后与服务端对齐(服务端为准); 失败不影响本地偏好
+  syncFromServer()
+}
+
+/* ---------- 与服务端配置同步(issue #7) ---------- */
+/**
+ * 主题以**服务端配置为准**, localStorage 只作首帧即时缓存(避免刷新闪白)。
+ *
+ * 为什么改: 主题原先只存浏览器 localStorage —— 换设备、换访问地址
+ * (localhost vs NAS IP vs 反代域名)、桌面版 profile 丢失, 都会静默退回浅色,
+ * 报告者反馈「浅色和深色不能保存, 每次打开都是浅色」。入库后跨设备一致。
+ */
+
+/** 从服务端配置拉取主题; 不可达(未登录/离线)时保留本地值, 不打断界面 */
+async function syncFromServer() {
+  try {
+    const cfg = await getConfig()
+    const resolved = resolveThemeFromConfig(cfg && cfg.web,
+      { mode: mode.value, schedule: schedule.value })
+    if (!resolved) return
+    if (resolved.mode !== mode.value) {
+      mode.value = resolved.mode
+      writeStorage(STORAGE_MODE, resolved.mode)
+    }
+    if (resolved.schedule.start !== schedule.value.start
+        || resolved.schedule.end !== schedule.value.end) {
+      schedule.value = resolved.schedule
+      writeStorage(STORAGE_SCHEDULE, resolved.schedule)
+    }
+  } catch (_) {
+    // 忽略: 离线/未登录时以本地偏好继续工作
+  }
+}
+
+/** 主题变更回写服务端; 失败静默(本地已生效, 不因写配置失败打断界面) */
+async function persistToServer() {
+  try {
+    await putConfig({
+      web: {
+        theme_mode: mode.value,
+        theme_schedule_start: schedule.value.start,
+        theme_schedule_end: schedule.value.end,
+      },
+    })
+  } catch (_) {
+    // 忽略
+  }
+}
+
+/** 防抖: 连点主题按钮只写一次配置(每次写配置都会触发服务端配置热重载) */
+let persistTimer = null
+function schedulePersist() {
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = setTimeout(persistToServer, 400)
 }
 
 function setMode(m) {
   if (!THEME_MODES.includes(m)) return
   mode.value = m
   writeStorage(STORAGE_MODE, m)
+  schedulePersist()
 }
 
 function setSchedule(s) {
@@ -121,6 +179,7 @@ function setSchedule(s) {
   }
   schedule.value = next
   writeStorage(STORAGE_SCHEDULE, next)
+  schedulePersist()
 }
 
 /**

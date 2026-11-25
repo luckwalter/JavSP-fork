@@ -294,3 +294,12 @@ cache:
   translation_dir: ''
   # 翻译缓存保留天数
   translation_retention_days: 30
+
+################################
+# WebUI 界面偏好
+web:
+  # 主题模式：light(浅色) / dark(深色) / auto(跟随系统) / schedule(定时切换)
+  theme_mode: light
+  # 定时切换的深色时段（仅 theme_mode=schedule 时生效）
+  theme_schedule_start: '19:00'
+  theme_schedule_end: '07:00'
