@@ -8,6 +8,51 @@
 
 ---
 
+## v0.4.9（2026-11-25，修复 GitHub issue #7 两项）
+
+**javfree 源补齐简介（plot）提取；WebUI 主题偏好改为入库统一管理**
+
+### 1. javfree 源不提取 plot，勾选 plot 为必填字段必然刮削失败（issue #7）
+
+- **现象**：设置页「至少命中字段」勾选 `plot` 后，刮削测试报「刮削失败: 未获取到必需字段」。
+  报告者所选源 `javfree` 的站点详情页明明含简介，但只要它参与刮削就必然失败。
+- **根因**：`javsp/web/javfree.py::parse_data()` 只写入 title / cover / actress / preview_pics / url，
+  **从未提取 plot**；而 `javsp/core.py` 的 `required_keys` 校验要求每个字段非空，
+  任一为空即判定抓取失败，并中断整部影片的刮削。
+- **修复**：新增 `_split_paragraph_lines()`（按 `<br>` 切分段落）与 `_extract_plot()`
+  （取 `entry-content/blockquote/p` 的末行非空文本作为简介；末行若仍是元信息前缀
+  （発売日/品番等）或纯样本视频 URL，则判定该条目没有简介，返回 None；
+  blockquote 缺失时静默跳过，不抛异常拖垮整条链路）。
+- **实测**：走代理抓真实站点验证，IPX-001 取到 198 字完整简介；MIDE-980 / ABP-123 经探查
+  确认该条目本身就没有简介正文（元信息直接铺在 `entry-content/p` 下，末行为空或样片链接），
+  判定为「无简介」是正确的。
+
+### 2. WebUI 浅色/深色主题不能保存，重开一律退回浅色（issue #7）
+
+- **现象**：设置页「外观」切换浅色/深色当场生效，但重新打开 WebUI 一律回到浅色。
+- **根因**：主题状态只落在浏览器 localStorage（`javsp:theme-mode`），后端全库无 theme 字段，
+  主题不入 config.yml —— 换设备、换访问地址（localhost / 局域网 IP / 反代域名之间互不共享）、
+  桌面版窗口 profile 丢失，都会静默退回浅色；且读取失败时一律静默 fallback `light`。
+- **修复**：
+  - 后端 `config.py` 新增 `Web` 配置段（`theme_mode` / `theme_schedule_start` /
+    `theme_schedule_end`，用扁平字段避开 confz 对 dict 字段的环境变量解析坑），`config.yml` 补同名段；
+  - `config_io.py` 扩展 `_try_append_new_section()`，支持新增顶层段整段追加 —— 原逻辑只能在
+    **已存在**的祖先容器内新建字段，老配置没有 `web:` 段时会判 missing，表现为
+    「界面提示保存成功、配置却没写进文件」；
+  - 前端新增 `composables/themeResolve.js`（无 Vue 依赖的纯函数）负责服务端值裁决，
+    `useTheme.js` 启动时与服务端对齐、切换时防抖 400ms 局部回写（不影响其它配置项）。
+- **实测**：以「无 web 段」的老配置起真实服务，`PUT /api/config` 返回 `applied` 且 `missing` 为空，
+  文件正确新增 web 段，二次修改原地更新不重复建段，`GET` 可回读。
+
+### 回归与测试
+
+- 后端新增 `unittest/test_javfree_plot.py`（5 项）与 `unittest/test_config_web_theme.py`（3 项）；
+- 前端新增 `frontend/test/themeResolve.test.mjs`（7 项），并补 `npm test` 入口；
+- 全部通过。另加配置结构校验手段，防止「在段中间插入新段」把相邻段的字段吞掉
+  （本次改动中真实踩过：pydantic 因字段有默认值不报错，属静默破坏）。
+
+---
+
 ## v0.4.8（2026-10-29，改动待实机验证）
 
 **五大翻译通道全量加固：统一代理开关、长文本自动分段、翻译结果缓存、设置页「测试」按钮**
