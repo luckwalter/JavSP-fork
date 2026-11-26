@@ -1,0 +1,47 @@
+name: 回复并关闭 issue
+
+# 用法: 在 .github/issue-replies/ 下新建 <issue号>.md (内容 = 回复正文), 提交并 push 到
+# master -> 本 workflow 自动触发, 逐个把对应 issue 回复并关闭。
+#
+# 为什么走 Actions 而不是 personal access token:
+#   MCP GitHub App 无评论/关 issue 权限(403), fine-grained PAT 同样配不出写权限;
+#   而 Actions 的 GITHUB_TOKEN 显式声明 permissions: issues: write 即可。
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/issue-replies/*.md'
+
+permissions:
+  issues: write         # 评论 + 关闭 issue 所需
+
+jobs:
+  respond:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: 逐个回复并关闭
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd repo/.github/issue-replies
+          shopt -s nullglob
+          for f in *.md; do
+            num="${f%%.*}"
+            echo "=== issue #$num ==="
+            state=$(gh issue view "$num" --json state --jq .state)
+            echo "当前状态: $state"
+            if [ "$state" = "OPEN" ]; then
+              gh issue comment "$num" --body-file "$f"
+              gh issue close "$num" --reason completed
+              echo "已回复并关闭 #$num"
+            else
+              echo "已是 $state, 跳过(幂等)"
+            fi
+          done
+          echo "--- 处理完毕 ---"
+          gh issue list --state all --limit 10
