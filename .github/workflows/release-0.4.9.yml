@@ -69,3 +69,13 @@ jobs:
           echo "--- 清理后各 Release 的资产数 ---"
           gh api --paginate "/repos/$REPO/releases?per_page=100" \
             --jq '.[] | "\(.tag_name): \(.assets | length) 个资产"'
+
+      - name: 删除资产分支(发布完成即清理)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 资产已上传进 Release, 分支使命完成 -> 立即删掉, 避免仓库长期挂着 125MB 大对象
+          git -C assets push origin --delete release-assets-0.4.9
+          echo "--- 远端分支现状 ---"
+          git -C assets ls-remote --heads origin
