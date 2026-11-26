@@ -1,10 +1,10 @@
 name: 发布 Release v0.4.9
 
-# 手动触发: 仓库 Actions 页面 -> 该 workflow -> Run workflow
-# 为什么用 Actions 而不是 personal access token:
-#   fine-grained PAT 拿 Contents 写权限极难配(GitHub 多边缘节点判定还不一致),
-#   而本仓库自带的 GITHUB_TOKEN 在 workflow 里显式声明 permissions 即可写 Releases,
-#   不需要主人额外准备任何凭据。
+# 触发方式(二选一):
+#   1) push 到 master 且本文件有改动 -> 自动触发
+#      为什么不用 workflow_dispatch 的 API: fine-grained PAT 拿不到 Actions:write,
+#      dispatch 端点会 403; 改用 push 事件可完全避开该权限问题。
+#   2) Actions 页面手动 Run workflow
 on:
   workflow_dispatch:
     inputs:
@@ -12,6 +12,10 @@ on:
         description: '要发布的 tag'
         required: false
         default: 'v0.4.9'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/release-0.4.9.yml'
 
 permissions:
   contents: write      # 建/传/删 Release 资产所需
@@ -20,16 +24,32 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: 幂等检查(Release 已存在则跳过)
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || 'v0.4.9' }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在 -> 本次跳过(避免重复发布)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 检出资产分支
+        if: steps.check.outputs.skip == 'false'
         uses: actions/checkout@v4
         with:
           ref: release-assets-0.4.9
           path: assets
 
       - name: 发布 Release
+        if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'v0.4.9' }}
           TITLE: 'JavSP-fork v0.4.9'
         run: |
           set -euo pipefail
@@ -49,9 +69,10 @@ jobs:
           gh release view "$TAG" --json url,tagName,name,isDraft,isPrerelease
 
       - name: 清理旧版本附件(只保留最新版)
+        if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'v0.4.9' }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -71,6 +92,7 @@ jobs:
             --jq '.[] | "\(.tag_name): \(.assets | length) 个资产"'
 
       - name: 删除资产分支(发布完成即清理)
+        if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
