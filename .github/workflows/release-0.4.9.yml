@@ -1,0 +1,49 @@
+name: 发布 Release v0.4.9
+
+# 手动触发: 仓库 Actions 页面 -> 该 workflow -> Run workflow
+# 为什么用 Actions 而不是 personal access token:
+#   fine-grained PAT 拿 Contents 写权限极难配(GitHub 多边缘节点判定还不一致),
+#   而本仓库自带的 GITHUB_TOKEN 在 workflow 里显式声明 permissions 即可写 Releases,
+#   不需要主人额外准备任何凭据。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag'
+        required: false
+        default: 'v0.4.9'
+
+permissions:
+  contents: write      # 建/传 Release 资产所需
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出资产分支
+        uses: actions/checkout@v4
+        with:
+          ref: release-assets-0.4.9
+          path: assets
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          TITLE: 'JavSP-fork v0.4.9'
+        run: |
+          set -euo pipefail
+          cd assets/release-assets-0.4.9
+          ls -lh
+          echo "--- sha256 校验(先自检, 再上传) ---"
+          sha256sum -c javsp-fork-0.4.9.sha256
+          echo "--- 创建 Release ---"
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes-file release-notes.md \
+            --latest \
+            javsp-fork-0.4.9-image.tar.gz \
+            JavSP-0.4.9-windows.zip \
+            javsp-fork-0.4.9.sha256
+          echo "--- 完成 ---"
+          gh release view "$TAG" --json url,tagName,name,isDraft,isPrerelease
