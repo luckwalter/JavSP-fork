@@ -14,7 +14,7 @@ on:
         default: 'v0.4.9'
 
 permissions:
-  contents: write      # 建/传 Release 资产所需
+  contents: write      # 建/传/删 Release 资产所需
 
 jobs:
   publish:
@@ -47,3 +47,25 @@ jobs:
             javsp-fork-0.4.9.sha256
           echo "--- 完成 ---"
           gh release view "$TAG" --json url,tagName,name,isDraft,isPrerelease
+
+      - name: 清理旧版本附件(只保留最新版)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # 按**明确指定的 TAG** 决定保留哪个, 绝不靠列表顺序判最新
+          # (GitHub 的 releases 返回顺序不可信: 被编辑过的旧 Release 会被置顶,
+          #  照顺序取"第一个"会把刚发的资产全删)
+          gh api --paginate "/repos/$REPO/releases?per_page=100" \
+            --jq ".[] | select(.tag_name != \"$TAG\") | .id" | while read -r rid; do
+            gh api --paginate "/repos/$REPO/releases/$rid/assets" \
+              --jq '.[].id' | while read -r aid; do
+                echo "删除旧资产 id=$aid (release id=$rid)"
+                gh api -X DELETE "/repos/$REPO/releases/assets/$aid"
+              done
+          done
+          echo "--- 清理后各 Release 的资产数 ---"
+          gh api --paginate "/repos/$REPO/releases?per_page=100" \
+            --jq '.[] | "\(.tag_name): \(.assets | length) 个资产"'
